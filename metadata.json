@@ -1,0 +1,6 @@
+{
+  "name": "Meu Painel Financeiro & Aquisições",
+  "description": "Plataforma integrada de controle financeiro colaborativo, faturas de cartão, Livro-Razão mensal e gestão de listas de aquisições, estoque doméstico e objetivos.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
