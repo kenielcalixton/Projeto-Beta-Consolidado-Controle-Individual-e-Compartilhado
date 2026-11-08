@@ -19,7 +19,7 @@ interface AuthScreenProps {
 
 type AuthMode = 'login' | 'register' | 'reset';
 
-export const AuthScreen: React.FC<AuthScreenProps> = () => {
+export const AuthScreen: React.FC<AuthScreenProps> = ({ onEnterDemoMode }) => {
   const [mode, setMode] = useState<AuthMode>('login');
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
@@ -452,6 +452,23 @@ export const AuthScreen: React.FC<AuthScreenProps> = () => {
             <i className="ph-bold ph-google-logo text-indigo-400 text-base"></i>
             <span>Entrar com Google</span>
           </button>
+
+          {onEnterDemoMode && (
+            <button
+              type="button"
+              onClick={() =>
+                onEnterDemoMode({
+                  uid: 'demo_user_default',
+                  name: 'Usuário Demonstração',
+                  email: 'demo@meupainel.com',
+                })
+              }
+              className="mt-3 w-full py-2.5 px-4 bg-slate-900/60 hover:bg-slate-800 border border-slate-700 hover:border-slate-600 rounded-xl text-xs font-medium text-slate-300 transition-colors flex items-center justify-center gap-2 cursor-pointer"
+            >
+              <i className="ph-bold ph-lightning text-amber-400"></i>
+              <span>Acessar Modo Demonstração Rápido</span>
+            </button>
+          )}
         </div>
       </div>
     </div>

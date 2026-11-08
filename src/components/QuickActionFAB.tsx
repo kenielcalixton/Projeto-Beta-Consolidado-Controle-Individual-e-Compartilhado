@@ -35,7 +35,7 @@ export const QuickActionFAB: React.FC<QuickActionFABProps> = ({
   return (
     <div
       ref={containerRef}
-      className="fixed bottom-6 right-4 sm:right-7 z-40 flex flex-col items-end gap-2.5"
+      className="fixed bottom-20 sm:bottom-6 right-4 sm:right-7 z-40 flex flex-col items-end gap-2.5"
     >
       {/* Menu Rápido Aberto (Speed Dial) */}
       {isOpen && (
