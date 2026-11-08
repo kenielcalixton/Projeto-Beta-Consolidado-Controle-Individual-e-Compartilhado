@@ -51,6 +51,22 @@ import { AdminDashboardView } from './components/AdminDashboardView';
 import { TransactionDetailModal } from './components/TransactionDetailModal';
 import { ConfirmSettlementModal } from './components/ConfirmSettlementModal';
 import { AcquisitionsModuleView } from './components/acquisitions/AcquisitionsModuleView';
+import { SettingsModal, SettingsTab } from './components/SettingsModal';
+import { QuickActionFAB } from './components/QuickActionFAB';
+import {
+  AcquisitionItem,
+  AcquisitionList,
+  TaxonomyGroup,
+} from './types/acquisitions';
+import {
+  INITIAL_ITEMS,
+  INITIAL_LISTS,
+  INITIAL_TAXONOMY_GROUPS,
+} from './data/acquisitionsSeedData';
+import {
+  saveTaxonomyGroupToFirestore,
+  deleteTaxonomyGroupFromFirestore,
+} from './services/acquisitionsFirebase';
 
 type NavTab =
   | 'admin'
@@ -129,12 +145,53 @@ export default function App() {
   const [inspectAcqWorkspaceId, setInspectAcqWorkspaceId] = useState<
     string | null
   >(null);
+  const [createSpacePreset, setCreateSpacePreset] = useState<
+    'finance' | 'acquisitions' | 'both' | null
+  >(null);
   const [activeLedgerSpace, setActiveLedgerSpace] = useState<Space | null>(null);
   const [detailTx, setDetailTx] = useState<Transaction | null>(null);
   const [settlingTxModal, setSettlingTxModal] = useState<{
     tx: Transaction;
     defaultSpaceMode?: 'space_cash' | 'member_direct';
   } | null>(null);
+
+  // Estados de Configurações Globais & Perfil de Usuário
+  const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
+  const [settingsModalTab, setSettingsModalTab] = useState<SettingsTab>('account');
+  const [userDropdownOpen, setUserDropdownOpen] = useState(false);
+
+  // Listas, itens e taxonomia de aquisições compartilhadas para exibição no Dashboard e Configurações
+  const [acqLists, setAcqLists] = useState<AcquisitionList[]>(() => {
+    const saved = localStorage.getItem('app_aquisicoes_lists');
+    return saved ? JSON.parse(saved) : INITIAL_LISTS;
+  });
+  const [acqItems, setAcqItems] = useState<AcquisitionItem[]>(() => {
+    const saved = localStorage.getItem('app_aquisicoes_items');
+    return saved ? JSON.parse(saved) : INITIAL_ITEMS;
+  });
+  const [acqTaxonomyGroups, setAcqTaxonomyGroups] = useState<TaxonomyGroup[]>(() => {
+    const saved = localStorage.getItem('app_aquisicoes_taxonomy');
+    return saved ? JSON.parse(saved) : INITIAL_TAXONOMY_GROUPS;
+  });
+
+  // Atualização reativa de dados de aquisições quando o usuário altera no módulo
+  useEffect(() => {
+    const syncAcq = () => {
+      try {
+        const savedL = localStorage.getItem('app_aquisicoes_lists');
+        if (savedL) setAcqLists(JSON.parse(savedL));
+        const savedI = localStorage.getItem('app_aquisicoes_items');
+        if (savedI) setAcqItems(JSON.parse(savedI));
+        const savedT = localStorage.getItem('app_aquisicoes_taxonomy');
+        if (savedT) setAcqTaxonomyGroups(JSON.parse(savedT));
+      } catch (err) {
+        console.warn('Erro ao sincronizar dados de aquisições:', err);
+      }
+    };
+    window.addEventListener('storage', syncAcq);
+    return () => window.removeEventListener('storage', syncAcq);
+  }, []);
+
   const [dismissedSpaceNotifIds, setDismissedSpaceNotifIds] = useState<string[]>(
     () => {
       try {
@@ -702,6 +759,155 @@ export default function App() {
     }
   };
 
+  const handleDeleteCategory = async (catId: string) => {
+    if (!currentUser) return;
+    if (currentUser.isDemo) {
+      setCategories((prev) => prev.filter((c) => c.id !== catId));
+      showToast('Categoria removida com sucesso.');
+      return;
+    }
+    try {
+      await deleteDoc(doc(db, 'categories', catId));
+      showToast('Categoria removida do Firestore.');
+    } catch (e) {
+      handleFirestoreError(e, OperationType.DELETE, `categories/${catId}`);
+      setCategories((prev) => prev.filter((c) => c.id !== catId));
+      showToast('Categoria removida localmente.');
+    }
+  };
+
+  const handleUpdateUserName = async (newName: string) => {
+    if (!currentUser) return;
+    const trimmed = newName.trim();
+    if (!trimmed) return;
+    setCurrentUser((prev) => (prev ? { ...prev, name: trimmed } : null));
+    if (!currentUser.isDemo && auth.currentUser) {
+      try {
+        await updateDoc(doc(db, 'users', currentUser.uid), {
+          displayName: trimmed,
+          name: trimmed,
+        });
+      } catch (err) {
+        console.warn('Could not persist updated name to Firestore:', err);
+      }
+    }
+    showToast('Nome atualizado com sucesso!');
+  };
+
+  const handleAddTaxonomyGroup = (
+    name: string,
+    code: string,
+    description: string
+  ) => {
+    const newGrp: TaxonomyGroup = {
+      id: `grp_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      name: name.trim(),
+      code: code.trim().toUpperCase(),
+      description: description.trim(),
+      categories: [
+        {
+          id: `cat_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+          groupId: '',
+          name: 'Geral',
+        },
+      ],
+    };
+    newGrp.categories[0].groupId = newGrp.id;
+    setAcqTaxonomyGroups((prev) => {
+      const updated = [newGrp, ...prev];
+      localStorage.setItem('app_aquisicoes_taxonomy', JSON.stringify(updated));
+      return updated;
+    });
+    saveTaxonomyGroupToFirestore(newGrp);
+  };
+
+  const handleUpdateTaxonomyGroup = (
+    id: string,
+    name: string,
+    description: string
+  ) => {
+    setAcqTaxonomyGroups((prev) => {
+      const updated = prev.map((g) =>
+        g.id === id ? { ...g, name, description } : g
+      );
+      localStorage.setItem('app_aquisicoes_taxonomy', JSON.stringify(updated));
+      const found = updated.find((g) => g.id === id);
+      if (found) saveTaxonomyGroupToFirestore(found);
+      return updated;
+    });
+  };
+
+  const handleDeleteTaxonomyGroup = (id: string) => {
+    setAcqTaxonomyGroups((prev) => {
+      const updated = prev.filter((g) => g.id !== id);
+      localStorage.setItem('app_aquisicoes_taxonomy', JSON.stringify(updated));
+      return updated;
+    });
+    deleteTaxonomyGroupFromFirestore(id);
+  };
+
+  const handleAddTaxonomyCategory = (
+    groupId: string,
+    categoryName: string
+  ) => {
+    setAcqTaxonomyGroups((prev) => {
+      const updated = prev.map((g) => {
+        if (g.id !== groupId) return g;
+        const newCat = {
+          id: `cat_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+          groupId,
+          name: categoryName.trim(),
+        };
+        const next = { ...g, categories: [...g.categories, newCat] };
+        saveTaxonomyGroupToFirestore(next);
+        return next;
+      });
+      localStorage.setItem('app_aquisicoes_taxonomy', JSON.stringify(updated));
+      return updated;
+    });
+  };
+
+  const handleUpdateTaxonomyCategory = (
+    groupId: string,
+    categoryId: string,
+    categoryName: string
+  ) => {
+    setAcqTaxonomyGroups((prev) => {
+      const updated = prev.map((g) => {
+        if (g.id !== groupId) return g;
+        const next = {
+          ...g,
+          categories: g.categories.map((c) =>
+            c.id === categoryId ? { ...c, name: categoryName } : c
+          ),
+        };
+        saveTaxonomyGroupToFirestore(next);
+        return next;
+      });
+      localStorage.setItem('app_aquisicoes_taxonomy', JSON.stringify(updated));
+      return updated;
+    });
+  };
+
+  const handleDeleteTaxonomyCategory = (
+    groupId: string,
+    categoryId: string
+  ) => {
+    setAcqTaxonomyGroups((prev) => {
+      const updated = prev.map((g) => {
+        if (g.id !== groupId) return g;
+        const next = {
+          ...g,
+          categories: g.categories.filter((c) => c.id !== categoryId),
+        };
+        saveTaxonomyGroupToFirestore(next);
+        return next;
+      });
+      localStorage.setItem('app_aquisicoes_taxonomy', JSON.stringify(updated));
+      return updated;
+    });
+  };
+
   const handleSaveTransactionSeries = async (
     series: Omit<Transaction, 'id'>[],
     editingTransaction: Transaction | null,
@@ -935,16 +1141,44 @@ export default function App() {
       id,
       ownerId: currentUser.uid,
       ownerEmail: currentUser.email,
+      enabledModules: spData.enabledModules || ['finance'],
+      monthlyBudget: spData.monthlyBudget || 0,
     };
+
+    // Se o espaço incluir Aquisições, inicializar lista padrão se ainda não existir
+    if (newSp.enabledModules?.includes('acquisitions')) {
+      try {
+        const storedLists = localStorage.getItem('app_aquisicoes_lists');
+        const currentLists = storedLists ? JSON.parse(storedLists) : [];
+        const hasLists = currentLists.some((l: any) => l.workspaceId === id);
+        if (!hasLists) {
+          const defaultList = {
+            id: `list_${id}_default`,
+            workspaceId: id,
+            name: 'Compras do Mês',
+            type: 'recorrente',
+            description: `Lista principal de compras recorrentes para o espaço ${spData.name}`,
+            acceptedMemberEmails: spData.participantEmails || [currentUser.email.toLowerCase()],
+            createdAt: new Date().toISOString(),
+          };
+          localStorage.setItem('app_aquisicoes_lists', JSON.stringify([...currentLists, defaultList]));
+        }
+      } catch {
+        // ignore
+      }
+    }
 
     if (currentUser.isDemo) {
       setSpaces((prev) => [...prev, newSp]);
+      showToast(`Espaço "${spData.name}" criado com sucesso!`);
       return;
     }
 
     try {
       await setDoc(doc(db, 'spaces', id), {
         ...spData,
+        enabledModules: spData.enabledModules || ['finance'],
+        monthlyBudget: spData.monthlyBudget || 0,
         ownerId: currentUser.uid,
         ownerEmail: currentUser.email,
         createdAt: serverTimestamp(),
@@ -952,6 +1186,7 @@ export default function App() {
       showToast(`Espaço "${spData.name}" criado no Firestore!`);
     } catch (e) {
       handleFirestoreError(e, OperationType.CREATE, `spaces/${id}`);
+      setSpaces((prev) => [...prev, newSp]);
     }
   };
 
@@ -960,6 +1195,29 @@ export default function App() {
     spData: Omit<Space, 'id' | 'ownerId' | 'ownerEmail'>
   ) => {
     if (!currentUser) return;
+
+    // Se passou a incluir Aquisições, garantir lista padrão
+    if (spData.enabledModules?.includes('acquisitions')) {
+      try {
+        const storedLists = localStorage.getItem('app_aquisicoes_lists');
+        const currentLists = storedLists ? JSON.parse(storedLists) : [];
+        const hasLists = currentLists.some((l: any) => l.workspaceId === spaceId);
+        if (!hasLists) {
+          const defaultList = {
+            id: `list_${spaceId}_default`,
+            workspaceId: spaceId,
+            name: 'Compras do Mês',
+            type: 'recorrente',
+            description: `Lista principal de compras para o espaço ${spData.name}`,
+            acceptedMemberEmails: spData.participantEmails || [currentUser.email.toLowerCase()],
+            createdAt: new Date().toISOString(),
+          };
+          localStorage.setItem('app_aquisicoes_lists', JSON.stringify([...currentLists, defaultList]));
+        }
+      } catch {
+        // ignore
+      }
+    }
 
     if (currentUser.isDemo) {
       setSpaces((prev) =>
@@ -985,6 +1243,8 @@ export default function App() {
         color: spData.color,
         participantEmails: spData.participantEmails,
         participants: spData.participants,
+        enabledModules: spData.enabledModules || ['finance'],
+        monthlyBudget: spData.monthlyBudget || 0,
       });
 
       const relatedTxs = transactions.filter(
@@ -1006,6 +1266,9 @@ export default function App() {
       showToast(`Espaço "${spData.name}" atualizado no Firestore!`);
     } catch (e) {
       handleFirestoreError(e, OperationType.UPDATE, `spaces/${spaceId}`);
+      setSpaces((prev) =>
+        prev.map((s) => (s.id === spaceId ? { ...s, ...spData } : s))
+      );
     }
   };
 
@@ -1672,12 +1935,6 @@ export default function App() {
     count?: number;
   }[] = [
     {
-      id: 'dashboard',
-      label: 'Painel',
-      shortLabel: 'Painel',
-      icon: 'ph-chart-pie-slice',
-    },
-    {
       id: 'accounts',
       label: 'Contas & Cartões',
       shortLabel: 'Contas',
@@ -1697,7 +1954,7 @@ export default function App() {
     },
     {
       id: 'acquisitions',
-      label: 'Aquisições',
+      label: 'Listas',
       shortLabel: 'Listas',
       icon: 'ph-shopping-cart',
     },
@@ -1720,10 +1977,10 @@ export default function App() {
             - Direita: Botão exclusivo da Central Admin (separado do menu comum) + Novo Lançamento + Sair */}
         <header className="bg-slate-800/95 border-b border-slate-700/80 px-3.5 sm:px-6 lg:px-8 py-2.5 sm:py-3 sticky top-0 z-20 backdrop-blur-md">
           <div className="max-w-7xl mx-auto flex flex-col gap-2.5">
-            {/* Linha Principal com Grid de 3 colunas no Desktop (lg:grid-cols-[1fr_auto_1fr]) para manter o menu centralizado */}
-            <div className="flex items-center justify-between lg:grid lg:grid-cols-[1fr_auto_1fr] gap-2 sm:gap-4 w-full">
+            {/* Linha Principal com 2 zonas: Esquerda (Logo + Alternador de Mês) e Direita (Admin + Perfil) */}
+            <div className="flex items-center justify-between gap-2 sm:gap-4 w-full">
               {/* Zona 1 (Esquerda): Logo + Alternador de Mês */}
-              <div className="flex items-center gap-2 sm:gap-3 min-w-0 justify-self-start">
+              <div className="flex items-center gap-2 sm:gap-3 min-w-0">
                 <button
                   type="button"
                   onClick={() => setActiveTab('dashboard')}
@@ -1781,49 +2038,8 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Zona 2 (Centro - Desktop): Dock de Navegação Principal perfeitamente alinhado ao centro */}
-              <nav
-                aria-label="Navegação Principal"
-                className="hidden md:flex items-center justify-center gap-1 bg-slate-900/95 border border-slate-700/80 p-1.5 rounded-2xl justify-self-center shadow-inner"
-              >
-                {navItems.map((item) => {
-                  const isActive = activeTab === item.id;
-                  return (
-                    <button
-                      key={item.id}
-                      type="button"
-                      onClick={() => setActiveTab(item.id)}
-                      className={`px-3 lg:px-3.5 py-2 rounded-xl text-xs font-semibold transition-all flex items-center gap-2 whitespace-nowrap cursor-pointer ${
-                        isActive
-                          ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/25'
-                          : 'text-slate-400 hover:text-slate-100 hover:bg-slate-800'
-                      }`}
-                    >
-                      <i
-                        className={`${
-                          isActive ? 'ph-fill' : 'ph'
-                        } ${item.icon} text-base shrink-0`}
-                      ></i>
-                      <span className="hidden xl:inline">{item.label}</span>
-                      <span className="xl:hidden">{item.shortLabel}</span>
-                      {typeof item.count === 'number' && item.count > 0 && (
-                        <span
-                          className={`px-1.5 py-0.2 rounded-full text-[10px] font-mono font-bold ${
-                            isActive
-                              ? 'bg-white/20 text-white'
-                              : 'bg-amber-500/20 text-amber-300'
-                          }`}
-                        >
-                          {item.count}
-                        </span>
-                      )}
-                    </button>
-                  );
-                })}
-              </nav>
-
-              {/* Zona 3 (Direita): Botão Separado de Admin + Novo Lançamento + Sair */}
-              <div className="flex items-center justify-end gap-2 shrink-0 justify-self-end">
+              {/* Zona 2 (Direita): Perfil do Usuário com Menu de Configurações */}
+              <div className="flex items-center justify-end gap-2 shrink-0">
                 {userIsAdmin && (
                   <button
                     type="button"
@@ -1851,32 +2067,141 @@ export default function App() {
                   </button>
                 )}
 
-                <button
-                  type="button"
-                  onClick={() => {
-                    setEditingTx(null);
-                    setPresetAccountId(undefined);
-                    setPresetSpaceId(undefined);
-                    setPresetDescription(undefined);
-                    setPresetAmount(undefined);
-                    setIsTxModalOpen(true);
-                  }}
-                  className="px-3.5 sm:px-4 py-2 sm:py-2.5 rounded-2xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold shadow-lg shadow-indigo-600/25 flex items-center gap-1.5 sm:gap-2 cursor-pointer whitespace-nowrap active:scale-95 transition-all"
-                >
-                  <i className="ph-bold ph-plus text-sm"></i>
-                  <span className="sm:hidden">Lançar</span>
-                  <span className="hidden sm:inline">Novo Lançamento</span>
-                </button>
+                {/* Menu de Perfil e Configurações */}
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setUserDropdownOpen(!userDropdownOpen)}
+                    aria-label="Abrir menu do perfil e configurações"
+                    className="flex items-center gap-2 p-1.5 sm:px-3 sm:py-1.5 rounded-2xl bg-slate-900 hover:bg-slate-800 border border-slate-700/80 hover:border-indigo-500/50 text-slate-200 transition-all cursor-pointer group"
+                  >
+                    <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-xl bg-gradient-to-br from-indigo-500 to-indigo-700 text-white font-bold text-xs flex items-center justify-center shrink-0 shadow-sm">
+                      {currentUser.name
+                        ? currentUser.name
+                            .split(' ')
+                            .map((p) => p[0])
+                            .slice(0, 2)
+                            .join('')
+                            .toUpperCase()
+                        : 'U'}
+                    </div>
+                    <div className="hidden sm:block text-left min-w-0 max-w-[120px] lg:max-w-[150px]">
+                      <span className="text-xs font-bold text-white block truncate leading-tight">
+                        {currentUser.name || 'Usuário'}
+                      </span>
+                      <span className="text-[10px] text-slate-400 block truncate leading-tight">
+                        {userIsAdmin ? 'Administrador' : 'Membro'}
+                      </span>
+                    </div>
+                    <i
+                      className={`ph-bold ph-caret-down text-xs text-slate-400 group-hover:text-indigo-400 transition-transform ${
+                        userDropdownOpen ? 'rotate-180' : ''
+                      }`}
+                    ></i>
+                  </button>
 
-                <button
-                  type="button"
-                  onClick={handleLogout}
-                  aria-label="Sair da conta"
-                  title="Sair da conta"
-                  className="w-9 h-9 sm:w-10 sm:h-10 rounded-2xl bg-slate-900 hover:bg-rose-500/15 border border-slate-700/80 hover:border-rose-500/40 text-slate-400 hover:text-rose-300 flex items-center justify-center transition-colors cursor-pointer shrink-0"
-                >
-                  <i className="ph-bold ph-sign-out text-base"></i>
-                </button>
+                  {/* Dropdown Menu */}
+                  {userDropdownOpen && (
+                    <>
+                      <div
+                        className="fixed inset-0 z-30"
+                        onClick={() => setUserDropdownOpen(false)}
+                      />
+                      <div className="absolute right-0 mt-2 w-64 bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl z-40 py-2 overflow-hidden animate-in fade-in slide-in-from-top-2 duration-150">
+                        {/* Header do Menu */}
+                        <div className="px-4 py-2.5 border-b border-slate-800">
+                          <p className="text-xs font-bold text-white truncate">
+                            {currentUser.name}
+                          </p>
+                          <p className="text-[11px] text-slate-400 truncate">
+                            {currentUser.email}
+                          </p>
+                          <div className="mt-1.5 flex items-center gap-1.5">
+                            <span className="px-2 py-0.5 rounded-md bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 text-[10px] font-bold">
+                              {userIsAdmin ? 'Administrador' : 'Membro'}
+                            </span>
+                            {currentUser.isDemo && (
+                              <span className="px-2 py-0.5 rounded-md bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[10px] font-bold">
+                                Demonstração
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Itens do Menu */}
+                        <div className="p-1 space-y-0.5">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setUserDropdownOpen(false);
+                              setSettingsModalTab('account');
+                              setIsSettingsModalOpen(true);
+                            }}
+                            className="w-full px-3 py-2 rounded-xl text-left text-xs font-semibold text-slate-300 hover:text-white hover:bg-slate-800 flex items-center gap-2.5 cursor-pointer transition-colors"
+                          >
+                            <i className="ph-bold ph-user-circle text-base text-indigo-400"></i>
+                            <span>Minha Conta</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setUserDropdownOpen(false);
+                              setSettingsModalTab('finance_categories');
+                              setIsSettingsModalOpen(true);
+                            }}
+                            className="w-full px-3 py-2 rounded-xl text-left text-xs font-semibold text-slate-300 hover:text-white hover:bg-slate-800 flex items-center gap-2.5 cursor-pointer transition-colors"
+                          >
+                            <i className="ph-bold ph-tag text-base text-emerald-400"></i>
+                            <span>Categorias de Finanças</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setUserDropdownOpen(false);
+                              setSettingsModalTab('product_categories');
+                              setIsSettingsModalOpen(true);
+                            }}
+                            className="w-full px-3 py-2 rounded-xl text-left text-xs font-semibold text-slate-300 hover:text-white hover:bg-slate-800 flex items-center gap-2.5 cursor-pointer transition-colors"
+                          >
+                            <i className="ph-bold ph-squares-four text-base text-amber-400"></i>
+                            <span>Categorias de Produtos</span>
+                          </button>
+
+                          {userIsAdmin && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setUserDropdownOpen(false);
+                                setActiveTab('admin');
+                              }}
+                              className="w-full px-3 py-2 rounded-xl text-left text-xs font-semibold text-amber-300 hover:text-amber-200 hover:bg-amber-500/10 flex items-center gap-2.5 cursor-pointer transition-colors"
+                            >
+                              <i className="ph-bold ph-shield-check text-base text-amber-400"></i>
+                              <span>Painel Administrativo</span>
+                            </button>
+                          )}
+                        </div>
+
+                        {/* Divisor & Sair */}
+                        <div className="pt-1 mt-1 border-t border-slate-800 p-1">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setUserDropdownOpen(false);
+                              handleLogout();
+                            }}
+                            className="w-full px-3 py-2 rounded-xl text-left text-xs font-semibold text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 flex items-center gap-2.5 cursor-pointer transition-colors"
+                          >
+                            <i className="ph-bold ph-sign-out text-base"></i>
+                            <span>Sair da Conta</span>
+                          </button>
+                        </div>
+                      </div>
+                    </>
+                  )}
+                </div>
               </div>
             </div>
 
@@ -1976,8 +2301,8 @@ export default function App() {
           </div>
         )}
 
-        {/* Conteúdo Principal Dinâmico (pb-28 no mobile garante folga extra para o menu inferior nunca sobrepor conteúdos) */}
-        <main className="flex-1 p-3.5 sm:p-6 md:p-8 pb-28 md:pb-8 max-w-7xl w-full mx-auto min-w-0">
+        {/* Conteúdo Principal Dinâmico (pb-32 garante folga uniforme para o dock flutuante e o botão de ação no rodapé) */}
+        <main className="flex-1 p-3.5 sm:p-6 md:p-8 pb-32 max-w-7xl w-full mx-auto min-w-0">
           {activeTab === 'admin' && userIsAdmin && (
             <AdminDashboardView
               users={adminUsers}
@@ -2015,6 +2340,12 @@ export default function App() {
                 setActiveLedgerSpace(space);
               }}
               onSelectTransaction={(tx) => setDetailTx(tx)}
+              acquisitionLists={acqLists}
+              acquisitionItems={acqItems}
+              onNavigateToLists={(spaceId) => {
+                if (spaceId) setInspectAcqWorkspaceId(spaceId);
+                setActiveTab('acquisitions');
+              }}
             />
           )}
 
@@ -2084,6 +2415,12 @@ export default function App() {
               }}
               onSelectTransaction={(tx) => setDetailTx(tx)}
               onNotifyToast={showToast}
+              onNavigateToAcquisitions={(spaceId) => {
+                setInspectAcqWorkspaceId(spaceId);
+                setActiveTab('acquisitions');
+              }}
+              initialCreateSpacePreset={createSpacePreset}
+              onClearInitialCreatePreset={() => setCreateSpacePreset(null)}
             />
           )}
 
@@ -2093,6 +2430,12 @@ export default function App() {
               onLogout={handleLogout}
               initialWorkspaceIdToOpen={inspectAcqWorkspaceId}
               onClearInitialWorkspace={() => setInspectAcqWorkspaceId(null)}
+              unifiedSpaces={spaces}
+              onOpenManageSpaces={() => setActiveTab('spaces')}
+              onOpenCreateSpace={(preset) => {
+                setCreateSpacePreset(preset);
+                setActiveTab('spaces');
+              }}
               onCreateExpenseFromPurchase={(payload) => {
                 setEditingTx(null);
                 setPresetAccountId(undefined);
@@ -2125,42 +2468,47 @@ export default function App() {
           )}
         </main>
 
-        {/* Barra de Navegação Inferior Fixa Exclusiva para Celular (Com suporte a safe-area para não sobrepor) */}
+        {/* Dock Flutuante Inferior de Navegação (Centralizado no Rodapé na mesma linha do botão FAB) */}
         <nav
-          aria-label="Navegação Rápida Mobile"
-          className="md:hidden fixed bottom-0 inset-x-0 z-30 bg-slate-900/95 border-t border-slate-700/90 backdrop-blur-md px-1.5 pt-1.5 pb-[max(0.5rem,env(safe-area-inset-bottom))] flex items-center justify-around shadow-2xl"
+          aria-label="Navegação Principal Flutuante"
+          className="fixed bottom-6 inset-x-0 z-30 pointer-events-none flex justify-center px-4"
         >
-          {navItems.map((item) => {
-            const isActive = activeTab === item.id;
-            return (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => setActiveTab(item.id)}
-                className={`relative flex-1 min-w-0 py-1.5 px-1 rounded-xl flex flex-col items-center justify-center gap-0.5 transition-colors cursor-pointer ${
-                  isActive
-                    ? 'text-indigo-400 font-bold bg-indigo-500/10'
-                    : 'text-slate-400 hover:text-slate-200'
-                }`}
-              >
-                <div className="relative flex items-center justify-center">
+          <div className="pointer-events-auto bg-slate-900/95 border border-slate-700/80 backdrop-blur-md p-1.5 sm:p-2 rounded-2xl shadow-2xl flex items-center gap-1 sm:gap-2 max-w-[calc(100vw-5rem)] sm:max-w-none overflow-x-auto">
+            {navItems.map((item) => {
+              const isActive = activeTab === item.id;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => setActiveTab(item.id)}
+                  className={`relative px-3 sm:px-3.5 py-2 rounded-xl text-xs font-semibold transition-all flex items-center gap-2 whitespace-nowrap cursor-pointer ${
+                    isActive
+                      ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/25'
+                      : 'text-slate-400 hover:text-slate-100 hover:bg-slate-800'
+                  }`}
+                >
                   <i
                     className={`${
                       isActive ? 'ph-fill' : 'ph'
-                    } ${item.icon} text-lg`}
+                    } ${item.icon} text-base shrink-0`}
                   ></i>
+                  <span className="hidden sm:inline">{item.label}</span>
+                  <span className="sm:hidden">{item.shortLabel}</span>
                   {typeof item.count === 'number' && item.count > 0 && (
-                    <span className="absolute -top-1.5 -right-3 px-1 min-w-[16px] h-4 rounded-full bg-amber-500 text-slate-950 font-mono text-[10px] font-extrabold flex items-center justify-center">
+                    <span
+                      className={`px-1.5 py-0.2 rounded-full text-[10px] font-mono font-bold ${
+                        isActive
+                          ? 'bg-white/20 text-white'
+                          : 'bg-amber-500/20 text-amber-300'
+                      }`}
+                    >
                       {item.count}
                     </span>
                   )}
-                </div>
-                <span className="text-[10px] leading-tight truncate max-w-full">
-                  {item.shortLabel}
-                </span>
-              </button>
-            );
-          })}
+                </button>
+              );
+            })}
+          </div>
         </nav>
       </div>
 
@@ -2227,6 +2575,48 @@ export default function App() {
         onSaveSeries={handleSaveTransactionSeries}
         onCreateCategory={handleCreateCategory}
         onNotifyToast={showToast}
+      />
+
+      {/* Modal Unificado de Configurações do Sistema e Minha Conta */}
+      <SettingsModal
+        isOpen={isSettingsModalOpen}
+        onClose={() => setIsSettingsModalOpen(false)}
+        initialTab={settingsModalTab}
+        currentUser={currentUser}
+        userIsAdmin={userIsAdmin}
+        onUpdateUserName={handleUpdateUserName}
+        categories={categories}
+        onCreateCategory={handleCreateCategory}
+        onDeleteCategory={handleDeleteCategory}
+        taxonomyGroups={acqTaxonomyGroups}
+        onAddTaxonomyGroup={handleAddTaxonomyGroup}
+        onUpdateTaxonomyGroup={(groupId, name, _code, description) =>
+          handleUpdateTaxonomyGroup(groupId, name, description)
+        }
+        onDeleteTaxonomyGroup={handleDeleteTaxonomyGroup}
+        onAddTaxonomyCategory={handleAddTaxonomyCategory}
+        onUpdateTaxonomyCategory={handleUpdateTaxonomyCategory}
+        onDeleteTaxonomyCategory={handleDeleteTaxonomyCategory}
+        onNotifyToast={showToast}
+      />
+
+      {/* Botão de Ação Rápida Flutuante (FAB) no Canto Inferior Direito */}
+      <QuickActionFAB
+        onOpenNewTransaction={() => {
+          setEditingTx(null);
+          setPresetAccountId(undefined);
+          setPresetSpaceId(undefined);
+          setPresetDescription(undefined);
+          setPresetAmount(undefined);
+          setIsTxModalOpen(true);
+        }}
+        onOpenNewList={() => {
+          setActiveTab('acquisitions');
+        }}
+        onOpenNewSpace={() => {
+          setCreateSpacePreset('both');
+          setActiveTab('spaces');
+        }}
       />
     </div>
   );

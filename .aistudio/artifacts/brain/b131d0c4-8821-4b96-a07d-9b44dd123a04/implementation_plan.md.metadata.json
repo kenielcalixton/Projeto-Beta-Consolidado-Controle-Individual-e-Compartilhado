@@ -1,6 +1,6 @@
 {
-  "summary":  "Plano de unificação do Meu Painel Financeiro com o Módulo de Listas & Aquisições preservando 100% da base original de Finanças, integrando ao Firebase (teste-beta-fin-e-list) e preparando a conversão de aquisições em despesas.",
-  "updatedAt":  "2026-11-08T12:32:27.890147436Z",
+  "summary":  "Plano de implementação para mover o dock de navegação para o rodapé flutuante centralizado (na mesma linha do botão FAB de mais) e simplificar a inicialização de novos usuários para conter exclusivamente a conta Carteira e nenhum espaço pré-criado.",
+  "updatedAt":  "2026-11-08T21:51:06.631050128Z",
   "requestFeedback":  true,
   "userFacing":  true
 }

@@ -70,6 +70,9 @@ interface SpacesLedgerViewProps {
   ) => void;
   onSelectTransaction: (tx: Transaction) => void;
   onNotifyToast: (msg: string) => void;
+  onNavigateToAcquisitions?: (spaceId: string) => void;
+  initialCreateSpacePreset?: 'finance' | 'acquisitions' | 'both' | null;
+  onClearInitialCreatePreset?: () => void;
 }
 
 export const SpacesLedgerView: React.FC<SpacesLedgerViewProps> = ({
@@ -91,6 +94,9 @@ export const SpacesLedgerView: React.FC<SpacesLedgerViewProps> = ({
   onOpenNewTransactionInSpace,
   onSelectTransaction,
   onNotifyToast,
+  onNavigateToAcquisitions,
+  initialCreateSpacePreset,
+  onClearInitialCreatePreset,
 }) => {
   const [isSpaceModalOpen, setIsSpaceModalOpen] = useState(false);
   const [editingSpace, setEditingSpace] = useState<Space | null>(null);
@@ -101,6 +107,10 @@ export const SpacesLedgerView: React.FC<SpacesLedgerViewProps> = ({
   const [spaceColor, setSpaceColor] = useState('indigo');
   const [inviteEmailsRaw, setInviteEmailsRaw] = useState('');
   const [editingParticipants, setEditingParticipants] = useState<SpaceParticipant[]>([]);
+  const [enabledFinance, setEnabledFinance] = useState(true);
+  const [enabledAcquisitions, setEnabledAcquisitions] = useState(false);
+  const [spaceMonthlyBudget, setSpaceMonthlyBudget] = useState('');
+  const [drawerTab, setDrawerTab] = useState<'ledger' | 'acquisitions'>('ledger');
   const [formError, setFormError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -115,6 +125,30 @@ export const SpacesLedgerView: React.FC<SpacesLedgerViewProps> = ({
   const [serviceId, setServiceId] = useState(existingCfg.serviceId);
   const [templateId, setTemplateId] = useState(existingCfg.templateId);
   const [publicKey, setPublicKey] = useState(existingCfg.publicKey);
+
+  // Auto-ajusta a aba do drawer conforme os módulos do espaço ativo
+  useEffect(() => {
+    if (activeLedgerSpace) {
+      if (
+        activeLedgerSpace.enabledModules?.includes('acquisitions') &&
+        !activeLedgerSpace.enabledModules.includes('finance')
+      ) {
+        setDrawerTab('acquisitions');
+      } else {
+        setDrawerTab('ledger');
+      }
+    }
+  }, [activeLedgerSpace]);
+
+  // Se solicitado via atalho ou navegação externa, abre imediatamente o modal com o preset selecionado
+  useEffect(() => {
+    if (initialCreateSpacePreset) {
+      handleOpenCreateModal(initialCreateSpacePreset);
+      if (onClearInitialCreatePreset) {
+        onClearInitialCreatePreset();
+      }
+    }
+  }, [initialCreateSpacePreset, onClearInitialCreatePreset]);
 
   // Trava a rolagem do body quando a gaveta do Livro-Razão ou qualquer modal está aberto (evita barra de rolagem dupla)
   useEffect(() => {
@@ -139,15 +173,18 @@ export const SpacesLedgerView: React.FC<SpacesLedgerViewProps> = ({
     showEmailJsModal,
   ]);
 
-  const handleOpenCreateModal = () => {
+  const handleOpenCreateModal = (preset: 'finance' | 'acquisitions' | 'both' = 'both') => {
     setEditingSpace(null);
     setFormError(null);
     setSpaceName('');
     setSpaceDesc('');
-    setSpaceIcon('ph-house-line');
-    setSpaceColor('indigo');
+    setSpaceIcon(preset === 'acquisitions' ? 'ph-shopping-cart' : 'ph-house-line');
+    setSpaceColor(preset === 'acquisitions' ? 'amber' : 'indigo');
     setInviteEmailsRaw('');
     setEditingParticipants([]);
+    setEnabledFinance(preset === 'finance' || preset === 'both');
+    setEnabledAcquisitions(preset === 'acquisitions' || preset === 'both');
+    setSpaceMonthlyBudget('');
     setIsSpaceModalOpen(true);
   };
 
@@ -160,6 +197,9 @@ export const SpacesLedgerView: React.FC<SpacesLedgerViewProps> = ({
     setSpaceColor(sp.color || 'indigo');
     setInviteEmailsRaw('');
     setEditingParticipants(sp.participants || []);
+    setEnabledFinance(sp.enabledModules ? sp.enabledModules.includes('finance') : true);
+    setEnabledAcquisitions(sp.enabledModules ? sp.enabledModules.includes('acquisitions') : false);
+    setSpaceMonthlyBudget(sp.monthlyBudget ? String(sp.monthlyBudget) : '');
     setIsSpaceModalOpen(true);
   };
 
@@ -177,6 +217,17 @@ export const SpacesLedgerView: React.FC<SpacesLedgerViewProps> = ({
       setFormError('Informe o nome do espaço compartilhado (ex: Casa, Viagem).');
       return;
     }
+
+    if (!enabledFinance && !enabledAcquisitions) {
+      setFormError('Selecione pelo menos uma finalidade para o espaço (Finanças ou Aquisições).');
+      return;
+    }
+
+    const enabledModules: ('finance' | 'acquisitions')[] = [];
+    if (enabledFinance) enabledModules.push('finance');
+    if (enabledAcquisitions) enabledModules.push('acquisitions');
+
+    const monthlyBudgetNum = enabledAcquisitions ? Number(spaceMonthlyBudget) || 0 : undefined;
 
     const parsedInvites = inviteEmailsRaw
       .split(',')
@@ -222,6 +273,8 @@ export const SpacesLedgerView: React.FC<SpacesLedgerViewProps> = ({
           color: spaceColor,
           participantEmails: finalEmails,
           participants: finalParticipants,
+          enabledModules,
+          monthlyBudget: monthlyBudgetNum,
         });
 
         for (const invEmail of parsedInvites) {
@@ -256,6 +309,8 @@ export const SpacesLedgerView: React.FC<SpacesLedgerViewProps> = ({
           color: spaceColor,
           participantEmails,
           participants,
+          enabledModules,
+          monthlyBudget: monthlyBudgetNum,
         });
 
         for (const invEmail of parsedInvites) {
@@ -357,7 +412,17 @@ export const SpacesLedgerView: React.FC<SpacesLedgerViewProps> = ({
 
           <button
             type="button"
-            onClick={handleOpenCreateModal}
+            onClick={() => handleOpenCreateModal('acquisitions')}
+            className="px-3.5 py-2.5 bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/35 text-amber-300 text-xs font-semibold rounded-xl flex items-center gap-2 cursor-pointer whitespace-nowrap transition-colors"
+            title="Criar um espaço exclusivo para listas de compras e despensa"
+          >
+            <i className="ph-bold ph-shopping-cart text-sm"></i>
+            <span>+ Só para Listas</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => handleOpenCreateModal('both')}
             className="px-4 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-xl shadow-lg shadow-indigo-600/20 flex items-center gap-2 cursor-pointer whitespace-nowrap"
           >
             <i className="ph-bold ph-plus"></i>
@@ -369,6 +434,10 @@ export const SpacesLedgerView: React.FC<SpacesLedgerViewProps> = ({
       {/* Cards de Espaços Compartilhados (Apurados por Mês Selecionado) */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {spaces.map((space) => {
+          const isOnlyAcquisitions = Boolean(
+            space.enabledModules?.includes('acquisitions') &&
+              !space.enabledModules.includes('finance')
+          );
           const spaceTxs = transactions.filter(
             (tx) => tx.spaceId === space.id && tx.invoiceMonth === selectedMonth
           );
@@ -380,18 +449,61 @@ export const SpacesLedgerView: React.FC<SpacesLedgerViewProps> = ({
           return (
             <div
               key={space.id}
-              className="bg-slate-800 border border-slate-700/80 hover:border-indigo-500/40 rounded-3xl p-4 sm:p-6 flex flex-col justify-between transition-all"
+              className={`bg-slate-800 border rounded-3xl p-4 sm:p-6 flex flex-col justify-between transition-all ${
+                isOnlyAcquisitions
+                  ? 'border-amber-500/35 hover:border-amber-500/60'
+                  : 'border-slate-700/80 hover:border-indigo-500/40'
+              }`}
             >
               <div>
                 <div className="flex items-start justify-between gap-3 mb-5">
                   <div className="flex items-center gap-3 min-w-0">
-                    <div className="w-11 h-11 sm:w-12 sm:h-12 rounded-2xl bg-indigo-500/15 border border-indigo-500/30 text-indigo-400 flex items-center justify-center shrink-0">
-                      <i className={`ph-fill ${space.icon || 'ph-users-three'} text-xl sm:text-2xl`}></i>
+                    <div
+                      className={`w-11 h-11 sm:w-12 sm:h-12 rounded-2xl flex items-center justify-center shrink-0 border ${
+                        isOnlyAcquisitions
+                          ? 'bg-amber-500/15 border-amber-500/30 text-amber-400'
+                          : 'bg-indigo-500/15 border-indigo-500/30 text-indigo-400'
+                      }`}
+                    >
+                      <i className={`ph-fill ${space.icon || (isOnlyAcquisitions ? 'ph-shopping-cart' : 'ph-users-three')} text-xl sm:text-2xl`}></i>
                     </div>
                     <div className="min-w-0">
-                      <h3 className="text-base sm:text-lg font-bold text-white truncate">
-                        {space.name}
-                      </h3>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h3 className="text-base sm:text-lg font-bold text-white truncate">
+                          {space.name}
+                        </h3>
+                        {/* Badges de Módulos Qualificados */}
+                        {isOnlyAcquisitions ? (
+                          <span className="px-2 py-0.5 rounded-md bg-amber-500/20 border border-amber-500/40 text-amber-300 text-[10px] font-bold flex items-center gap-1 whitespace-nowrap">
+                            <i className="ph-bold ph-shopping-cart text-[10px]"></i>
+                            <span>Só Listas de Compras</span>
+                            {space.monthlyBudget && space.monthlyBudget > 0 ? (
+                              <span className="font-mono text-[9px] text-amber-200/90 ml-0.5">
+                                ({formatCurrency(space.monthlyBudget)}/mês)
+                              </span>
+                            ) : null}
+                          </span>
+                        ) : (
+                          <>
+                            {(!space.enabledModules || space.enabledModules.includes('finance')) && (
+                              <span className="px-2 py-0.5 rounded-md bg-indigo-500/15 border border-indigo-500/30 text-indigo-300 text-[10px] font-semibold whitespace-nowrap">
+                                Finanças
+                              </span>
+                            )}
+                            {space.enabledModules?.includes('acquisitions') && (
+                              <span className="px-2 py-0.5 rounded-md bg-amber-500/15 border border-amber-500/30 text-amber-300 text-[10px] font-semibold flex items-center gap-1 whitespace-nowrap">
+                                <i className="ph-bold ph-shopping-cart text-[10px]"></i>
+                                <span>Aquisições</span>
+                                {space.monthlyBudget && space.monthlyBudget > 0 ? (
+                                  <span className="font-mono text-[9px] text-amber-200/90 ml-0.5">
+                                    ({formatCurrency(space.monthlyBudget)}/mês)
+                                  </span>
+                                ) : null}
+                              </span>
+                            )}
+                          </>
+                        )}
+                      </div>
                       <p className="text-xs text-slate-400 mt-0.5 line-clamp-2">
                         {space.description}
                       </p>
@@ -431,68 +543,105 @@ export const SpacesLedgerView: React.FC<SpacesLedgerViewProps> = ({
                   </div>
                 </div>
 
-                {/* Resumo Mensal do Espaço (Despesas Negativas, Receitas/Caixa e Cobertura) */}
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 p-3.5 sm:p-4 rounded-2xl bg-slate-900/70 border border-slate-700/60 mb-4">
-                  <div>
-                    <span className="text-[11px] text-slate-400 block">
-                      Despesas ({selectedMonth})
-                    </span>
-                    <span className="text-sm font-bold text-rose-400 font-mono tabular-nums mt-0.5 block">
-                      -{formatCurrency(ledger.totalSharedExpenses)}
-                    </span>
-                    <span className="text-[10px] text-slate-400 font-mono block">
-                      A pagar: {formatCurrency(ledger.pendingExpenses)}
-                    </span>
-                  </div>
+                {isOnlyAcquisitions ? (
+                  <div className="p-4 rounded-2xl bg-slate-900/80 border border-amber-500/25 mb-4">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div className="flex items-center gap-3">
+                        <div className="w-9 h-9 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-400 flex items-center justify-center shrink-0">
+                          <i className="ph-fill ph-shopping-bag text-lg"></i>
+                        </div>
+                        <div>
+                          <span className="text-xs font-bold text-white block">
+                            Espaço Dedicado a Listas de Compras
+                          </span>
+                          <span className="text-[11px] text-slate-400 block">
+                            Gestão de despensa, compras de mercado e metas integradas
+                          </span>
+                        </div>
+                      </div>
 
-                  <div>
-                    <span className="text-[11px] text-slate-400 block">
-                      Aportes / Caixa
-                    </span>
-                    <span className="text-sm font-bold text-emerald-400 font-mono tabular-nums mt-0.5 block">
-                      +{formatCurrency(ledger.totalConfirmedIncome)}
-                    </span>
-                    <span className="text-[10px] text-indigo-300 font-mono block">
-                      Caixa: {formatCurrency(ledger.availableSpaceCash)}
-                    </span>
+                      {space.monthlyBudget && space.monthlyBudget > 0 ? (
+                        <div className="text-left sm:text-right">
+                          <span className="text-[10px] text-slate-400 uppercase font-semibold block">
+                            Teto Orçamentário
+                          </span>
+                          <span className="text-sm font-bold text-amber-300 font-mono">
+                            {formatCurrency(space.monthlyBudget)}/mês
+                          </span>
+                        </div>
+                      ) : (
+                        <span className="text-[11px] text-slate-400 italic">
+                          Sem teto mensal estipulado
+                        </span>
+                      )}
+                    </div>
                   </div>
+                ) : (
+                  /* Resumo Mensal do Espaço (Despesas Negativas, Receitas/Caixa e Cobertura) */
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 p-3.5 sm:p-4 rounded-2xl bg-slate-900/70 border border-slate-700/60 mb-4">
+                    <div>
+                      <span className="text-[11px] text-slate-400 block">
+                        Despesas ({selectedMonth})
+                      </span>
+                      <span className="text-sm font-bold text-rose-400 font-mono tabular-nums mt-0.5 block">
+                        -{formatCurrency(ledger.totalSharedExpenses)}
+                      </span>
+                      <span className="text-[10px] text-slate-400 font-mono block">
+                        A pagar: {formatCurrency(ledger.pendingExpenses)}
+                      </span>
+                    </div>
 
-                  <div>
-                    <span className="text-[11px] text-slate-400 block">
-                      Sua Cota ({mySummary ? `${mySummary.responsibilityPercent.toFixed(0)}%` : '0%'})
-                    </span>
-                    <span className="text-sm font-bold text-slate-200 font-mono tabular-nums mt-0.5 block">
-                      {formatCurrency(mySummary?.totalResponsibility || 0)}
-                    </span>
-                    <span className="text-[10px] text-indigo-300 font-mono block">
-                      Você cobriu: {(mySummary?.coveragePercent || 0).toFixed(0)}%
-                    </span>
-                  </div>
+                    <div>
+                      <span className="text-[11px] text-slate-400 block">
+                        Aportes / Caixa
+                      </span>
+                      <span className="text-sm font-bold text-emerald-400 font-mono tabular-nums mt-0.5 block">
+                        +{formatCurrency(ledger.totalConfirmedIncome)}
+                      </span>
+                      <span className="text-[10px] text-indigo-300 font-mono block">
+                        Caixa: {formatCurrency(ledger.availableSpaceCash)}
+                      </span>
+                    </div>
 
-                  <div className="sm:text-right">
-                    <span className="text-[11px] text-slate-400 block">
-                      Seu Saldo no Mês
-                    </span>
-                    <span
-                      className={`text-sm font-bold font-mono tabular-nums mt-0.5 block ${
-                        (mySummary?.netBalance || 0) >= 0
-                          ? 'text-emerald-400'
-                          : 'text-rose-400'
-                      }`}
-                    >
-                      {(mySummary?.netBalance || 0) >= 0 ? 'A Receber ' : 'A Pagar '}
-                      {formatCurrency(Math.abs(mySummary?.netBalance || 0))}
-                    </span>
-                    <span className="text-[10px] text-slate-400 font-mono block">
-                      Pago/Aportado: {formatCurrency(mySummary?.totalPaid || 0)}
-                    </span>
+                    <div>
+                      <span className="text-[11px] text-slate-400 block">
+                        Sua Cota ({mySummary ? `${mySummary.responsibilityPercent.toFixed(0)}%` : '0%'})
+                      </span>
+                      <span className="text-sm font-bold text-slate-200 font-mono tabular-nums mt-0.5 block">
+                        {formatCurrency(mySummary?.totalResponsibility || 0)}
+                      </span>
+                      <span className="text-[10px] text-indigo-300 font-mono block">
+                        Você cobriu: {(mySummary?.coveragePercent || 0).toFixed(0)}%
+                      </span>
+                    </div>
+
+                    <div className="sm:text-right">
+                      <span className="text-[11px] text-slate-400 block">
+                        Seu Saldo no Mês
+                      </span>
+                      <span
+                        className={`text-sm font-bold font-mono tabular-nums mt-0.5 block ${
+                          (mySummary?.netBalance || 0) >= 0
+                            ? 'text-emerald-400'
+                            : 'text-rose-400'
+                        }`}
+                      >
+                        {(mySummary?.netBalance || 0) >= 0 ? 'A Receber ' : 'A Pagar '}
+                        {formatCurrency(Math.abs(mySummary?.netBalance || 0))}
+                      </span>
+                      <span className="text-[10px] text-slate-400 font-mono block">
+                        Pago/Aportado: {formatCurrency(mySummary?.totalPaid || 0)}
+                      </span>
+                    </div>
                   </div>
-                </div>
+                )}
 
                 {/* Participantes e % Coberto no Mês */}
                 <div className="mb-5">
                   <span className="text-xs font-semibold text-slate-400 block mb-2">
-                    Cobertura dos Participantes no Mês ({space.participants.length})
+                    {isOnlyAcquisitions
+                      ? `Membros Participantes das Listas (${space.participants.length})`
+                      : `Cobertura dos Participantes no Mês (${space.participants.length})`}
                   </span>
                   <div className="flex flex-wrap items-center gap-2 text-xs text-slate-300">
                     {ledger.summaries.map((sum) => {
@@ -511,9 +660,11 @@ export const SpacesLedgerView: React.FC<SpacesLedgerViewProps> = ({
                               Pendente
                             </span>
                           )}
-                          <span className="text-[11px] font-mono text-indigo-300">
-                            {sum.coveragePercent.toFixed(0)}% coberto
-                          </span>
+                          {!isOnlyAcquisitions && (
+                            <span className="text-[11px] font-mono text-indigo-300">
+                              {sum.coveragePercent.toFixed(0)}% coberto
+                            </span>
+                          )}
                         </div>
                       );
                     })}
@@ -522,37 +673,69 @@ export const SpacesLedgerView: React.FC<SpacesLedgerViewProps> = ({
               </div>
 
               <div className="pt-4 border-t border-slate-700/60 flex flex-wrap items-center justify-between gap-2.5">
-                <div className="flex flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    aria-label={`Nova Despesa em ${space.name}`}
-                    onClick={() => onOpenNewTransactionInSpace(space.id, 'expense')}
-                    className="px-3 py-1.5 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/30 text-rose-300 text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition-colors"
-                  >
-                    <i className="ph-bold ph-minus-circle"></i>
-                    <span>+ Despesa</span>
-                  </button>
+                {isOnlyAcquisitions ? (
+                  <div className="flex items-center gap-2 text-xs text-amber-400/90 font-medium">
+                    <i className="ph-fill ph-check-circle text-amber-400"></i>
+                    <span>Espaço dedicado para Listas</span>
+                  </div>
+                ) : (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      aria-label={`Nova Despesa em ${space.name}`}
+                      onClick={() => onOpenNewTransactionInSpace(space.id, 'expense')}
+                      className="px-3 py-1.5 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/30 text-rose-300 text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition-colors"
+                    >
+                      <i className="ph-bold ph-minus-circle"></i>
+                      <span>+ Despesa</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      aria-label={`Enviar Receita para ${space.name}`}
+                      onClick={() => onOpenNewTransactionInSpace(space.id, 'income')}
+                      className="px-3 py-1.5 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-300 text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition-colors"
+                    >
+                      <i className="ph-bold ph-hand-coins"></i>
+                      <span>+ Enviar Receita</span>
+                    </button>
+                  </div>
+                )}
+
+                <div className="flex items-center gap-2">
+                  {space.enabledModules?.includes('acquisitions') && (
+                    <button
+                      type="button"
+                      aria-label={`Abrir Listas de Compras de ${space.name}`}
+                      onClick={() => {
+                        if (onNavigateToAcquisitions) {
+                          onNavigateToAcquisitions(space.id);
+                        } else {
+                          onSetActiveLedgerSpace(space);
+                          setDrawerTab('acquisitions');
+                        }
+                      }}
+                      className="px-3.5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-colors shadow-md shadow-amber-500/20"
+                      title="Abrir quadro Kanban e listas deste espaço"
+                    >
+                      <i className="ph-bold ph-arrow-square-out text-sm"></i>
+                      <span>Abrir Listas & Kanban</span>
+                    </button>
+                  )}
 
                   <button
                     type="button"
-                    aria-label={`Enviar Receita para ${space.name}`}
-                    onClick={() => onOpenNewTransactionInSpace(space.id, 'income')}
-                    className="px-3 py-1.5 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-300 text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition-colors"
+                    aria-label={`Abrir Detalhes de ${space.name}`}
+                    onClick={() => {
+                      onSetActiveLedgerSpace(space);
+                      setDrawerTab(isOnlyAcquisitions ? 'acquisitions' : 'ledger');
+                    }}
+                    className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-semibold flex items-center gap-2 cursor-pointer transition-colors"
                   >
-                    <i className="ph-bold ph-hand-coins"></i>
-                    <span>+ Enviar Receita</span>
+                    <i className={isOnlyAcquisitions ? 'ph-fill ph-shopping-cart' : 'ph-fill ph-scales'}></i>
+                    <span>{isOnlyAcquisitions ? 'Ver Espaço' : 'Abrir Espaço'}</span>
                   </button>
                 </div>
-
-                <button
-                  type="button"
-                  aria-label={`Abrir Gaveta de Auditoria de ${space.name}`}
-                  onClick={() => onSetActiveLedgerSpace(space)}
-                  className="px-4 py-2 rounded-xl bg-indigo-600/25 hover:bg-indigo-600/35 border border-indigo-500/40 text-indigo-200 text-xs font-semibold flex items-center gap-2 cursor-pointer transition-colors"
-                >
-                  <i className="ph-fill ph-scales"></i>
-                  <span>Abrir Gaveta de Auditoria (Livro-Razão)</span>
-                </button>
               </div>
             </div>
           );
@@ -610,67 +793,107 @@ export const SpacesLedgerView: React.FC<SpacesLedgerViewProps> = ({
                 </div>
               </div>
 
-              {/* Seletor de Mês + Ações Rápidas dentro do próprio Livro-Razão */}
-              <div className="flex flex-wrap items-center justify-between gap-2 bg-slate-800/90 border border-slate-700/80 px-3 py-2 rounded-2xl">
-                <div className="flex items-center gap-1.5">
-                  {onChangeMonth && (
+              {/* Seletor de Abas no Topo do Drawer (quando o espaço possui aquisições ou ambos os módulos) */}
+              {activeLedgerSpace.enabledModules?.includes('acquisitions') && (
+                <div className="flex items-center gap-1.5 p-1 rounded-2xl bg-slate-950 border border-slate-700/80">
+                  {(!activeLedgerSpace.enabledModules || activeLedgerSpace.enabledModules.includes('finance')) && (
                     <button
                       type="button"
-                      onClick={() =>
-                        onChangeMonth(addMonthsToYearMonth(selectedMonth, -1))
-                      }
-                      aria-label="Mês anterior no Livro-Razão"
-                      className="w-7 h-7 rounded-xl bg-slate-900 hover:bg-slate-700 text-slate-200 flex items-center justify-center cursor-pointer"
+                      onClick={() => setDrawerTab('ledger')}
+                      className={`flex-1 py-2 px-3 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 transition-colors cursor-pointer ${
+                        drawerTab === 'ledger'
+                          ? 'bg-indigo-600 text-white shadow-md'
+                          : 'text-slate-400 hover:text-white hover:bg-slate-800'
+                      }`}
                     >
-                      <i className="ph-bold ph-caret-left text-xs"></i>
+                      <i className="ph-fill ph-scales text-sm"></i>
+                      <span>Livro-Razão Financeiro</span>
                     </button>
                   )}
-                  <span className="px-2.5 py-1 rounded-xl bg-slate-900 border border-slate-700 text-xs font-bold text-emerald-300 font-mono whitespace-nowrap">
-                    {formatMonthLabel(selectedMonth)} ({selectedMonth})
-                  </span>
-                  {onChangeMonth && (
-                    <button
-                      type="button"
-                      onClick={() =>
-                        onChangeMonth(addMonthsToYearMonth(selectedMonth, 1))
-                      }
-                      aria-label="Próximo mês no Livro-Razão"
-                      className="w-7 h-7 rounded-xl bg-slate-900 hover:bg-slate-700 text-slate-200 flex items-center justify-center cursor-pointer"
-                    >
-                      <i className="ph-bold ph-caret-right text-xs"></i>
-                    </button>
-                  )}
+                  <button
+                    type="button"
+                    onClick={() => setDrawerTab('acquisitions')}
+                    className={`flex-1 py-2 px-3 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 transition-colors cursor-pointer ${
+                      drawerTab === 'acquisitions'
+                        ? 'bg-amber-500 text-slate-950 font-bold shadow-md'
+                        : 'text-slate-400 hover:text-white hover:bg-slate-800'
+                    }`}
+                  >
+                    <i className="ph-fill ph-shopping-cart text-sm"></i>
+                    <span>Listas & Compras</span>
+                    {activeLedgerSpace.monthlyBudget && activeLedgerSpace.monthlyBudget > 0 ? (
+                      <span className="text-[10px] font-mono opacity-80">
+                        ({formatCurrency(activeLedgerSpace.monthlyBudget)})
+                      </span>
+                    ) : null}
+                  </button>
                 </div>
+              )}
 
-                <div className="flex items-center gap-1.5">
-                  <button
-                    type="button"
-                    onClick={() =>
-                      onOpenNewTransactionInSpace(activeLedgerSpace.id, 'expense')
-                    }
-                    className="px-2.5 py-1.5 rounded-xl bg-rose-500/20 hover:bg-rose-500/30 border border-rose-500/30 text-rose-200 text-[11px] font-bold flex items-center gap-1 cursor-pointer"
-                  >
-                    <i className="ph-bold ph-minus-circle"></i>
-                    <span>+ Despesa</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      onOpenNewTransactionInSpace(activeLedgerSpace.id, 'income')
-                    }
-                    className="px-2.5 py-1.5 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-500/30 text-emerald-200 text-[11px] font-bold flex items-center gap-1 cursor-pointer"
-                  >
-                    <i className="ph-bold ph-hand-coins"></i>
-                    <span>+ Enviar Receita</span>
-                  </button>
+              {/* Seletor de Mês + Ações Rápidas dentro do próprio Livro-Razão (exibido apenas na aba de Finanças) */}
+              {drawerTab === 'ledger' && (
+                <div className="flex flex-wrap items-center justify-between gap-2 bg-slate-800/90 border border-slate-700/80 px-3 py-2 rounded-2xl">
+                  <div className="flex items-center gap-1.5">
+                    {onChangeMonth && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onChangeMonth(addMonthsToYearMonth(selectedMonth, -1))
+                        }
+                        aria-label="Mês anterior no Livro-Razão"
+                        className="w-7 h-7 rounded-xl bg-slate-900 hover:bg-slate-700 text-slate-200 flex items-center justify-center cursor-pointer"
+                      >
+                        <i className="ph-bold ph-caret-left text-xs"></i>
+                      </button>
+                    )}
+                    <span className="px-2.5 py-1 rounded-xl bg-slate-900 border border-slate-700 text-xs font-bold text-emerald-300 font-mono whitespace-nowrap">
+                      {formatMonthLabel(selectedMonth)} ({selectedMonth})
+                    </span>
+                    {onChangeMonth && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onChangeMonth(addMonthsToYearMonth(selectedMonth, 1))
+                        }
+                        aria-label="Próximo mês no Livro-Razão"
+                        className="w-7 h-7 rounded-xl bg-slate-900 hover:bg-slate-700 text-slate-200 flex items-center justify-center cursor-pointer"
+                      >
+                        <i className="ph-bold ph-caret-right text-xs"></i>
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onOpenNewTransactionInSpace(activeLedgerSpace.id, 'expense')
+                      }
+                      className="px-2.5 py-1.5 rounded-xl bg-rose-500/20 hover:bg-rose-500/30 border border-rose-500/30 text-rose-200 text-[11px] font-bold flex items-center gap-1 cursor-pointer"
+                    >
+                      <i className="ph-bold ph-minus-circle"></i>
+                      <span>+ Despesa</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onOpenNewTransactionInSpace(activeLedgerSpace.id, 'income')
+                      }
+                      className="px-2.5 py-1.5 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-500/30 text-emerald-200 text-[11px] font-bold flex items-center gap-1 cursor-pointer"
+                    >
+                      <i className="ph-bold ph-hand-coins"></i>
+                      <span>+ Enviar Receita</span>
+                    </button>
+                  </div>
                 </div>
-              </div>
+              )}
             </div>
 
-            {/* Corpo Rolável Único do Livro-Razão (Filtrado pelo Mês Selecionado) */}
+            {/* Corpo Rolável Único do Drawer (Alterna entre Livro-Razão e Listas de Aquisições) */}
             <div className="p-4 sm:p-6 overflow-y-auto flex-1 overscroll-contain">
-              {(() => {
-                const spaceTxs = transactions.filter(
+              {drawerTab === 'ledger' ? (
+                (() => {
+                  const spaceTxs = transactions.filter(
                   (tx) =>
                     tx.spaceId === activeLedgerSpace.id &&
                     tx.invoiceMonth === selectedMonth
@@ -1203,7 +1426,273 @@ export const SpacesLedgerView: React.FC<SpacesLedgerViewProps> = ({
                     </div>
                   </div>
                 );
-              })()}
+              })()
+            ) : (
+              /* Aba de Aquisições & Listas do Espaço */
+              (() => {
+                let spaceLists: any[] = [];
+                let spaceItems: any[] = [];
+                try {
+                  const storedLists = localStorage.getItem('app_aquisicoes_lists');
+                  if (storedLists) {
+                    const parsed = JSON.parse(storedLists);
+                    spaceLists = parsed.filter((l: any) => l.workspaceId === activeLedgerSpace.id);
+                  }
+                  const storedItems = localStorage.getItem('app_aquisicoes_items');
+                  if (storedItems) {
+                    const parsedItems = JSON.parse(storedItems);
+                    const listIds = new Set(spaceLists.map((l: any) => l.id));
+                    spaceItems = parsedItems.filter((it: any) => listIds.has(it.listId));
+                  }
+                } catch {
+                  // ignore parse error
+                }
+
+                const cartItems = spaceItems.filter((it) => it.stage === 'carrinho');
+                const cartTotal = cartItems.reduce(
+                  (acc, it) => acc + (it.estimatedPrice || 0) * (it.targetStock || 1),
+                  0
+                );
+                const monthlyBudget = activeLedgerSpace.monthlyBudget || 0;
+                const budgetPercentage =
+                  monthlyBudget > 0 ? Math.min(100, Math.round((cartTotal / monthlyBudget) * 100)) : 0;
+
+                const hasAcquisitions =
+                  !activeLedgerSpace.enabledModules ||
+                  activeLedgerSpace.enabledModules.includes('acquisitions');
+
+                return (
+                  <div className="space-y-6">
+                    {/* Alerta caso Aquisições não esteja habilitado */}
+                    {!hasAcquisitions && (
+                      <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-start gap-3">
+                        <i className="ph-fill ph-warning text-amber-400 text-lg shrink-0 mt-0.5"></i>
+                        <div className="flex-1 text-xs">
+                          <p className="font-bold text-amber-200">
+                            Módulo de Aquisições não habilitado neste espaço
+                          </p>
+                          <p className="text-amber-300/80 mt-1">
+                            Este espaço foi criado apenas para Finanças. Habilite Aquisições na edição do espaço para criar listas compartilhadas e definir orçamento mensal de compras.
+                          </p>
+                          <button
+                            type="button"
+                            onClick={() => handleOpenEditModal(activeLedgerSpace)}
+                            className="mt-3 px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs flex items-center gap-1.5 cursor-pointer"
+                          >
+                            <i className="ph-bold ph-pencil-simple"></i>
+                            <span>Habilitar Aquisições e Orçamento</span>
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Resumo do Orçamento e Status Integrado */}
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      <div className="p-4 rounded-2xl bg-slate-800/90 border border-slate-700/80">
+                        <div className="flex items-center justify-between text-xs text-slate-400 mb-1">
+                          <span>Orçamento de Compras</span>
+                          <i className="ph-bold ph-wallet text-amber-400"></i>
+                        </div>
+                        <div className="text-lg font-bold text-white font-mono">
+                          {monthlyBudget > 0 ? formatCurrency(monthlyBudget) : 'Não definido'}
+                        </div>
+                        <div className="text-[11px] text-slate-400 mt-1">
+                          {monthlyBudget > 0 ? 'Teto mensal estipulado' : 'Defina na edição do espaço'}
+                        </div>
+                      </div>
+
+                      <div className="p-4 rounded-2xl bg-slate-800/90 border border-slate-700/80">
+                        <div className="flex items-center justify-between text-xs text-slate-400 mb-1">
+                          <span>Estimado no Carrinho</span>
+                          <i className="ph-bold ph-shopping-cart text-indigo-400"></i>
+                        </div>
+                        <div className="text-lg font-bold text-indigo-300 font-mono">
+                          {formatCurrency(cartTotal)}
+                        </div>
+                        <div className="text-[11px] text-slate-400 mt-1">
+                          {cartItems.length} {cartItems.length === 1 ? 'item pronto' : 'itens prontos'} para conferir
+                        </div>
+                      </div>
+
+                      <div className="p-4 rounded-2xl bg-slate-800/90 border border-slate-700/80">
+                        <div className="flex items-center justify-between text-xs text-slate-400 mb-1">
+                          <span>Uso do Orçamento</span>
+                          <i className="ph-bold ph-chart-pie-slice text-emerald-400"></i>
+                        </div>
+                        <div className="text-lg font-bold text-emerald-300 font-mono">
+                          {monthlyBudget > 0 ? `${budgetPercentage}%` : '—'}
+                        </div>
+                        <div className="w-full bg-slate-700 h-1.5 rounded-full mt-2 overflow-hidden">
+                          <div
+                            className={`h-full rounded-full transition-all ${
+                              budgetPercentage > 90 ? 'bg-rose-500' : 'bg-emerald-500'
+                            }`}
+                            style={{ width: `${Math.min(100, budgetPercentage)}%` }}
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Botão de Destaque para abrir o Kanban Completo */}
+                    <div className="p-5 rounded-2xl bg-gradient-to-r from-amber-500/10 via-indigo-500/10 to-emerald-500/10 border border-amber-500/25 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                      <div>
+                        <h4 className="text-sm font-bold text-white flex items-center gap-2">
+                          <i className="ph-fill ph-kanban text-amber-400"></i>
+                          <span>Quadro Kanban Integrado deste Espaço</span>
+                        </h4>
+                        <p className="text-xs text-slate-300 mt-1">
+                          Abra diretamente o quadro interativo de listas (Despensa, Metas e Desejos) associado a este espaço.
+                        </p>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (onNavigateToAcquisitions) {
+                            onNavigateToAcquisitions(activeLedgerSpace.id);
+                          }
+                          onSetActiveLedgerSpace(null);
+                        }}
+                        className="px-4 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs flex items-center justify-center gap-2 cursor-pointer shadow-lg shadow-amber-500/20 whitespace-nowrap"
+                      >
+                        <i className="ph-bold ph-arrow-square-out text-base"></i>
+                        <span>Abrir Listas & Kanban</span>
+                      </button>
+                    </div>
+
+                    {/* Listas Cadastradas para este Espaço */}
+                    <div>
+                      <div className="flex items-center justify-between mb-3">
+                        <h4 className="text-xs font-bold text-slate-200 flex items-center gap-2">
+                          <i className="ph-bold ph-list-checks text-indigo-400"></i>
+                          <span>Listas Vinculadas a este Espaço ({spaceLists.length})</span>
+                        </h4>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (onNavigateToAcquisitions) {
+                              onNavigateToAcquisitions(activeLedgerSpace.id);
+                            }
+                            onSetActiveLedgerSpace(null);
+                          }}
+                          className="text-xs text-amber-400 hover:text-amber-300 font-semibold flex items-center gap-1 cursor-pointer"
+                        >
+                          <i className="ph-bold ph-plus"></i>
+                          <span>Nova Lista</span>
+                        </button>
+                      </div>
+
+                      {spaceLists.length === 0 ? (
+                        <div className="p-6 rounded-2xl bg-slate-800/50 border border-slate-700/60 text-center">
+                          <div className="w-12 h-12 rounded-2xl bg-amber-500/10 text-amber-400 flex items-center justify-center mx-auto mb-3">
+                            <i className="ph-fill ph-clipboard-text text-2xl"></i>
+                          </div>
+                          <p className="text-xs font-semibold text-slate-200">
+                            Nenhuma lista de aquisições criada ainda para este espaço
+                          </p>
+                          <p className="text-[11px] text-slate-400 mt-1 max-w-sm mx-auto">
+                            Crie listas de compras recorrentes (mercado), metas de médio prazo ou lista de desejos compartilhada.
+                          </p>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (onNavigateToAcquisitions) {
+                                onNavigateToAcquisitions(activeLedgerSpace.id);
+                              }
+                              onSetActiveLedgerSpace(null);
+                            }}
+                            className="mt-4 px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold inline-flex items-center gap-2 cursor-pointer"
+                          >
+                            <i className="ph-bold ph-plus"></i>
+                            <span>Criar Primeira Lista no Kanban</span>
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                          {spaceLists.map((list: any) => {
+                            const listItems = spaceItems.filter((it: any) => it.listId === list.id);
+                            const itemsToBuy = listItems.filter((it: any) => it.stage === 'comprar');
+                            const itemsInCart = listItems.filter((it: any) => it.stage === 'carrinho');
+
+                            return (
+                              <div
+                                key={list.id}
+                                className="p-4 rounded-2xl bg-slate-800 border border-slate-700/80 hover:border-slate-600 transition-all flex flex-col justify-between gap-3"
+                              >
+                                <div>
+                                  <div className="flex items-center justify-between gap-2">
+                                    <span className="text-xs font-bold text-white">
+                                      {list.name}
+                                    </span>
+                                    <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase bg-slate-700 text-slate-300">
+                                      {list.type === 'recorrente'
+                                        ? 'Despensa'
+                                        : list.type === 'objetivo'
+                                        ? 'Meta'
+                                        : 'Desejos'}
+                                    </span>
+                                  </div>
+                                  {list.description && (
+                                    <p className="text-[11px] text-slate-400 mt-1 line-clamp-2">
+                                      {list.description}
+                                    </p>
+                                  )}
+                                </div>
+
+                                <div className="pt-2 border-t border-slate-700/60 flex items-center justify-between text-[11px] text-slate-300">
+                                  <span>
+                                    {listItems.length} itens ({itemsToBuy.length} a comprar, {itemsInCart.length} no carrinho)
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      if (onNavigateToAcquisitions) {
+                                        onNavigateToAcquisitions(activeLedgerSpace.id);
+                                      }
+                                      onSetActiveLedgerSpace(null);
+                                    }}
+                                    className="text-amber-400 hover:text-amber-300 font-bold flex items-center gap-1 cursor-pointer"
+                                  >
+                                    <span>Ver no Kanban</span>
+                                    <i className="ph-bold ph-caret-right text-xs"></i>
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Membros Compartilhados Automáticos */}
+                    <div className="p-4 rounded-2xl bg-slate-800/70 border border-slate-700/80">
+                      <div className="flex items-center gap-2 mb-2">
+                        <i className="ph-fill ph-users-three text-indigo-400 text-base"></i>
+                        <h4 className="text-xs font-bold text-slate-200">
+                          Membros Participantes do Espaço ({activeLedgerSpace.participants.length})
+                        </h4>
+                      </div>
+                      <p className="text-[11px] text-slate-400 mb-3">
+                        Os mesmos participantes deste espaço possuem acesso automático tanto ao Livro-Razão Financeiro quanto às Listas de Aquisições.
+                      </p>
+                      <div className="flex flex-wrap gap-2">
+                        {activeLedgerSpace.participants.map((p, idx) => (
+                          <div
+                            key={idx}
+                            className="px-2.5 py-1 rounded-xl bg-slate-900 border border-slate-700 text-xs text-slate-200 flex items-center gap-1.5"
+                          >
+                            <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
+                            <span className="font-semibold">{p.name || p.email}</span>
+                            <span className="text-[10px] text-slate-400">({p.email})</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()
+            )}
             </div>
 
             {/* Rodapé Fixo do Drawer */}
@@ -1349,6 +1838,156 @@ export const SpacesLedgerView: React.FC<SpacesLedgerViewProps> = ({
                     <option value="amber">Âmbar</option>
                   </select>
                 </div>
+              </div>
+
+              {/* Finalidades do Espaço (Finanças, Aquisições ou Ambos) */}
+              <div className="p-3.5 rounded-2xl bg-slate-900 border border-slate-700/80 space-y-3">
+                <div>
+                  <span className="block text-xs font-bold text-white mb-0.5">
+                    Finalidades do Espaço
+                  </span>
+                  <p className="text-[11px] text-slate-400 leading-relaxed">
+                    Escolha se este espaço será para finanças, só para listas de compras ou ambos integrados.
+                  </p>
+                </div>
+
+                {/* Seletor Rápido de Modalidade */}
+                <div className="grid grid-cols-3 gap-1.5 p-1 rounded-xl bg-slate-950 border border-slate-800">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEnabledFinance(true);
+                      setEnabledAcquisitions(false);
+                    }}
+                    className={`py-1.5 px-2 rounded-lg text-xs font-semibold transition-colors cursor-pointer text-center ${
+                      enabledFinance && !enabledAcquisitions
+                        ? 'bg-indigo-600 text-white shadow'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    Só Finanças
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEnabledFinance(false);
+                      setEnabledAcquisitions(true);
+                      setSpaceIcon('ph-shopping-cart');
+                      setSpaceColor('amber');
+                    }}
+                    className={`py-1.5 px-2 rounded-lg text-xs font-semibold transition-colors cursor-pointer text-center ${
+                      !enabledFinance && enabledAcquisitions
+                        ? 'bg-amber-500 text-slate-950 font-bold shadow'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    Só Listas
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEnabledFinance(true);
+                      setEnabledAcquisitions(true);
+                    }}
+                    className={`py-1.5 px-2 rounded-lg text-xs font-semibold transition-colors cursor-pointer text-center ${
+                      enabledFinance && enabledAcquisitions
+                        ? 'bg-emerald-600 text-white shadow'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    Ambos
+                  </button>
+                </div>
+
+                {!enabledFinance && enabledAcquisitions && (
+                  <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-[11px] text-amber-200 flex items-center gap-2">
+                    <i className="ph-fill ph-check-circle text-amber-400 text-sm shrink-0"></i>
+                    <span>Espaço configurado <strong>exclusivamente para Listas & Compras</strong> (sem rateios financeiros).</span>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  <label
+                    className={`flex items-start gap-2.5 p-2.5 rounded-xl border cursor-pointer transition-colors ${
+                      enabledFinance
+                        ? 'bg-indigo-600/15 border-indigo-500/50 text-white'
+                        : 'bg-slate-800/60 border-slate-700 text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={enabledFinance}
+                      onChange={(e) => setEnabledFinance(e.target.checked)}
+                      className="mt-0.5 rounded border-slate-700 text-indigo-600 focus:ring-0 cursor-pointer"
+                    />
+                    <div className="min-w-0">
+                      <span className="text-xs font-semibold block leading-tight">
+                        Finanças & Livro-Razão
+                      </span>
+                      <span className="text-[10px] text-slate-400 block mt-0.5">
+                        Rateios, caixa do espaço, faturas e controle de saldos.
+                      </span>
+                    </div>
+                  </label>
+
+                  <label
+                    className={`flex items-start gap-2.5 p-2.5 rounded-xl border cursor-pointer transition-colors ${
+                      enabledAcquisitions
+                        ? 'bg-amber-500/15 border-amber-500/50 text-white'
+                        : 'bg-slate-800/60 border-slate-700 text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={enabledAcquisitions}
+                      onChange={(e) => setEnabledAcquisitions(e.target.checked)}
+                      className="mt-0.5 rounded border-slate-700 text-amber-500 focus:ring-0 cursor-pointer"
+                    />
+                    <div className="min-w-0">
+                      <span className="text-xs font-semibold block leading-tight">
+                        Aquisições & Listas
+                      </span>
+                      <span className="text-[10px] text-slate-400 block mt-0.5">
+                        Despensa, listas Kanban, carrinho de compras e metas.
+                      </span>
+                    </div>
+                  </label>
+                </div>
+
+                {/* Campo condicional de Orçamento Mensal de Compras */}
+                {enabledAcquisitions && (
+                  <div className="pt-2 border-t border-slate-800 space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <label
+                        htmlFor="sp-monthly-budget"
+                        className="text-xs font-semibold text-amber-300"
+                      >
+                        Orçamento Mensal de Compras (R$)
+                      </label>
+                      <span className="text-[10px] text-slate-400 font-mono">
+                        Exclusivo p/ Aquisições
+                      </span>
+                    </div>
+                    <div className="relative">
+                      <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-xs font-mono text-slate-400 font-bold">
+                        R$
+                      </span>
+                      <input
+                        id="sp-monthly-budget"
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={spaceMonthlyBudget}
+                        onChange={(e) => setSpaceMonthlyBudget(e.target.value)}
+                        placeholder="Ex: 2500.00"
+                        className="w-full pl-10 pr-3.5 py-2.5 bg-slate-950 border border-amber-500/35 focus:border-amber-400 rounded-xl text-xs text-white font-mono tabular-nums"
+                      />
+                    </div>
+                    <p className="text-[10px] text-slate-400">
+                      Define o teto de gastos comparado ao carrinho de compras e metas deste espaço.
+                    </p>
+                  </div>
+                )}
               </div>
 
               {editingSpace && editingParticipants.length > 0 && (

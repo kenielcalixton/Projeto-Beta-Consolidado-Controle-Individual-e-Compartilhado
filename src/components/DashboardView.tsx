@@ -8,6 +8,7 @@ import {
   Tooltip,
 } from 'chart.js';
 import { Space, Transaction } from '../types/finance';
+import { AcquisitionItem, AcquisitionList } from '../types/acquisitions';
 import { formatCurrency, resolveTransactionStatus } from '../utils/financeEngine';
 
 Chart.register(DoughnutController, ArcElement, Tooltip, Legend);
@@ -24,6 +25,9 @@ interface DashboardViewProps {
   onOpenNewTransaction: (presetSpaceId?: string) => void;
   onOpenSpaceLedger: (space: Space) => void;
   onSelectTransaction: (tx: Transaction) => void;
+  acquisitionLists?: AcquisitionList[];
+  acquisitionItems?: AcquisitionItem[];
+  onNavigateToLists?: (spaceId?: string) => void;
 }
 
 type DrilldownFilter =
@@ -85,6 +89,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   onOpenNewTransaction,
   onOpenSpaceLedger,
   onSelectTransaction,
+  acquisitionLists = [],
+  acquisitionItems = [],
+  onNavigateToLists,
 }) => {
   const chartCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const chartInstanceRef = useRef<Chart | null>(null);
@@ -170,6 +177,113 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     .slice(0, 5);
 
   const activeSpaceObj = spaces.find((s) => s.id === activeScope);
+
+  const isScopeFinanceEnabled =
+    activeScope === 'overview' ||
+    activeScope === 'individual' ||
+    (activeSpaceObj
+      ? !activeSpaceObj.enabledModules ||
+        activeSpaceObj.enabledModules.includes('finance')
+      : true);
+
+  const isScopeAcquisitionsEnabled =
+    activeScope === 'overview' ||
+    (activeSpaceObj
+      ? !activeSpaceObj.enabledModules ||
+        activeSpaceObj.enabledModules.includes('acquisitions')
+      : false);
+
+  const isScopeOnlyAcquisitions =
+    Boolean(activeSpaceObj) && !isScopeFinanceEnabled && isScopeAcquisitionsEnabled;
+
+  // Filtra listas e itens de compras vinculados ao escopo ativo
+  const filteredAcqLists = React.useMemo(() => {
+    if (activeScope === 'overview' || activeScope === 'individual') {
+      return acquisitionLists;
+    }
+    return acquisitionLists.filter(
+      (l) => l.workspaceId === activeScope || l.workspaceId === `ws_${activeScope}`
+    );
+  }, [acquisitionLists, activeScope]);
+
+  const filteredAcqListIds = React.useMemo(
+    () => new Set(filteredAcqLists.map((l) => l.id)),
+    [filteredAcqLists]
+  );
+
+  const filteredAcqItems = React.useMemo(() => {
+    if (activeScope === 'overview' || activeScope === 'individual') {
+      return acquisitionItems;
+    }
+    return acquisitionItems.filter(
+      (i) =>
+        i.workspaceId === activeScope ||
+        i.workspaceId === `ws_${activeScope}` ||
+        filteredAcqListIds.has(i.listId)
+    );
+  }, [acquisitionItems, activeScope, filteredAcqListIds]);
+
+  const cartItems = React.useMemo(
+    () => filteredAcqItems.filter((i) => i.stage === 'carrinho'),
+    [filteredAcqItems]
+  );
+
+  const cartEstimatedTotal = React.useMemo(
+    () =>
+      cartItems.reduce((acc, i) => {
+        const price =
+          i.cartDraft?.unitPrice ||
+          i.estimatedPrice ||
+          i.productsHistory?.[0]?.unitPrice ||
+          0;
+        const qty = i.cartDraft?.quantity || 1;
+        return acc + price * qty;
+      }, 0),
+    [cartItems]
+  );
+
+  const criticalStockItems = React.useMemo(
+    () =>
+      filteredAcqItems.filter(
+        (i) =>
+          i.listType === 'recorrente' &&
+          i.stage === 'estoque' &&
+          typeof i.currentStock === 'number' &&
+          typeof i.minStock === 'number' &&
+          i.currentStock <= i.minStock
+      ),
+    [filteredAcqItems]
+  );
+
+  const readyToBuyItems = React.useMemo(
+    () =>
+      filteredAcqItems.filter(
+        (i) => i.listType === 'recorrente' && i.stage === 'comprar'
+      ),
+    [filteredAcqItems]
+  );
+
+  const activeGoals = React.useMemo(
+    () =>
+      filteredAcqItems.filter(
+        (i) =>
+          i.listType === 'objetivo' &&
+          i.stage !== 'adquirido' &&
+          typeof i.targetAmount === 'number' &&
+          i.targetAmount > 0
+      ),
+    [filteredAcqItems]
+  );
+
+  const totalSavedInGoals = React.useMemo(
+    () => activeGoals.reduce((acc, g) => acc + (g.savedAmount || 0), 0),
+    [activeGoals]
+  );
+
+  const totalTargetInGoals = React.useMemo(
+    () => activeGoals.reduce((acc, g) => acc + (g.targetAmount || 0), 0),
+    [activeGoals]
+  );
 
   // Lista filtrada quando o usuário clica em um card ou categoria do Dashboard
   const drilldownTransactions = React.useMemo(() => {
@@ -406,19 +520,35 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </div>
 
         {activeSpaceObj && (
-          <button
-            type="button"
-            onClick={() => onOpenSpaceLedger(activeSpaceObj)}
-            className="w-full sm:w-auto justify-center px-3.5 py-2.5 sm:py-2 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-300 text-xs font-semibold flex items-center gap-2 whitespace-nowrap shrink-0 cursor-pointer transition-colors"
-          >
-            <i className="ph-fill ph-scales text-sm"></i>
-            <span>Auditar Livro-Razão ({activeSpaceObj.name})</span>
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            {isScopeFinanceEnabled && (
+              <button
+                type="button"
+                onClick={() => onOpenSpaceLedger(activeSpaceObj)}
+                className="w-full sm:w-auto justify-center px-3.5 py-2.5 sm:py-2 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-300 text-xs font-semibold flex items-center gap-2 whitespace-nowrap shrink-0 cursor-pointer transition-colors"
+              >
+                <i className="ph-fill ph-scales text-sm"></i>
+                <span>Auditar Livro-Razão</span>
+              </button>
+            )}
+            {isScopeAcquisitionsEnabled && onNavigateToLists && (
+              <button
+                type="button"
+                onClick={() => onNavigateToLists(activeSpaceObj.id)}
+                className="w-full sm:w-auto justify-center px-3.5 py-2.5 sm:py-2 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/30 text-amber-300 text-xs font-semibold flex items-center gap-2 whitespace-nowrap shrink-0 cursor-pointer transition-colors"
+              >
+                <i className="ph-fill ph-shopping-bag-open text-sm"></i>
+                <span>Listas & Compras</span>
+              </button>
+            )}
+          </div>
         )}
       </div>
 
-      {/* 3 Cards Totalizadores Interativos: Clicar abre a lista detalhada */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 sm:gap-5">
+      {isScopeFinanceEnabled && (
+        <>
+          {/* 3 Cards Totalizadores Interativos: Clicar abre a lista detalhada */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 sm:gap-5">
         {/* Card Receitas (Clicável) */}
         <button
           type="button"
@@ -738,6 +868,200 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           )}
         </div>
       </div>
+        </>
+      )}
+
+      {/* Bloco de Aquisições & Listas de Compras Integradas */}
+      {isScopeAcquisitionsEnabled && (
+        <div className="bg-slate-800 border border-slate-700/80 rounded-3xl p-5 sm:p-6 space-y-5">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-700/60">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-amber-400 flex items-center justify-center shrink-0">
+                <i className="ph-fill ph-shopping-cart text-xl"></i>
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h2 className="text-base font-bold text-white">
+                    {activeSpaceObj ? `Compras & Listas: ${activeSpaceObj.name}` : 'Aquisições & Compras Integradas'}
+                  </h2>
+                  <span className="px-2 py-0.5 rounded-md bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[10px] font-bold">
+                    {filteredAcqLists.length} lista(s)
+                  </span>
+                </div>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Estoque de despensa, cotação de metas e itens adicionados ao carrinho
+                </p>
+              </div>
+            </div>
+
+            {onNavigateToLists && (
+              <button
+                type="button"
+                onClick={() => onNavigateToLists(activeSpaceObj?.id)}
+                className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs flex items-center gap-2 whitespace-nowrap self-start sm:self-auto shadow-md shadow-amber-500/20 cursor-pointer transition-colors"
+              >
+                <i className="ph-bold ph-arrow-right"></i>
+                <span>Abrir Quadro de Listas</span>
+              </button>
+            )}
+          </div>
+
+          {/* Cards de Métricas de Aquisições */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            {/* Card 1: Carrinho de Compras */}
+            <div className="bg-slate-900/60 border border-slate-700/50 rounded-2xl p-4 flex flex-col justify-between">
+              <div className="flex items-center justify-between text-xs text-slate-400 mb-2">
+                <span className="font-semibold text-slate-300">No Carrinho</span>
+                <span className="w-7 h-7 rounded-lg bg-indigo-500/10 text-indigo-400 flex items-center justify-center">
+                  <i className="ph-bold ph-shopping-bag text-sm"></i>
+                </span>
+              </div>
+              <div>
+                <div className="text-xl font-bold font-mono text-white tabular-nums">
+                  {formatCurrency(cartEstimatedTotal)}
+                </div>
+                <div className="text-[11px] text-slate-400 mt-1">
+                  {cartItems.length} item(ns) aguardando conferência
+                </div>
+              </div>
+            </div>
+
+            {/* Card 2: Estoque Crítico */}
+            <div className="bg-slate-900/60 border border-slate-700/50 rounded-2xl p-4 flex flex-col justify-between">
+              <div className="flex items-center justify-between text-xs text-slate-400 mb-2">
+                <span className="font-semibold text-slate-300">Despensa em Alerta</span>
+                <span
+                  className={`w-7 h-7 rounded-lg flex items-center justify-center ${
+                    criticalStockItems.length > 0
+                      ? 'bg-rose-500/10 text-rose-400'
+                      : 'bg-emerald-500/10 text-emerald-400'
+                  }`}
+                >
+                  <i
+                    className={`ph-bold ${
+                      criticalStockItems.length > 0
+                        ? 'ph-warning'
+                        : 'ph-check-circle'
+                    } text-sm`}
+                  ></i>
+                </span>
+              </div>
+              <div>
+                <div
+                  className={`text-xl font-bold font-mono tabular-nums ${
+                    criticalStockItems.length > 0
+                      ? 'text-rose-400'
+                      : 'text-emerald-400'
+                  }`}
+                >
+                  {criticalStockItems.length} crítico(s)
+                </div>
+                <div className="text-[11px] text-slate-400 mt-1">
+                  {readyToBuyItems.length} pronto(s) para compra
+                </div>
+              </div>
+            </div>
+
+            {/* Card 3: Metas de Poupança */}
+            <div className="bg-slate-900/60 border border-slate-700/50 rounded-2xl p-4 flex flex-col justify-between">
+              <div className="flex items-center justify-between text-xs text-slate-400 mb-2">
+                <span className="font-semibold text-slate-300">Metas & Poupança</span>
+                <span className="w-7 h-7 rounded-lg bg-emerald-500/10 text-emerald-400 flex items-center justify-center">
+                  <i className="ph-bold ph-piggy-bank text-sm"></i>
+                </span>
+              </div>
+              <div>
+                <div className="text-xl font-bold font-mono text-emerald-400 tabular-nums">
+                  {formatCurrency(totalSavedInGoals)}
+                </div>
+                <div className="text-[11px] text-slate-400 mt-1">
+                  de {formatCurrency(totalTargetInGoals)} ({activeGoals.length} meta(s))
+                </div>
+              </div>
+            </div>
+
+            {/* Card 4: Orçamento do Espaço */}
+            <div className="bg-slate-900/60 border border-slate-700/50 rounded-2xl p-4 flex flex-col justify-between">
+              <div className="flex items-center justify-between text-xs text-slate-400 mb-2">
+                <span className="font-semibold text-slate-300">Teto de Compras</span>
+                <span className="w-7 h-7 rounded-lg bg-amber-500/10 text-amber-400 flex items-center justify-center">
+                  <i className="ph-bold ph-wallet text-sm"></i>
+                </span>
+              </div>
+              <div>
+                <div className="text-xl font-bold font-mono text-amber-400 tabular-nums">
+                  {activeSpaceObj?.monthlyBudget
+                    ? formatCurrency(activeSpaceObj.monthlyBudget)
+                    : 'Sem Teto'}
+                </div>
+                <div className="text-[11px] text-slate-400 mt-1">
+                  {activeSpaceObj?.monthlyBudget
+                    ? `Saldo previsto: ${formatCurrency(
+                        Math.max(
+                          0,
+                          activeSpaceObj.monthlyBudget - cartEstimatedTotal
+                        )
+                      )}`
+                    : 'Sem limite fixado'}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Itens com estoque em alerta ou no carrinho para reposição imediata */}
+          {(criticalStockItems.length > 0 || cartItems.length > 0) && (
+            <div className="pt-2">
+              <h3 className="text-xs font-semibold text-slate-300 mb-2.5 flex items-center gap-2">
+                <i className="ph-bold ph-bell-ringing text-amber-400"></i>
+                <span>Atenção Imediata na Despensa & Carrinho:</span>
+              </h3>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+                {criticalStockItems.slice(0, 3).map((item) => (
+                  <div
+                    key={item.id}
+                    className="p-3 rounded-xl bg-slate-900/80 border border-rose-500/30 flex items-center justify-between gap-3 text-xs"
+                  >
+                    <div className="min-w-0">
+                      <span className="font-bold text-white block truncate">
+                        {item.name}
+                      </span>
+                      <span className="text-[10px] text-rose-300">
+                        Estoque: {item.currentStock ?? 0} {item.unit || 'un'} (Mín:{' '}
+                        {item.minStock ?? 1})
+                      </span>
+                    </div>
+                    <span className="px-2 py-0.5 rounded-lg bg-rose-500/20 text-rose-300 text-[10px] font-bold shrink-0">
+                      Repor
+                    </span>
+                  </div>
+                ))}
+                {cartItems.slice(0, 3).map((item) => (
+                  <div
+                    key={item.id}
+                    className="p-3 rounded-xl bg-slate-900/80 border border-indigo-500/30 flex items-center justify-between gap-3 text-xs"
+                  >
+                    <div className="min-w-0">
+                      <span className="font-bold text-white block truncate">
+                        {item.name}
+                      </span>
+                      <span className="text-[10px] text-slate-400">
+                        {item.cartDraft
+                          ? `${item.cartDraft.quantity}x ${formatCurrency(
+                              item.cartDraft.unitPrice
+                            )}`
+                          : 'No carrinho'}
+                      </span>
+                    </div>
+                    <span className="px-2 py-0.5 rounded-lg bg-indigo-500/20 text-indigo-300 text-[10px] font-bold shrink-0">
+                      Carrinho
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Modal / Gaveta de Lista Interativa do Dashboard (Drill-Down de Receitas, Despesas, Saldo ou Categoria) */}
       {drilldown && (

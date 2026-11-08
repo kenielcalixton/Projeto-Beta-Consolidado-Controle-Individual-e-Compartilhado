@@ -32,6 +32,8 @@ export interface SpaceParticipant {
   status: 'active' | 'invited';
 }
 
+export type SpaceModule = 'finance' | 'acquisitions';
+
 export interface Space {
   id: string;
   ownerId: string;
@@ -42,6 +44,10 @@ export interface Space {
   color: string;
   participantEmails: string[];
   participants: SpaceParticipant[];
+  /** Módulos ativos no espaço: 'finance', 'acquisitions' ou ambos */
+  enabledModules?: SpaceModule[];
+  /** Orçamento mensal de compras (R$) quando o módulo de aquisições está ativo */
+  monthlyBudget?: number;
   createdAt?: any;
 }
 

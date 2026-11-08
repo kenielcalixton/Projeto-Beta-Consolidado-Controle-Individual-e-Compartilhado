@@ -1,6 +1,106 @@
 import { Account, ADMIN_UID, Category, Space, Transaction, UserProfile } from '../types/finance';
 
-export function getInitialDemoData(userId: string, userEmail: string, userName: string): {
+export function getInitialDemoData(
+  userId: string,
+  _userEmail?: string,
+  _userName?: string
+): {
+  accounts: Account[];
+  categories: Category[];
+  spaces: Space[];
+  transactions: Transaction[];
+} {
+  const accounts: Account[] = [
+    {
+      id: 'acc_carteira',
+      userId,
+      name: 'Carteira',
+      type: 'checking',
+      balance: 0.0,
+      limit: 0,
+      closingDay: 1,
+      dueDay: 1,
+      color: 'emerald',
+      icon: 'ph-wallet',
+    },
+  ];
+
+  const categories: Category[] = [
+    {
+      id: 'cat_salario',
+      userId,
+      name: 'Salário & Pró-Labore',
+      type: 'income',
+      icon: 'ph-briefcase',
+      color: 'emerald',
+    },
+    {
+      id: 'cat_rendimentos',
+      userId,
+      name: 'Dividendos & Rendimentos',
+      type: 'income',
+      icon: 'ph-trend-up',
+      color: 'teal',
+    },
+    {
+      id: 'cat_moradia',
+      userId,
+      name: 'Moradia & Contas',
+      type: 'expense',
+      icon: 'ph-house-line',
+      color: 'indigo',
+    },
+    {
+      id: 'cat_mercado',
+      userId,
+      name: 'Supermercado & Feira',
+      type: 'expense',
+      icon: 'ph-shopping-cart',
+      color: 'rose',
+    },
+    {
+      id: 'cat_transporte',
+      userId,
+      name: 'Transporte & Combustível',
+      type: 'expense',
+      icon: 'ph-car',
+      color: 'amber',
+    },
+    {
+      id: 'cat_saude',
+      userId,
+      name: 'Saúde & Farmácia',
+      type: 'expense',
+      icon: 'ph-heartbeat',
+      color: 'emerald',
+    },
+    {
+      id: 'cat_lazer',
+      userId,
+      name: 'Lazer & Cultura',
+      type: 'expense',
+      icon: 'ph-film-slate',
+      color: 'purple',
+    },
+    {
+      id: 'cat_geral',
+      userId,
+      name: 'Geral & Outros',
+      type: 'both',
+      icon: 'ph-tag',
+      color: 'sky',
+    },
+  ];
+
+  return {
+    accounts,
+    categories,
+    spaces: [],
+    transactions: [],
+  };
+}
+
+export function getRichDemoSeed(userId: string, userEmail: string, userName: string): {
   accounts: Account[];
   categories: Category[];
   spaces: Space[];
@@ -133,6 +233,8 @@ export function getInitialDemoData(userId: string, userEmail: string, userName: 
         { email: 'marina.costa@email.com', name: 'Marina Costa', status: 'active' },
         { email: 'lucas.almeida@email.com', name: 'Lucas Almeida', status: 'active' },
       ],
+      enabledModules: ['finance', 'acquisitions'],
+      monthlyBudget: 2800,
     },
     {
       id: 'space_viagem_patagonia',
@@ -148,6 +250,7 @@ export function getInitialDemoData(userId: string, userEmail: string, userName: 
         { email: 'marina.costa@email.com', name: 'Marina Costa', status: 'active' },
         { email: 'rafael.mendes@email.com', name: 'Rafael Mendes', status: 'invited' },
       ],
+      enabledModules: ['finance'],
     },
     {
       id: 'space_reveillon_litoral',
@@ -163,6 +266,8 @@ export function getInitialDemoData(userId: string, userEmail: string, userName: 
         { email: 'marina.costa@email.com', name: 'Marina Costa', status: 'active' },
         { email: userEmail, name: userName, status: 'invited' },
       ],
+      enabledModules: ['finance', 'acquisitions'],
+      monthlyBudget: 1800,
     },
   ];
 
@@ -643,7 +748,7 @@ export function getAdminDemoDataset(): {
     createdAt: '2026-11-02T18:45:00.000Z',
   };
 
-  const adminSeed = getInitialDemoData(
+  const adminSeed = getRichDemoSeed(
     adminProfile.uid,
     adminProfile.email,
     'Keniel Calixto'
@@ -709,6 +814,8 @@ export function getAdminDemoDataset(): {
         { email: marinaProfile.email, name: marinaProfile.name, status: 'active' },
         { email: lucasProfile.email, name: lucasProfile.name, status: 'active' },
       ],
+      enabledModules: ['finance', 'acquisitions'],
+      monthlyBudget: 3200,
     },
   ];
 

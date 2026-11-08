@@ -64,6 +64,42 @@ export const INITIAL_TAXONOMY_GROUPS: TaxonomyGroup[] = [
 
 export const INITIAL_WORKSPACES: Workspace[] = [
   {
+    id: 'space_apartamento',
+    name: 'Apartamento Jardins',
+    description: 'Despesas fixas da casa, mercado, energia e manutenção mensal',
+    type: 'Compartilhado',
+    ownerUid: ADMIN_USER_UID,
+    ownerEmail: 'kenielcalixtonkenny@gmail.com',
+    acceptedMemberEmails: ['kenielcalixtonkenny@gmail.com', 'marina.costa@email.com', 'lucas.almeida@email.com'],
+    acceptedMemberUids: [ADMIN_USER_UID, 'usr_marina_costa', 'usr_lucas_almeida'],
+    monthlyBudget: 2800,
+    createdAt: '2026-11-01T10:00:00.000Z',
+    members: [
+      {
+        uid: ADMIN_USER_UID,
+        email: 'kenielcalixtonkenny@gmail.com',
+        name: 'Keniel Calixto',
+        role: 'Admin',
+        status: 'Aceito',
+        respondedAt: '2026-11-01T10:00:00.000Z',
+      },
+      {
+        email: 'marina.costa@email.com',
+        name: 'Marina Costa',
+        role: 'Membro',
+        status: 'Aceito',
+        respondedAt: '2026-11-01T10:05:00.000Z',
+      },
+      {
+        email: 'lucas.almeida@email.com',
+        name: 'Lucas Almeida',
+        role: 'Membro',
+        status: 'Aceito',
+        respondedAt: '2026-11-01T10:10:00.000Z',
+      },
+    ],
+  },
+  {
     id: 'ws_residencia',
     name: 'Residência Central & Família',
     description: 'Controle colaborativo de estoque doméstico, compras de mês e eletrodomésticos da casa.',
@@ -252,6 +288,34 @@ export const INITIAL_LISTS: AcquisitionList[] = [
     description: 'Itens para comprar antes de subir a serra.',
     acceptedMemberEmails: ['lucas.ferreira@amigos.com', 'ana.paula@amigos.com'],
     createdAt: '2026-11-02T18:30:00.000Z',
+  },
+  // Listas padrão para o Espaço Apartamento Jardins (Unificado)
+  {
+    id: 'list_apt_supermercado',
+    workspaceId: 'space_apartamento',
+    name: 'Despensa & Feira Semanal',
+    type: 'recorrente',
+    description: 'Controle de estoque mínimo da casa, compras de feira e mercado.',
+    acceptedMemberEmails: ['kenielcalixtonkenny@gmail.com', 'marina.costa@email.com', 'lucas.almeida@email.com'],
+    createdAt: '2026-11-01T10:00:00.000Z',
+  },
+  {
+    id: 'list_apt_objetivo',
+    workspaceId: 'space_apartamento',
+    name: 'Metas e Melhorias da Casa',
+    type: 'objetivo',
+    description: 'Metas de poupança conjunta para eletrodomésticos e conforto do lar.',
+    acceptedMemberEmails: ['kenielcalixtonkenny@gmail.com', 'marina.costa@email.com', 'lucas.almeida@email.com'],
+    createdAt: '2026-11-01T10:00:00.000Z',
+  },
+  {
+    id: 'list_apt_desejo',
+    workspaceId: 'space_apartamento',
+    name: 'Desejos & Wishlist de Decoração',
+    type: 'desejo',
+    description: 'Itens para avaliar antes de virarem metas ou compras imediatas.',
+    acceptedMemberEmails: ['kenielcalixtonkenny@gmail.com', 'marina.costa@email.com', 'lucas.almeida@email.com'],
+    createdAt: '2026-11-01T10:00:00.000Z',
   },
 ];
 

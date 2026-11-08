@@ -16,11 +16,13 @@ import {
   INITIAL_TAXONOMY_GROUPS,
   INITIAL_WORKSPACES,
 } from '../../data/acquisitionsSeedData';
+import { Space } from '../../types/finance';
 import {
   addGoalDeposit,
   adjustItemStock,
   confirmCartCheckout,
   convertWishToGoal,
+  formatCurrencyBRL,
   getStagesForListType,
   returnConfirmedToStock,
   revertConfirmedCheckout,
@@ -69,6 +71,9 @@ interface AcquisitionsModuleViewProps {
   onLogout: () => void;
   initialWorkspaceIdToOpen?: string | null;
   onClearInitialWorkspace?: () => void;
+  unifiedSpaces?: Space[];
+  onOpenManageSpaces?: () => void;
+  onOpenCreateSpace?: (preset: 'acquisitions' | 'both') => void;
   onCreateExpenseFromPurchase?: (payload: {
     description: string;
     amount: number;
@@ -81,6 +86,9 @@ export const AcquisitionsModuleView: React.FC<AcquisitionsModuleViewProps> = ({
   onLogout,
   initialWorkspaceIdToOpen,
   onClearInitialWorkspace,
+  unifiedSpaces,
+  onOpenManageSpaces,
+  onOpenCreateSpace,
   onCreateExpenseFromPurchase,
 }) => {
   const [currentUser, setCurrentUser] = useState<UserProfile>(() => {
@@ -123,8 +131,76 @@ export const AcquisitionsModuleView: React.FC<AcquisitionsModuleViewProps> = ({
   // Core Application State (with localStorage persistence + Firestore sync)
   const [workspaces, setWorkspaces] = useState<Workspace[]>(() => {
     const saved = localStorage.getItem('app_aquisicoes_workspaces');
-    return saved ? JSON.parse(saved) : INITIAL_WORKSPACES;
+    return saved ? JSON.parse(saved) : [];
   });
+
+  // Mapeia os Espaços Unificados (definidos no módulo de Finanças) para Espaços de Aquisições
+  const effectiveWorkspaces: Workspace[] = React.useMemo(() => {
+    if (unifiedSpaces !== undefined) {
+      const acqSpaces = unifiedSpaces.filter(
+        (sp) => !sp.enabledModules || sp.enabledModules.includes('acquisitions')
+      );
+
+      const mappedUnified: Workspace[] = acqSpaces.map((sp) => {
+        const isOwner =
+          sp.ownerEmail?.toLowerCase() === sharedUser.email.toLowerCase();
+        const acceptedEmails = Array.from(
+          new Set([
+            (sp.ownerEmail || sharedUser.email).toLowerCase(),
+            ...(sp.participantEmails || []).map((e) => e.toLowerCase()),
+            ...sp.participants
+              .filter((p) => p.status === 'active')
+              .map((p) => p.email.toLowerCase()),
+          ])
+        );
+
+        const membersList = [
+          {
+            uid: sp.ownerId || (isOwner ? sharedUser.uid : undefined),
+            email: (sp.ownerEmail || sharedUser.email).toLowerCase(),
+            name: isOwner ? sharedUser.name : 'Proprietário',
+            role: 'Admin' as const,
+            status: 'Aceito' as const,
+          },
+          ...sp.participants
+            .filter(
+              (p) =>
+                p.email.toLowerCase() !==
+                (sp.ownerEmail || sharedUser.email).toLowerCase()
+            )
+            .map((p) => ({
+              email: p.email.toLowerCase(),
+              name: p.name,
+              role: 'Membro' as const,
+              status: (p.status === 'active' ? 'Aceito' : 'Pendente') as any,
+            })),
+        ];
+
+        return {
+          id: sp.id,
+          name: sp.name,
+          description: sp.description || '',
+          type:
+            sp.participants.length > 1
+              ? ('Compartilhado' as const)
+              : ('Individual' as const),
+          ownerUid: sp.ownerId || (isOwner ? sharedUser.uid : 'shared_owner'),
+          ownerEmail: sp.ownerEmail || sharedUser.email,
+          acceptedMemberEmails: acceptedEmails,
+          acceptedMemberUids: [sp.ownerId || sharedUser.uid],
+          members: membersList,
+          monthlyBudget: sp.monthlyBudget,
+          createdAt: sp.createdAt
+            ? String(sp.createdAt)
+            : '2025-01-01T00:00:00.000Z',
+        };
+      });
+
+      return mappedUnified;
+    }
+
+    return workspaces;
+  }, [unifiedSpaces, workspaces, sharedUser.email, sharedUser.uid, sharedUser.name]);
 
   const [lists, setLists] = useState<AcquisitionList[]>(() => {
     const saved = localStorage.getItem('app_aquisicoes_lists');
@@ -141,9 +217,17 @@ export const AcquisitionsModuleView: React.FC<AcquisitionsModuleViewProps> = ({
     return saved ? JSON.parse(saved) : INITIAL_TAXONOMY_GROUPS;
   });
 
-  // Navigation State: Default to 'dashboard' (with alerts & invitations)
-  const [activeRoute, setActiveRoute] = useState<ActiveRoute>('dashboard');
-  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string>('ws_residencia');
+  // Navigation State: Default directly to 'workspace_detail' (Kanban das Listas)
+  const [activeRoute, setActiveRoute] = useState<ActiveRoute>('workspace_detail');
+  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string>(() => {
+    if (unifiedSpaces && unifiedSpaces.length > 0) {
+      const match = unifiedSpaces.find(
+        (sp) => !sp.enabledModules || sp.enabledModules.includes('acquisitions')
+      );
+      if (match) return match.id;
+    }
+    return 'ws_residencia';
+  });
 
   useEffect(() => {
     if (initialWorkspaceIdToOpen) {
@@ -152,8 +236,13 @@ export const AcquisitionsModuleView: React.FC<AcquisitionsModuleViewProps> = ({
       if (onClearInitialWorkspace) {
         onClearInitialWorkspace();
       }
+    } else if (
+      effectiveWorkspaces.length > 0 &&
+      !effectiveWorkspaces.some((w) => w.id === selectedWorkspaceId)
+    ) {
+      setSelectedWorkspaceId(effectiveWorkspaces[0].id);
     }
-  }, [initialWorkspaceIdToOpen, onClearInitialWorkspace]);
+  }, [initialWorkspaceIdToOpen, onClearInitialWorkspace, effectiveWorkspaces, selectedWorkspaceId]);
 
   // Persist changes locally
   useEffect(() => {
@@ -866,109 +955,104 @@ export const AcquisitionsModuleView: React.FC<AcquisitionsModuleViewProps> = ({
   };
 
   const activeWorkspace =
-    workspaces.find((w) => w.id === selectedWorkspaceId) || workspaces[0];
+    effectiveWorkspaces.find((w) => w.id === selectedWorkspaceId) ||
+    effectiveWorkspaces[0];
 
   const isAdminUser =
     isAcquisitionAdminUid(currentUser.uid) || Boolean(currentUser.isAdmin);
 
   return (
-    <div className="space-y-6">
-      {/* Sub-navegação interna do Módulo de Aquisições */}
-      <div className="bg-slate-800/90 border border-slate-700/80 rounded-2xl p-3 sm:px-5 sm:py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-        <div className="flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded-xl bg-indigo-500/20 border border-indigo-500/30 flex items-center justify-center text-indigo-400 shrink-0">
-            <FolderKanban className="w-4 h-4" />
+    <div className="space-y-4">
+      {effectiveWorkspaces.length === 0 ? (
+        <div className="bg-slate-800/90 border border-slate-700/80 rounded-2xl p-8 text-center space-y-4">
+          <div className="w-12 h-12 rounded-2xl bg-amber-500/15 border border-amber-500/30 text-amber-400 flex items-center justify-center mx-auto">
+            <FolderKanban className="w-6 h-6" />
           </div>
           <div>
-            <h2 className="text-sm font-bold text-white leading-tight">
-              Módulo de Listas & Aquisições
-            </h2>
-            <p className="text-[11px] text-slate-400">
-              Controle de despensa recorrente, metas de compra e lista de desejos
+            <h3 className="text-base font-bold text-white">Nenhum Espaço de Listas Encontrado</h3>
+            <p className="text-xs text-slate-400 mt-1 max-w-md mx-auto">
+              Crie um novo espaço para gerenciar listas de compras, controle de despensa e metas financeiras.
             </p>
           </div>
+          {onOpenCreateSpace && (
+            <button
+              type="button"
+              onClick={() => onOpenCreateSpace('acquisitions')}
+              className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs inline-flex items-center gap-2 cursor-pointer shadow-md shadow-amber-500/20"
+            >
+              <i className="ph-bold ph-plus"></i>
+              <span>+ Criar Primeiro Espaço de Listas</span>
+            </button>
+          )}
         </div>
+      ) : activeWorkspace ? (
+        <div className="space-y-4">
+          {/* Seletor Integrado de Espaços Unificados para o Quadro de Listas */}
+          <div className="bg-slate-800/90 border border-slate-700/80 rounded-2xl p-3 sm:px-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center gap-2.5">
+              <div className="flex items-center gap-2">
+                <div className="w-7 h-7 rounded-xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400 shrink-0">
+                  <FolderKanban className="w-3.5 h-3.5" />
+                </div>
+                <span className="text-xs font-bold text-slate-300">
+                  Espaço Ativo:
+                </span>
+              </div>
 
-        <div className="flex items-center gap-1.5 overflow-x-auto pb-1 sm:pb-0 bg-slate-900/90 border border-slate-700/80 p-1 rounded-xl">
-          <button
-            type="button"
-            onClick={() => setActiveRoute('dashboard')}
-            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer ${
-              activeRoute === 'dashboard'
-                ? 'bg-indigo-600 text-white'
-                : 'text-slate-400 hover:text-slate-100 hover:bg-slate-800'
-            }`}
-          >
-            <LayoutDashboard className="w-3.5 h-3.5" />
-            <span>Visão Geral</span>
-          </button>
+              <select
+                value={activeWorkspace.id}
+                onChange={(e) => setSelectedWorkspaceId(e.target.value)}
+                className="bg-slate-900 border border-slate-700 rounded-xl px-3 py-1.5 text-xs font-bold text-white focus:outline-none focus:border-indigo-500 cursor-pointer"
+              >
+                {effectiveWorkspaces.map((ws) => (
+                  <option key={ws.id} value={ws.id}>
+                    {ws.name} {ws.monthlyBudget ? `— Teto: ${formatCurrencyBRL(ws.monthlyBudget)}` : ''}
+                  </option>
+                ))}
+              </select>
 
-          <button
-            type="button"
-            onClick={() => setActiveRoute('workspaces')}
-            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer ${
-              activeRoute === 'workspaces' || activeRoute === 'workspace_detail'
-                ? 'bg-indigo-600 text-white'
-                : 'text-slate-400 hover:text-slate-100 hover:bg-slate-800'
-            }`}
-          >
-            <FolderKanban className="w-3.5 h-3.5" />
-            <span>Espaços & Listas</span>
-          </button>
+              {activeWorkspace.monthlyBudget && activeWorkspace.monthlyBudget > 0 ? (
+                <span className="px-2.5 py-1 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs font-mono font-bold">
+                  Orçamento: {formatCurrencyBRL(activeWorkspace.monthlyBudget)}
+                </span>
+              ) : null}
+            </div>
 
-          <button
-            type="button"
-            onClick={() => setActiveRoute('settings')}
-            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer ${
-              activeRoute === 'settings'
-                ? 'bg-indigo-600 text-white'
-                : 'text-slate-400 hover:text-slate-100 hover:bg-slate-800'
-            }`}
-          >
-            <Settings className="w-3.5 h-3.5" />
-            <span>Categorias de Produtos</span>
-          </button>
-        </div>
-      </div>
+            <div className="flex items-center gap-2 self-start sm:self-auto">
+              {onOpenCreateSpace && (
+                <button
+                  type="button"
+                  onClick={() => onOpenCreateSpace('acquisitions')}
+                  className="px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs flex items-center gap-1.5 cursor-pointer shadow-md shadow-amber-500/20"
+                  title="Criar um novo espaço exclusivo para listas de compras"
+                >
+                  <i className="ph-bold ph-plus"></i>
+                  <span>+ Novo Espaço de Listas</span>
+                </button>
+              )}
 
-      {/* Conteúdo Dinâmico do Módulo de Aquisições */}
-      <div>
-        {activeRoute === 'dashboard' && (
-          <DashboardOverviewView
-            workspaces={workspaces}
-            lists={lists}
-            items={items}
-            currentUser={currentUser}
-            onUpdateUserName={handleUpdateUserName}
-            onSelectWorkspace={handleSelectWorkspace}
-            onNavigateToWorkspaces={() => setActiveRoute('workspaces')}
-            onAcceptInvitation={handleAcceptInvitation}
-            onRejectInvitation={handleRejectInvitation}
-          />
-        )}
+              {onOpenManageSpaces && (
+                <button
+                  type="button"
+                  onClick={onOpenManageSpaces}
+                  className="px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-700 border border-slate-700 text-xs font-semibold text-slate-300 hover:text-white flex items-center gap-1.5 cursor-pointer"
+                >
+                  <i className="ph-bold ph-pencil-simple text-amber-400"></i>
+                  <span>Gerenciar Espaços</span>
+                </button>
+              )}
+            </div>
+          </div>
 
-        {activeRoute === 'workspaces' && (
-          <HubDashboardView
-            workspaces={workspaces}
-            lists={lists}
-            items={items}
-            currentUser={currentUser}
-            onUpdateUserName={handleUpdateUserName}
-            onSelectWorkspace={handleSelectWorkspace}
-            onCreateWorkspace={handleCreateWorkspace}
-            onUpdateWorkspace={handleUpdateWorkspace}
-            onDeleteWorkspace={handleDeleteWorkspace}
-          />
-        )}
-
-        {activeRoute === 'workspace_detail' && activeWorkspace && (
           <WorkspaceBoardView
             workspace={activeWorkspace}
             lists={lists}
             items={items}
             taxonomyGroups={taxonomyGroups}
             currentUser={currentUser}
-            onBackToHub={() => setActiveRoute('workspaces')}
+            onBackToHub={() => {
+              // Permanece no quadro de listas
+            }}
             onUpdateWorkspace={handleUpdateWorkspace}
             onDeleteWorkspace={handleDeleteWorkspace}
             onInviteMembers={handleInviteMembersToWorkspace}
@@ -991,44 +1075,8 @@ export const AcquisitionsModuleView: React.FC<AcquisitionsModuleViewProps> = ({
             onReturnConfirmedToStock={handleReturnConfirmedToStock}
             onCreateExpenseFromPurchase={onCreateExpenseFromPurchase}
           />
-        )}
-
-        {activeRoute === 'admin' && isAdminUser && (
-          <AdminEnvironmentView
-            currentUser={currentUser}
-            workspaces={workspaces}
-            lists={lists}
-            items={items}
-            taxonomyGroups={taxonomyGroups}
-            onSwitchToAdmin={handleSwitchToAdmin}
-            onSelectWorkspace={handleSelectWorkspace}
-            onDeleteWorkspace={handleDeleteWorkspace}
-            onGrantAdminAccessToWorkspace={handleAcceptInvitation}
-            onRemoteWorkspacesLoaded={(remoteWs) => {
-              setWorkspaces((prev) => {
-                const byId = new Map(prev.map((w) => [w.id, w]));
-                remoteWs.forEach((rw) => byId.set(rw.id, rw));
-                return Array.from(byId.values());
-              });
-            }}
-          />
-        )}
-
-        {activeRoute === 'settings' && (
-          <SettingsView
-            groups={taxonomyGroups}
-            onAddGroup={handleAddTaxonomyGroup}
-            onUpdateGroup={handleUpdateTaxonomyGroup}
-            onDeleteGroup={handleDeleteTaxonomyGroup}
-            onAddCategory={handleAddTaxonomyCategory}
-            onUpdateCategory={handleUpdateTaxonomyCategory}
-            onDeleteCategory={handleDeleteTaxonomyCategory}
-            currentUser={currentUser}
-            onUserChange={handleUserChange}
-            onLogout={onLogout}
-          />
-        )}
-      </div>
+        </div>
+      ) : null}
     </div>
   );
 };
