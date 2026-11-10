@@ -1,0 +1,5 @@
+{
+  "summary":  "Auditoria técnica cruzada completa da arquitetura financeira e operacional, respondendo com base em evidências reais do código às 5 perguntas centrais (Financeiro Individual, Separação de Dados, Rateios Avulsos, Transferências e Governança/Aprovações), além da integração com listas de aquisição. Contém tabela consolidada com status (IMPLEMENTADO, PARCIALMENTE IMPLEMENTADO, INEXISTENTE, INSEGURO, NÃO COMPROVADO), mapa de entidades, dependências e plano de adaptação sem nenhuma alteração de código.",
+  "updatedAt":  "2026-11-10T00:00:52.929403614Z",
+  "userFacing":  true
+}

@@ -1,0 +1,5 @@
+{
+  "summary":  "Especificação da Arquitetura de Dados v3.1 contendo a revisão corretiva profunda do sistema financeiro pessoal e compartilhado. Inclui modelagem formal do Livro de Movimentações Financeiras (FinancialMovement) como fonte oficial da verdade dos saldos, extinção de arrays mutáveis com histórico de eventos independentes em subcoleções, regras completas de convites seguros para devedores externos em rateios avulsos, fluxo de exclusão definitiva de espaços com prazo de 30 dias e cancelamento automático por falta de resposta, cálculo rigoroso de copropriedade em aquisições por desembolso real, regras completas do Firestore cobrindo todas as subcoleções e isolamento de metadados privados.",
+  "updatedAt":  "2026-11-10T01:07:58.245389345Z",
+  "userFacing":  true
+}

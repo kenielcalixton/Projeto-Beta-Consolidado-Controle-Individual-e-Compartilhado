@@ -1,0 +1,5 @@
+{
+  "summary":  "Especificação da Arquitetura de Dados v3.0 Definitiva. Consolida todas as decisões aprovadas: pessoas externas em rateios avulsos (por e-mail ou somente nome manual), arquivamento operacional vs exclusão definitiva de espaços com opção individual dos autores, propriedade de bens vinculada à compra efetiva (AcquisitionPurchaseRecord com copropriedade percentual por desembolso), rastreabilidade real do caminho do dinheiro em transferências sob custódia, reembolsos avulsos em duas vias sem afetar fatura de cartão, parcelamentos e recorrências com separação de regras e instâncias futuras, matriz de segurança Firestore completa com trava para espaços arquivados e distinção estrita entre [APROVADO], [PROPOSTA TÉCNICA] e [PENDENTE].",
+  "updatedAt":  "2026-11-10T00:56:25.300932390Z",
+  "userFacing":  true
+}

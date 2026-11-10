@@ -1,0 +1,5 @@
+{
+  "summary":  "Especificação Arquitetural e Contábil Definitiva (v4.0) dos Espaços Compartilhados e Finanças Pessoais Integradas. Contém a eliminação total da autoaprovação (validação cruzada e consenso bilateral), separação de executor (executedByUid) e financiador econômico (fundedByUid), modelo de despesas parcialmente pagas com saldo do fornecedor segregado, proteção de dados bancários via coleções privadas isoladas (private_payment_records), histórico imutável com eventos de reversão/ajuste, matriz de segurança Firestore completa para todas as coleções, pipeline de migração não-destrutivo com quarentena auditável, análise da compatibilidade com parcelamentos do código atual e a demonstração completa de 28 cenários práticos detalhados.",
+  "updatedAt":  "2026-11-09T21:19:57.737913533Z",
+  "userFacing":  true
+}

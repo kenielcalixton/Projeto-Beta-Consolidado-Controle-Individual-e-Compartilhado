@@ -97,6 +97,24 @@ export function formatMonthYearPt(ym: string): string {
   return `${MONTH_NAMES_PT[m] || m} ${y}`;
 }
 
+// Helpers robustos de persistência local para garantir que lançamentos e dados nunca sumam ao atualizar a página
+export const loadLocalMpfData = <T,>(key: string, fallback: T): T => {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : fallback;
+  } catch {
+    return fallback;
+  }
+};
+
+export const saveLocalMpfData = <T,>(key: string, data: T): void => {
+  try {
+    localStorage.setItem(key, JSON.stringify(data));
+  } catch (e) {
+    console.warn(`[LocalCache] Erro ao gravar ${key}:`, e);
+  }
+};
+
 export default function App() {
   const [authReady, setAuthReady] = useState(false);
   const [currentUser, setCurrentUser] = useState<{
@@ -106,16 +124,98 @@ export default function App() {
     isDemo: boolean;
   } | null>(null);
 
-  // Navegação e App Shell
+  // Navegação e App Shell (com persistência de mês para não resetar no reload)
   const [activeTab, setActiveTab] = useState<NavTab>('dashboard');
-  const [selectedMonth, setSelectedMonth] = useState('2026-11');
+  const [selectedMonth, setSelectedMonth] = useState<string>(() => {
+    try {
+      const saved = localStorage.getItem('mpf_selected_month');
+      if (saved && /^\d{4}-\d{2}$/.test(saved)) return saved;
+    } catch {}
+    return '2026-11';
+  });
   const [dashboardScope, setDashboardScope] = useState('overview');
 
-  // Dados Financeiros Pessoais (Firestore real-time ou Demo Seed determinístico)
-  const [accounts, setAccounts] = useState<Account[]>([]);
-  const [categories, setCategories] = useState<Category[]>([]);
-  const [spaces, setSpaces] = useState<Space[]>([]);
-  const [transactions, setTransactions] = useState<Transaction[]>([]);
+  // Sincroniza mês selecionado no localStorage para manter a visualização após recarregar a página
+  useEffect(() => {
+    try {
+      localStorage.setItem('mpf_selected_month', selectedMonth);
+    } catch {}
+  }, [selectedMonth]);
+
+  // Dados Financeiros Pessoais (com inicialização imediata do cache local para resiliência total)
+  const [accounts, setAccounts] = useState<Account[]>(() =>
+    loadLocalMpfData<Account[]>('mpf_last_accounts', [])
+  );
+  const [categories, setCategories] = useState<Category[]>(() =>
+    loadLocalMpfData<Category[]>('mpf_last_categories', [])
+  );
+  const [spaces, setSpaces] = useState<Space[]>(() =>
+    loadLocalMpfData<Space[]>('mpf_last_spaces', [])
+  );
+  const [transactions, setTransactions] = useState<Transaction[]>(() =>
+    loadLocalMpfData<Transaction[]>('mpf_last_transactions', [])
+  );
+
+  // Funções sincronizadas de atualização que persistem instantaneamente no localStorage
+  const syncTransactionsState = (
+    nextOrUpdater: Transaction[] | ((prev: Transaction[]) => Transaction[]),
+    targetUid?: string
+  ) => {
+    setTransactions((prev) => {
+      const next = typeof nextOrUpdater === 'function' ? nextOrUpdater(prev) : nextOrUpdater;
+      const uid = targetUid || currentUser?.uid;
+      if (uid) {
+        saveLocalMpfData(`mpf_txs_${uid}`, next);
+      }
+      saveLocalMpfData('mpf_last_transactions', next);
+      return next;
+    });
+  };
+
+  const syncAccountsState = (
+    nextOrUpdater: Account[] | ((prev: Account[]) => Account[]),
+    targetUid?: string
+  ) => {
+    setAccounts((prev) => {
+      const next = typeof nextOrUpdater === 'function' ? nextOrUpdater(prev) : nextOrUpdater;
+      const uid = targetUid || currentUser?.uid;
+      if (uid) {
+        saveLocalMpfData(`mpf_accs_${uid}`, next);
+      }
+      saveLocalMpfData('mpf_last_accounts', next);
+      return next;
+    });
+  };
+
+  const syncCategoriesState = (
+    nextOrUpdater: Category[] | ((prev: Category[]) => Category[]),
+    targetUid?: string
+  ) => {
+    setCategories((prev) => {
+      const next = typeof nextOrUpdater === 'function' ? nextOrUpdater(prev) : nextOrUpdater;
+      const uid = targetUid || currentUser?.uid;
+      if (uid) {
+        saveLocalMpfData(`mpf_cats_${uid}`, next);
+      }
+      saveLocalMpfData('mpf_last_categories', next);
+      return next;
+    });
+  };
+
+  const syncSpacesState = (
+    nextOrUpdater: Space[] | ((prev: Space[]) => Space[]),
+    targetUid?: string
+  ) => {
+    setSpaces((prev) => {
+      const next = typeof nextOrUpdater === 'function' ? nextOrUpdater(prev) : nextOrUpdater;
+      const uid = targetUid || currentUser?.uid;
+      if (uid) {
+        saveLocalMpfData(`mpf_spaces_${uid}`, next);
+      }
+      saveLocalMpfData('mpf_last_spaces', next);
+      return next;
+    });
+  };
 
   // Dados Globais do Painel de Administração (exclusivos para ADMIN_UID)
   const [adminUsers, setAdminUsers] = useState<UserProfile[]>([]);
@@ -252,12 +352,24 @@ export default function App() {
       return;
     }
 
-    localStorage.removeItem('mpf_active_demo_profile');
+    // Verifica se existia sessão de demonstração salva para restaurar instantaneamente após reload
+    const savedDemoRaw = localStorage.getItem('mpf_active_demo_profile');
+    let hasRestoredDemo = false;
+    if (savedDemoRaw) {
+      try {
+        const demoProfile = JSON.parse(savedDemoRaw);
+        if (demoProfile?.uid) {
+          enterDemoSession(demoProfile);
+          hasRestoredDemo = true;
+        }
+      } catch {}
+    }
 
     const unsub = onAuthStateChanged(auth, (user) => {
       if (user) {
         const pendingName = sessionStorage.getItem('mpf_pending_signup_name');
         const userIsAdmin = isAdminUid(user.uid);
+        const resolvedEmail = (user.email || 'usuario@email.com').toLowerCase();
         setCurrentUser({
           uid: user.uid,
           name:
@@ -265,11 +377,21 @@ export default function App() {
             pendingName ||
             user.email?.split('@')[0] ||
             'Usuário',
-          email: (user.email || 'usuario@email.com').toLowerCase(),
+          email: resolvedEmail,
           isDemo: false,
         });
         setActiveTab(userIsAdmin ? 'admin' : 'dashboard');
-      } else {
+
+        // Carrega imediatamente os dados locais específicos do usuário para evitar perda ou tela em branco no reload
+        const cachedTxs = loadLocalMpfData<Transaction[]>(`mpf_txs_${user.uid}`, []);
+        if (cachedTxs.length > 0) syncTransactionsState(cachedTxs, user.uid);
+        const cachedAccs = loadLocalMpfData<Account[]>(`mpf_accs_${user.uid}`, []);
+        if (cachedAccs.length > 0) syncAccountsState(cachedAccs, user.uid);
+        const cachedCats = loadLocalMpfData<Category[]>(`mpf_cats_${user.uid}`, []);
+        if (cachedCats.length > 0) syncCategoriesState(cachedCats, user.uid);
+        const cachedSpaces = loadLocalMpfData<Space[]>(`mpf_spaces_${user.uid}`, []);
+        if (cachedSpaces.length > 0) syncSpacesState(cachedSpaces, user.uid);
+      } else if (!hasRestoredDemo) {
         setCurrentUser(null);
         setActiveTab('dashboard');
       }
@@ -284,11 +406,17 @@ export default function App() {
     name: string;
     email: string;
   }) => {
+    saveLocalMpfData('mpf_active_demo_profile', profile);
+    const cachedTxs = loadLocalMpfData<Transaction[]>(`mpf_txs_${profile.uid}`, []);
+    const cachedAccs = loadLocalMpfData<Account[]>(`mpf_accs_${profile.uid}`, []);
+    const cachedCats = loadLocalMpfData<Category[]>(`mpf_cats_${profile.uid}`, []);
+    const cachedSpaces = loadLocalMpfData<Space[]>(`mpf_spaces_${profile.uid}`, []);
     const seed = getInitialDemoData(profile.uid, profile.email, profile.name);
-    setAccounts(seed.accounts);
-    setCategories(seed.categories);
-    setSpaces(seed.spaces);
-    setTransactions(seed.transactions);
+
+    syncAccountsState(cachedAccs.length > 0 ? cachedAccs : seed.accounts, profile.uid);
+    syncCategoriesState(cachedCats.length > 0 ? cachedCats : seed.categories, profile.uid);
+    syncSpacesState(cachedSpaces.length > 0 ? cachedSpaces : seed.spaces, profile.uid);
+    syncTransactionsState(cachedTxs.length > 0 ? cachedTxs : seed.transactions, profile.uid);
     setCurrentUser({
       ...profile,
       isDemo: true,
@@ -306,11 +434,16 @@ export default function App() {
     const seedFlagKey = `mpf_seeded_v2_${uid}`;
     let creatingUserDoc = false;
 
-    // Garante dados iniciais imediatos caso o Firestore ainda não esteja ativado no projeto teste-beta-fin-e-list
-    setAccounts((prev) => (prev.length === 0 ? seed.accounts : prev));
-    setCategories((prev) => (prev.length === 0 ? seed.categories : prev));
-    setSpaces((prev) => (prev.length === 0 ? seed.spaces : prev));
-    setTransactions((prev) => (prev.length === 0 ? seed.transactions : prev));
+    // Garante dados imediatos do cache local ou seed inicial
+    const cachedAccs = loadLocalMpfData<Account[]>(`mpf_accs_${uid}`, []);
+    const cachedCats = loadLocalMpfData<Category[]>(`mpf_cats_${uid}`, []);
+    const cachedSpaces = loadLocalMpfData<Space[]>(`mpf_spaces_${uid}`, []);
+    const cachedTxs = loadLocalMpfData<Transaction[]>(`mpf_txs_${uid}`, []);
+
+    syncAccountsState((prev) => (prev.length === 0 ? (cachedAccs.length > 0 ? cachedAccs : seed.accounts) : prev), uid);
+    syncCategoriesState((prev) => (prev.length === 0 ? (cachedCats.length > 0 ? cachedCats : seed.categories) : prev), uid);
+    syncSpacesState((prev) => (prev.length === 0 ? (cachedSpaces.length > 0 ? cachedSpaces : seed.spaces) : prev), uid);
+    syncTransactionsState((prev) => (prev.length === 0 ? (cachedTxs.length > 0 ? cachedTxs : seed.transactions) : prev), uid);
 
     if (userIsAdmin) {
       const adminDemo = getAdminDemoDataset();
@@ -390,9 +523,12 @@ export default function App() {
           }
           return;
         }
-        setAccounts(
-          snap.docs.map((d) => ({ ...(d.data() as Account), id: d.id }))
-        );
+        const cloudAccs = snap.docs.map((d) => ({ ...(d.data() as Account), id: d.id }));
+        syncAccountsState((prev) => {
+          const cloudIds = new Set(cloudAccs.map((a) => a.id));
+          const localOnly = prev.filter((a) => !cloudIds.has(a.id));
+          return [...cloudAccs, ...localOnly];
+        }, uid);
       },
       (err) => handleFirestoreError(err, OperationType.LIST, 'accounts')
     );
@@ -421,9 +557,12 @@ export default function App() {
           }
           return;
         }
-        setCategories(
-          snap.docs.map((d) => ({ ...(d.data() as Category), id: d.id }))
-        );
+        const cloudCats = snap.docs.map((d) => ({ ...(d.data() as Category), id: d.id }));
+        syncCategoriesState((prev) => {
+          const cloudIds = new Set(cloudCats.map((c) => c.id));
+          const localOnly = prev.filter((c) => !cloudIds.has(c.id));
+          return [...cloudCats, ...localOnly];
+        }, uid);
       },
       (err) => handleFirestoreError(err, OperationType.LIST, 'categories')
     );
@@ -453,7 +592,12 @@ export default function App() {
           }
           return;
         }
-        setSpaces(snap.docs.map((d) => ({ ...(d.data() as Space), id: d.id })));
+        const cloudSpaces = snap.docs.map((d) => ({ ...(d.data() as Space), id: d.id }));
+        syncSpacesState((prev) => {
+          const cloudIds = new Set(cloudSpaces.map((s) => s.id));
+          const localOnly = prev.filter((s) => !cloudIds.has(s.id));
+          return [...cloudSpaces, ...localOnly];
+        }, uid);
       },
       (err) => handleFirestoreError(err, OperationType.LIST, 'spaces')
     );
@@ -486,9 +630,12 @@ export default function App() {
           }
           return;
         }
-        setTransactions(
-          snap.docs.map((d) => ({ ...(d.data() as Transaction), id: d.id }))
-        );
+        const cloudTxs = snap.docs.map((d) => ({ ...(d.data() as Transaction), id: d.id }));
+        syncTransactionsState((prev) => {
+          const cloudIds = new Set(cloudTxs.map((t) => t.id));
+          const localOnly = prev.filter((t) => !cloudIds.has(t.id));
+          return [...cloudTxs, ...localOnly];
+        }, uid);
       },
       (err) => handleFirestoreError(err, OperationType.LIST, 'transactions')
     );
@@ -596,7 +743,7 @@ export default function App() {
       showToast(`Conta/Cartão "${accData.name}" sincronizado no Firestore.`);
     } catch (e) {
       handleFirestoreError(e, OperationType.CREATE, `accounts/${id}`);
-      setAccounts((prev) => [...prev, newAcc]);
+      syncAccountsState((prev) => [...prev, newAcc]);
       showToast(`Conta/Cartão "${accData.name}" salvo localmente.`);
     }
   };
@@ -606,17 +753,18 @@ export default function App() {
     accData: Omit<Account, 'id' | 'userId'>
   ) => {
     if (!currentUser) return;
+    syncAccountsState((prev) =>
+      prev.map((a) => (a.id === accountId ? { ...a, ...accData } : a))
+    );
+    syncTransactionsState((prev) =>
+      prev.map((tx) =>
+        tx.accountId === accountId
+          ? { ...tx, accountName: accData.name, accountType: accData.type }
+          : tx
+      )
+    );
+
     if (currentUser.isDemo) {
-      setAccounts((prev) =>
-        prev.map((a) => (a.id === accountId ? { ...a, ...accData } : a))
-      );
-      setTransactions((prev) =>
-        prev.map((tx) =>
-          tx.accountId === accountId
-            ? { ...tx, accountName: accData.name, accountType: accData.type }
-            : tx
-        )
-      );
       showToast(`Conta/Cartão "${accData.name}" atualizado com sucesso.`);
       return;
     }
@@ -651,24 +799,15 @@ export default function App() {
       showToast(`Conta/Cartão "${accData.name}" atualizado no Firestore.`);
     } catch (e) {
       handleFirestoreError(e, OperationType.UPDATE, `accounts/${accountId}`);
-      setAccounts((prev) =>
-        prev.map((a) => (a.id === accountId ? { ...a, ...accData } : a))
-      );
-      setTransactions((prev) =>
-        prev.map((tx) =>
-          tx.accountId === accountId
-            ? { ...tx, accountName: accData.name, accountType: accData.type }
-            : tx
-        )
-      );
       showToast(`Conta/Cartão "${accData.name}" atualizado localmente.`);
     }
   };
 
   const handleDeleteAccount = async (accountId: string) => {
     if (!currentUser) return;
+    syncAccountsState((prev) => prev.filter((a) => a.id !== accountId));
+
     if (currentUser.isDemo) {
-      setAccounts((prev) => prev.filter((a) => a.id !== accountId));
       showToast('Conta/Cartão excluído com sucesso.');
       return;
     }
@@ -677,7 +816,6 @@ export default function App() {
       showToast('Conta/Cartão excluído do Firestore.');
     } catch (e) {
       handleFirestoreError(e, OperationType.DELETE, `accounts/${accountId}`);
-      setAccounts((prev) => prev.filter((a) => a.id !== accountId));
       showToast('Conta/Cartão excluído localmente.');
     }
   };
@@ -697,14 +835,15 @@ export default function App() {
         tx.status !== 'rejected'
     );
 
+    syncTransactionsState((prev) =>
+      prev.map((tx) =>
+        targetItems.some((t) => t.id === tx.id)
+          ? { ...tx, status: 'paid', paymentDate: today }
+          : tx
+      )
+    );
+
     if (currentUser.isDemo) {
-      setTransactions((prev) =>
-        prev.map((tx) =>
-          targetItems.some((t) => t.id === tx.id)
-            ? { ...tx, status: 'paid', paymentDate: today }
-            : tx
-        )
-      );
       showToast(
         `Fatura ${invoiceMonth} do cartão ${card.name} paga com sucesso em ${today}!`
       );
@@ -722,13 +861,6 @@ export default function App() {
       showToast(`Fatura ${invoiceMonth} do cartão ${card.name} liquidada!`);
     } catch (e) {
       handleFirestoreError(e, OperationType.UPDATE, 'transactions');
-      setTransactions((prev) =>
-        prev.map((tx) =>
-          targetItems.some((t) => t.id === tx.id)
-            ? { ...tx, status: 'paid', paymentDate: today }
-            : tx
-        )
-      );
       showToast(`Fatura ${invoiceMonth} do cartão ${card.name} liquidada localmente!`);
     }
   };
@@ -739,9 +871,9 @@ export default function App() {
     const uid = currentUser?.uid || 'demo_uid';
     const id = `cat_${Date.now()}`;
     const newCat: Category = { ...catData, id, userId: uid };
+    syncCategoriesState((prev) => [...prev, newCat]);
 
     if (!currentUser || currentUser.isDemo) {
-      setCategories((prev) => [...prev, newCat]);
       return newCat;
     }
 
@@ -754,7 +886,6 @@ export default function App() {
       return newCat;
     } catch (e) {
       handleFirestoreError(e, OperationType.CREATE, `categories/${id}`);
-      setCategories((prev) => [...prev, newCat]);
       return newCat;
     }
   };
@@ -923,40 +1054,41 @@ export default function App() {
       );
       const updatedSample = series[0];
 
+      syncTransactionsState((prev) =>
+        prev.map((tx) => {
+          if (!targets.some((t) => t.id === tx.id)) return tx;
+          const suffix =
+            tx.recurrenceType === 'installment'
+              ? ` (${tx.installmentIndex}/${tx.installmentTotal})`
+              : '';
+          const cleanBase = updatedSample.description.replace(
+            /\s*\(\d+\/\d+\)$/,
+            ''
+          );
+          return {
+            ...tx,
+            description: `${cleanBase}${suffix}`,
+            amount: updatedSample.amount,
+            status: updatedSample.status,
+            paymentDate: updatedSample.paymentDate || '',
+            categoryId: updatedSample.categoryId,
+            categoryName: updatedSample.categoryName,
+            categoryIcon: updatedSample.categoryIcon,
+            categoryColor: updatedSample.categoryColor,
+            accountId: updatedSample.accountId,
+            accountName: updatedSample.accountName,
+            accountType: updatedSample.accountType,
+            spaceId: updatedSample.spaceId,
+            spaceName: updatedSample.spaceName,
+            paidByEmail: updatedSample.paidByEmail,
+            recipientEmail: updatedSample.recipientEmail || '',
+            participantEmails: updatedSample.participantEmails,
+            splits: updatedSample.splits,
+          };
+        })
+      );
+
       if (currentUser.isDemo) {
-        setTransactions((prev) =>
-          prev.map((tx) => {
-            if (!targets.some((t) => t.id === tx.id)) return tx;
-            const suffix =
-              tx.recurrenceType === 'installment'
-                ? ` (${tx.installmentIndex}/${tx.installmentTotal})`
-                : '';
-            const cleanBase = updatedSample.description.replace(
-              /\s*\(\d+\/\d+\)$/,
-              ''
-            );
-            return {
-              ...tx,
-              description: `${cleanBase}${suffix}`,
-              amount: updatedSample.amount,
-              status: updatedSample.status,
-              paymentDate: updatedSample.paymentDate || '',
-              categoryId: updatedSample.categoryId,
-              categoryName: updatedSample.categoryName,
-              categoryIcon: updatedSample.categoryIcon,
-              categoryColor: updatedSample.categoryColor,
-              accountId: updatedSample.accountId,
-              accountName: updatedSample.accountName,
-              accountType: updatedSample.accountType,
-              spaceId: updatedSample.spaceId,
-              spaceName: updatedSample.spaceName,
-              paidByEmail: updatedSample.paidByEmail,
-              recipientEmail: updatedSample.recipientEmail || '',
-              participantEmails: updatedSample.participantEmails,
-              splits: updatedSample.splits,
-            };
-          })
-        );
         showToast(
           `Alteração aplicada em ${targets.length} lançamento(s) (${
             cascadeMode === 'only_this'
@@ -1003,6 +1135,7 @@ export default function App() {
         showToast(`Edição em cascata concluída (${targets.length} itens).`);
       } catch (e) {
         handleFirestoreError(e, OperationType.UPDATE, 'transactions');
+        showToast('Edição em cascata salva com segurança localmente.');
       }
       return;
     }
@@ -1013,8 +1146,13 @@ export default function App() {
       id: `tx_${Date.now()}_${idx}`,
     }));
 
+    // Persiste instantaneamente no estado e no cache local (nunca se perde no reload)
+    syncTransactionsState((prev) => {
+      const filtered = prev.filter((t) => !createdWithIds.some((c) => c.id === t.id));
+      return [...createdWithIds, ...filtered];
+    });
+
     if (currentUser.isDemo) {
-      setTransactions((prev) => [...createdWithIds, ...prev]);
       showToast(
         createdWithIds.length > 1
           ? `${createdWithIds.length} parcelas/recorrências geradas com sucesso!`
@@ -1033,11 +1171,10 @@ export default function App() {
           updatedAt: serverTimestamp(),
         });
       }
-      showToast('Lançamento sincronizado com sucesso!');
+      showToast('Lançamento registrado e sincronizado com sucesso!');
     } catch (e) {
       handleFirestoreError(e, OperationType.CREATE, 'transactions');
-      setTransactions((prev) => [...createdWithIds, ...prev]);
-      showToast('Lançamento registrado localmente com sucesso!');
+      showToast('Lançamento gravado localmente com segurança no dispositivo!');
     }
   };
 
@@ -1052,27 +1189,28 @@ export default function App() {
     const effectivePaymentDate =
       newStatus === 'paid' ? paymentDate || getTodayDateString() : '';
 
+    syncTransactionsState((prev) =>
+      prev.map((item) => {
+        if (!targets.some((t) => t.id === item.id)) return item;
+        const nextStatus =
+          newStatus === 'paid'
+            ? 'paid'
+            : computeAutomatedStatus({
+                isPaid: false,
+                paymentDate: '',
+                dueDate: item.dueDate,
+                splits: item.splits,
+                spaceId: item.spaceId,
+              });
+        return {
+          ...item,
+          status: nextStatus,
+          paymentDate: effectivePaymentDate,
+        };
+      })
+    );
+
     if (currentUser.isDemo) {
-      setTransactions((prev) =>
-        prev.map((item) => {
-          if (!targets.some((t) => t.id === item.id)) return item;
-          const nextStatus =
-            newStatus === 'paid'
-              ? 'paid'
-              : computeAutomatedStatus({
-                  isPaid: false,
-                  paymentDate: '',
-                  dueDate: item.dueDate,
-                  splits: item.splits,
-                  spaceId: item.spaceId,
-                });
-          return {
-            ...item,
-            status: nextStatus,
-            paymentDate: effectivePaymentDate,
-          };
-        })
-      );
       showToast(
         newStatus === 'paid'
           ? `Lançamento efetivado como Pago em ${effectivePaymentDate}!`
@@ -1113,10 +1251,11 @@ export default function App() {
     if (!currentUser) return;
     const targets = filterCascadeTargets(transactions, tx, mode);
 
+    syncTransactionsState((prev) =>
+      prev.filter((item) => !targets.some((t) => t.id === item.id))
+    );
+
     if (currentUser.isDemo) {
-      setTransactions((prev) =>
-        prev.filter((item) => !targets.some((t) => t.id === item.id))
-      );
       showToast(`${targets.length} lançamento(s) excluído(s).`);
       return;
     }
@@ -1400,8 +1539,9 @@ export default function App() {
       proposedAmount: 0,
     };
 
+    syncTransactionsState((prev) => [settlementTx, ...prev]);
+
     if (currentUser.isDemo) {
-      setTransactions((prev) => [settlementTx, ...prev]);
       showToast(
         `Reembolso de ${formatCurrency(amount)} (${fromName} -> ${toName}) registrado no Livro-Razão!`
       );
@@ -1418,6 +1558,7 @@ export default function App() {
       showToast('Reembolso liquidado no Livro-Razão!');
     } catch (e) {
       handleFirestoreError(e, OperationType.CREATE, 'transactions');
+      showToast('Reembolso gravado localmente no Livro-Razão!');
     }
   };
 
@@ -1533,38 +1674,39 @@ export default function App() {
             ).toLowerCase()
         : tx.paidByEmail;
 
-    if (currentUser.isDemo) {
-      setTransactions((prev) =>
-        prev.map((item) => {
-          const isCurrent = item.id === tx.id;
-          const isInCascade = cascadeTargets.some((t) => t.id === item.id);
-          if (!isCurrent && !isInCascade) return item;
+    syncTransactionsState((prev) =>
+      prev.map((item) => {
+        const isCurrent = item.id === tx.id;
+        const isInCascade = cascadeTargets.some((t) => t.id === item.id);
+        if (!isCurrent && !isInCascade) return item;
 
-          if (isCurrent) {
-            return {
-              ...item,
-              amount: confirmedAmount,
-              status: 'paid',
-              paymentDate: effectiveDate,
-              paidByEmail: effectivePayerForCurrent,
-              recipientEmail:
-                item.type === 'income' && item.spaceId
-                  ? item.recipientEmail || currentUser.email
-                  : item.recipientEmail,
-              splits: buildUpdatedSplitsForTarget(item, true),
-            };
-          }
-
-          // Para os demais itens da série (quando cascadeMode !== 'only_this'), atualiza apenas o valor se foi reajustado
+        if (isCurrent) {
           return {
             ...item,
             amount: confirmedAmount,
-            splits: buildUpdatedSplitsForTarget(item, false),
+            status: 'paid',
+            paymentDate: effectiveDate,
+            paidByEmail: effectivePayerForCurrent,
+            recipientEmail:
+              item.type === 'income' && item.spaceId
+                ? item.recipientEmail || currentUser.email
+                : item.recipientEmail,
+            splits: buildUpdatedSplitsForTarget(item, true),
           };
-        })
-      );
+        }
 
-      setSettlingTxModal(null);
+        // Para os demais itens da série (quando cascadeMode !== 'only_this'), atualiza apenas o valor se foi reajustado
+        return {
+          ...item,
+          amount: confirmedAmount,
+          splits: buildUpdatedSplitsForTarget(item, false),
+        };
+      })
+    );
+
+    setSettlingTxModal(null);
+
+    if (currentUser.isDemo) {
       showToast(
         tx.type === 'income'
           ? `Receita "${tx.description}" efetivada com valor validado de ${formatCurrency(
@@ -1601,7 +1743,6 @@ export default function App() {
           });
         }
       }
-      setSettlingTxModal(null);
       showToast(
         tx.type === 'income'
           ? `Receita "${tx.description}" efetivada (${formatCurrency(
@@ -1613,6 +1754,7 @@ export default function App() {
       );
     } catch (e) {
       handleFirestoreError(e, OperationType.UPDATE, `transactions/${tx.id}`);
+      showToast('Pagamento registrado localmente no dispositivo.');
     }
   };
 
@@ -1737,20 +1879,21 @@ export default function App() {
       spaceId: tx.spaceId,
     });
 
+    syncTransactionsState((prev) =>
+      prev.map((item) =>
+        item.id === tx.id
+          ? {
+              ...item,
+              status: nextStatus,
+              splits: updatedSplits,
+              disputeReason: '',
+              proposedAmount: 0,
+            }
+          : item
+      )
+    );
+
     if (currentUser.isDemo) {
-      setTransactions((prev) =>
-        prev.map((item) =>
-          item.id === tx.id
-            ? {
-                ...item,
-                status: nextStatus,
-                splits: updatedSplits,
-                disputeReason: '',
-                proposedAmount: 0,
-              }
-            : item
-        )
-      );
       showToast(
         `Cota aceita em "${tx.description}"! A despesa segue no prazo de vencimento (${tx.dueDate}) aguardando baixa do pagamento.`
       );
@@ -1779,20 +1922,21 @@ export default function App() {
         : s
     );
 
+    syncTransactionsState((prev) =>
+      prev.map((item) =>
+        item.id === tx.id
+          ? {
+              ...item,
+              status: 'rejected',
+              paymentDate: '',
+              splits: updatedSplits,
+              disputeReason: reason.slice(0, 300),
+            }
+          : item
+      )
+    );
+
     if (currentUser.isDemo) {
-      setTransactions((prev) =>
-        prev.map((item) =>
-          item.id === tx.id
-            ? {
-                ...item,
-                status: 'rejected',
-                paymentDate: '',
-                splits: updatedSplits,
-                disputeReason: reason.slice(0, 300),
-              }
-            : item
-        )
-      );
       showToast(`Rateio "${tx.description}" marcado como recusado.`);
       return;
     }
@@ -1850,22 +1994,23 @@ export default function App() {
       spaceId: tx.spaceId,
     });
 
+    syncTransactionsState((prev) =>
+      prev.map((item) =>
+        item.id === tx.id
+          ? {
+              ...item,
+              status: nextStatus,
+              splits: updatedSplits,
+              proposedAmount,
+              disputeReason: `Valor renegociado para ${formatCurrency(
+                proposedAmount
+              )}: ${reason}`.slice(0, 300),
+            }
+          : item
+      )
+    );
+
     if (currentUser.isDemo) {
-      setTransactions((prev) =>
-        prev.map((item) =>
-          item.id === tx.id
-            ? {
-                ...item,
-                status: nextStatus,
-                splits: updatedSplits,
-                proposedAmount,
-                disputeReason: `Valor renegociado para ${formatCurrency(
-                  proposedAmount
-                )}: ${reason}`.slice(0, 300),
-              }
-            : item
-        )
-      );
       showToast(
         `Contraproposta de ${formatCurrency(proposedAmount)} aplicada em "${tx.description}"! A despesa segue aguardando pagamento no vencimento.`
       );
@@ -2468,12 +2613,12 @@ export default function App() {
           )}
         </main>
 
-        {/* Dock Flutuante Inferior de Navegação (Centralizado no Rodapé na mesma linha do botão FAB) */}
+        {/* Dock Flutuante Inferior de Navegação (Centralizado no Rodapé: apenas ícones no Mobile, texto completo no Desktop) */}
         <nav
           aria-label="Navegação Principal Flutuante"
-          className="fixed bottom-6 inset-x-0 z-30 pointer-events-none flex justify-center px-4"
+          className="fixed bottom-3 inset-x-0 sm:bottom-6 z-30 pointer-events-none flex justify-center px-2 sm:px-4"
         >
-          <div className="pointer-events-auto bg-slate-900/95 border border-slate-700/80 backdrop-blur-md p-1.5 sm:p-2 rounded-2xl shadow-2xl flex items-center gap-1 sm:gap-2 max-w-[calc(100vw-5rem)] sm:max-w-none overflow-x-auto">
+          <div className="pointer-events-auto bg-slate-900/95 border border-slate-700/80 backdrop-blur-md p-1.5 sm:p-2 rounded-2xl shadow-2xl flex items-center justify-around sm:justify-start gap-1 sm:gap-2 max-w-[calc(100vw-5rem)] sm:max-w-none overflow-x-auto">
             {navItems.map((item) => {
               const isActive = activeTab === item.id;
               return (
@@ -2481,7 +2626,9 @@ export default function App() {
                   key={item.id}
                   type="button"
                   onClick={() => setActiveTab(item.id)}
-                  className={`relative px-3 sm:px-3.5 py-2 rounded-xl text-xs font-semibold transition-all flex items-center gap-2 whitespace-nowrap cursor-pointer ${
+                  title={item.label}
+                  aria-label={item.label}
+                  className={`relative p-2.5 sm:px-3.5 sm:py-2 rounded-xl text-xs font-semibold transition-all flex items-center justify-center gap-2 whitespace-nowrap cursor-pointer ${
                     isActive
                       ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/25'
                       : 'text-slate-400 hover:text-slate-100 hover:bg-slate-800'
@@ -2490,13 +2637,12 @@ export default function App() {
                   <i
                     className={`${
                       isActive ? 'ph-fill' : 'ph'
-                    } ${item.icon} text-base shrink-0`}
+                    } ${item.icon} text-lg sm:text-base shrink-0`}
                   ></i>
                   <span className="hidden sm:inline">{item.label}</span>
-                  <span className="sm:hidden">{item.shortLabel}</span>
                   {typeof item.count === 'number' && item.count > 0 && (
                     <span
-                      className={`px-1.5 py-0.2 rounded-full text-[10px] font-mono font-bold ${
+                      className={`absolute -top-1 -right-1 sm:static sm:top-auto sm:right-auto px-1.5 py-0.2 rounded-full text-[10px] font-mono font-bold ${
                         isActive
                           ? 'bg-white/20 text-white'
                           : 'bg-amber-500/20 text-amber-300'

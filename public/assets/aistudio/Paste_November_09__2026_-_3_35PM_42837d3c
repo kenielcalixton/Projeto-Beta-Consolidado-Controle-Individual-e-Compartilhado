@@ -1,0 +1,708 @@
+# Proposta de regras de negócio — Financeiro dos Espaços Compartilhados
+
+**Status:** proposta em revisão. As decisões expressamente validadas estão incorporadas. Recomendações e pontos ainda pendentes estão identificados.
+
+## 1. Objetivo e princípios fundamentais
+
+O financeiro dos Espaços Compartilhados deve permitir que os participantes organizem despesas, receitas, pagamentos, transferências, adiantamentos, recursos compartilhados, rateios e liquidações.
+
+O sistema deve distinguir:
+
+1. **Despesa:** obrigação financeira gerada por uma compra, conta ou compromisso.
+2. **Responsabilidade:** quanto cada participante deve assumir de uma despesa.
+3. **Pagamento:** valor efetivamente utilizado para quitar uma despesa.
+4. **Desembolso:** de qual participante, conta ou recurso saiu o dinheiro.
+5. **Adiantamento:** dinheiro transferido antecipadamente para outra pessoa ou destinado a uma despesa, ainda não utilizado integralmente.
+6. **Recurso compartilhado:** dinheiro disponível para o grupo, formado por valores enviados ou disponibilizados pelos participantes.
+7. **Liquidação:** operação que resolve total ou parcialmente uma obrigação financeira entre participantes.
+
+Uma mesma operação pode envolver vários desses conceitos, mas eles não devem ser confundidos nem contabilizados duas vezes.
+
+## 2. Despesas e responsabilidades
+
+### 2.1. Cadastro de despesas
+
+Uma despesa compartilhada deve conter:
+
+- Descrição.
+- Valor original.
+- Data de registro.
+- Competência.
+- Vencimento, quando aplicável.
+- Participantes envolvidos.
+- Critério de rateio.
+- Responsabilidade financeira de cada participante.
+- Responsável pelo registro.
+- Origem dos recursos utilizados no pagamento.
+- Situação da despesa.
+- Histórico de alterações e pagamentos.
+
+O valor original deve ser preservado, mesmo quando houver pagamentos parciais, ajustes ou alterações posteriores.
+
+### 2.2. Critérios de rateio
+
+O sistema deve permitir:
+
+- Divisão igualitária.
+- Divisão por valores personalizados.
+- Divisão proporcional, quando aplicável.
+- Seleção dos participantes responsáveis.
+
+A soma das responsabilidades deve corresponder ao valor total da despesa, respeitando as regras de arredondamento.
+
+A responsabilidade de cada participante não deve ser confundida com quem realizou o pagamento.
+
+**Exemplo:**
+
+Uma despesa de R$ 400 é dividida igualmente entre duas pessoas.
+
+- Pessoa A: responsabilidade de R$ 200.
+- Pessoa B: responsabilidade de R$ 200.
+- Pessoa A realiza o pagamento integral de R$ 400.
+
+O sistema registra R$ 400 de desembolso da Pessoa A, mas mantém R$ 200 de responsabilidade para cada participante. A diferença deve ser considerada no cálculo de compensação entre eles.
+
+## 3. Pagamentos e liquidação de despesas
+
+### 3.1. Pagamentos parciais
+
+**Decisão validada: permitir pagamentos parciais.**
+
+Uma despesa poderá receber vários pagamentos, realizados por participantes diferentes e/ou por origens financeiras diferentes.
+
+Cada pagamento deve registrar:
+
+- Valor.
+- Data.
+- Responsável pelo pagamento.
+- Conta, cartão ou recurso utilizado.
+- Despesa relacionada.
+- Observação, quando necessária.
+
+O sistema deve calcular:
+
+**Saldo pendente da despesa = valor original − total de pagamentos reconhecidos.**
+
+Estados sugeridos:
+
+- Pendente.
+- Parcialmente pago.
+- Pago.
+- Cancelado.
+
+O estado da despesa deve ser independente do saldo de responsabilidade entre os participantes.
+
+### 3.2. Acumulação de saldos entre meses
+
+**Decisão validada: acumular automaticamente até a liquidação.**
+
+Os saldos entre participantes não devem ser zerados ou descartados na virada do mês.
+
+Uma obrigação não liquidada permanece registrada e deve ser transportada automaticamente para os períodos seguintes, até sua resolução.
+
+Exemplo:
+
+- Novembro: Pessoa A deve R$ 150 à Pessoa B.
+- Dezembro: surge uma nova obrigação de R$ 80 no sentido contrário.
+- O sistema considera as duas obrigações e apresenta o saldo consolidado, sem apagar os registros originais.
+
+A visão mensal continua disponível, mas funciona como filtro de consulta, não como limite para a existência das obrigações.
+
+**Regras:**
+
+- Diferenciar competência da despesa e data do pagamento.
+- Não eliminar obrigações na virada do mês.
+- Apresentar movimentos do período e saldos acumulados.
+- Reduzir o saldo conforme pagamentos e liquidações reconhecidos.
+- Preservar a origem de cada obrigação.
+
+### 3.3. Liquidação entre participantes
+
+**Decisão validada: sugerir as obrigações mais antigas, permitindo ajuste manual.**
+
+Quando houver saldo a compensar entre participantes, o sistema deverá sugerir quais obrigações podem ser liquidadas, priorizando as mais antigas.
+
+O usuário poderá aceitar as sugestões, selecionar outras obrigações, alterar valores, realizar liquidações parciais ou liquidar várias obrigações em uma única operação.
+
+Cada liquidação deve registrar:
+
+- Participantes envolvidos.
+- Valor liquidado.
+- Data.
+- Obrigações relacionadas.
+- Valores destinados a cada obrigação.
+- Responsável pelo registro.
+- Histórico da operação.
+
+A liquidação não deve ser tratada como nova despesa ou receita. Uma transferência bancária entre participantes não pode gerar uma segunda contabilização da despesa compartilhada.
+
+#### Pagamentos que excedem uma obrigação
+
+Um excedente ocorre quando o valor pago é maior do que o saldo restante da obrigação.
+
+Exemplo:
+
+- Despesa: R$ 500.
+- Pagamentos reconhecidos: R$ 400.
+- Saldo pendente: R$ 100.
+- Novo pagamento registrado: R$ 150.
+- Excedente: R$ 50.
+
+**Recomendação:** o sistema não deve descartar nem distribuir automaticamente o excedente. Deve solicitar ao responsável a destinação do valor:
+
+1. Aplicar os R$ 50 em outra obrigação compatível.
+2. Manter os R$ 50 como crédito ou adiantamento identificado.
+3. Registrar a devolução do valor, quando cabível.
+
+A operação deve manter o vínculo com o pagamento original e registrar a destinação escolhida.
+
+#### Desfazer uma liquidação
+
+**Recomendação:** permitir o estorno de uma liquidação, sem apagar o registro original.
+
+Ao desfazer:
+
+- A liquidação original passa a constar como estornada.
+- As obrigações relacionadas recuperam os valores correspondentes.
+- Os saldos são recalculados.
+- O motivo do estorno é registrado.
+- O histórico mantém a operação original e o estorno.
+
+Se a liquidação estiver associada a uma transferência bancária real, o sistema deve distinguir o estorno contábil da devolução efetiva do dinheiro. Desfazer o vínculo financeiro não significa que o dinheiro retornou automaticamente à conta de origem.
+
+#### Liquidações envolvendo mais de duas pessoas
+
+**Recomendação:** permitir uma operação agrupada com várias liquidações individuais.
+
+Exemplo:
+
+- Pessoa A deve R$ 100 à Pessoa B.
+- Pessoa B deve R$ 80 à Pessoa C.
+- Pessoa C deve R$ 50 à Pessoa A.
+
+O sistema pode apresentar as obrigações e sugerir compensações, mas cada valor liquidado deve identificar claramente quem pagou, quem recebeu e qual obrigação foi resolvida.
+
+Na primeira versão, recomendo manter os vínculos entre pares, mesmo quando várias liquidações forem registradas em uma única operação. Isso simplifica auditoria, estorno e conciliação.
+
+## 4. Transferências e adiantamentos
+
+### 4.1. Transferências vinculadas a despesas
+
+**Decisão validada: transferências destinadas a despesas específicas devem estar vinculadas à ocorrência da despesa.**
+
+Quando um participante transferir dinheiro para outro com a finalidade de pagar uma despesa, a operação deve ser registrada como transferência vinculada, e não como receita pessoal.
+
+Exemplo:
+
+- Pessoa A transfere R$ 300 para Pessoa B.
+- O dinheiro é destinado ao pagamento do aluguel.
+- Pessoa B ainda não realizou o pagamento.
+
+A transferência foi realizada, mas a despesa não deve ser considerada quitada apenas por isso.
+
+### 4.2. Adiantamentos não utilizados
+
+**Decisão validada: permitir devolução ou conversão, mediante decisão explícita dos participantes diretamente afetados.**
+
+O valor transferido e ainda não utilizado deve permanecer como adiantamento pendente.
+
+O sistema deve acompanhar:
+
+- Quem enviou.
+- Quem recebeu.
+- Despesa relacionada.
+- Valor transferido.
+- Valor utilizado.
+- Saldo pendente.
+- Devoluções.
+- Conversões autorizadas.
+- Histórico de decisões.
+
+Quando houver saldo não utilizado, os envolvidos poderão decidir entre:
+
+1. **Devolução:** o valor retorna a quem realizou o adiantamento.
+2. **Conversão:** o valor passa a ter outra finalidade financeira, como aporte ao recurso compartilhado ou outra destinação acordada.
+
+A conversão deve exigir confirmação explícita dos participantes diretamente afetados.
+
+### 4.3. Cancelamento de despesa com adiantamento ou pagamento já realizado
+
+**Decisão validada: o cancelamento deve abrir um fluxo de solicitação de reversão.**
+
+Quando uma despesa for cancelada e já houver dinheiro transferido ou utilizado para pagá-la, o sistema deverá abrir uma tela solicitando a definição da reversão dos valores envolvidos.
+
+O fluxo deverá:
+
+1. Identificar a despesa cancelada.
+2. Identificar transferências, adiantamentos e pagamentos associados.
+3. Apresentar os valores utilizados e não utilizados.
+4. Calcular o valor que precisa ser revertido ou receber outra destinação.
+5. Solicitar a decisão dos participantes afetados.
+6. Registrar as devoluções, conversões ou outras destinações aprovadas.
+7. Manter o histórico da despesa e das operações relacionadas.
+
+O saldo de adiantamento não utilizado deve continuar identificado até sua destinação.
+
+Se parte do dinheiro já tiver sido utilizada para pagar uma conta, a reversão deve considerar o que efetivamente pode ser devolvido e o que precisa de tratamento próprio.
+
+### 4.4. Devolução parcial
+
+**Decisão validada: permitir devolução parcial conforme a utilização do adiantamento.**
+
+Se parte do valor tiver sido utilizada, a devolução poderá corresponder apenas ao saldo não utilizado ou a outro valor acordado pelos envolvidos.
+
+A operação deve demonstrar:
+
+- Valor originalmente transferido.
+- Valor utilizado.
+- Valor já devolvido.
+- Valor ainda pendente.
+- Destinação final.
+
+O sistema não deve assumir que todo adiantamento será devolvido integralmente.
+
+## 5. Recursos compartilhados e pagamentos de despesas
+
+**Diretriz revisada:** em vez de depender de modalidades fixas de caixa, o sistema deverá controlar os recursos disponibilizados ao grupo e como eles são utilizados para pagar despesas.
+
+O grupo poderá utilizar diferentes formas de contribuição e pagamento:
+
+- Um participante envia dinheiro para outra pessoa, que ficará responsável por pagar a despesa.
+- Um participante paga diretamente uma despesa com dinheiro próprio.
+- Vários participantes contribuem para uma mesma despesa.
+- Uma despesa é paga parcialmente com recursos compartilhados e parcialmente com dinheiro de um participante.
+- Um participante disponibiliza dinheiro para o grupo, que será utilizado em pagamentos futuros.
+
+O sistema deve permitir essas combinações sem exigir que o grupo escolha uma única modalidade rígida de funcionamento.
+
+### 5.1. Controle dos recursos
+
+Toda entrada de dinheiro destinada ao grupo deve ser registrada com:
+
+- Participante que disponibilizou o dinheiro.
+- Valor.
+- Data.
+- Destinação, quando houver.
+- Responsável pelo recebimento ou controle.
+- Histórico.
+
+Toda utilização deve registrar:
+
+- Despesa relacionada.
+- Valor utilizado.
+- Data.
+- Responsável pela operação.
+- Origem do dinheiro.
+- Saldo restante, quando houver.
+
+O sistema deve conseguir demonstrar quanto foi disponibilizado, quanto foi utilizado e quanto permanece disponível.
+
+### 5.2. Pagamento direto de uma despesa por participante
+
+Quando um participante pagar uma despesa integralmente com recursos próprios:
+
+1. O pagamento deve ser vinculado à despesa.
+2. O desembolso deve ser atribuído a quem efetivamente pagou.
+3. O valor da despesa deve ser baixado.
+4. As responsabilidades dos participantes permanecem conforme o rateio.
+5. A diferença entre desembolso e responsabilidade deve entrar no cálculo de compensação.
+
+Não deve ser necessário criar uma transferência intermediária fictícia para representar esse pagamento.
+
+### 5.3. Dinheiro enviado a outro participante para pagamento
+
+Quando um participante enviar dinheiro para outro pagar uma despesa:
+
+1. Registrar a transferência.
+2. Vincular o valor à despesa, quando a finalidade já estiver definida.
+3. Registrar o recebimento pelo responsável pelo pagamento.
+4. Registrar a baixa da despesa somente quando o pagamento efetivo for realizado.
+5. Controlar qualquer saldo não utilizado como adiantamento.
+
+### 5.4. Pagamentos realizados com recursos acumulados
+
+Quando houver dinheiro disponível para o grupo, qualquer participante poderá realizar uma despesa com esses recursos, respeitando a validação do responsável pelo espaço.
+
+A baixa deverá reduzir o saldo disponível e vincular a utilização à despesa correspondente.
+
+### 5.5. Participante que paga mais do que sua responsabilidade
+
+Quando alguém paga uma despesa compartilhada com recursos próprios e desembolsa mais do que sua própria responsabilidade, o sistema deve reconhecer o valor adicional como crédito a compensar.
+
+Esse crédito não é uma nova receita: é resultado da diferença entre o valor desembolsado e a responsabilidade do participante.
+
+### 5.6. Retiradas de recursos
+
+Uma retirada significa a saída de dinheiro que estava disponível para o grupo, sem necessariamente estar associada ao pagamento direto de uma despesa.
+
+**Recomendação:** não permitir retiradas sem finalidade e registro.
+
+Uma retirada deverá informar:
+
+- Quem recebeu o dinheiro.
+- Valor.
+- Data.
+- Motivo.
+- Destinação.
+- Participantes afetados, quando aplicável.
+
+Se o dinheiro for devolvido ao grupo, a devolução deverá ser registrada como nova entrada vinculada à retirada original.
+
+### 5.7. Validação pelo responsável do espaço
+
+**Diretriz informada pelo usuário: ações financeiras realizadas pelos participantes devem passar pela validação do responsável pelo espaço.**
+
+O sistema deverá separar o registro da operação de sua validação.
+
+Uma operação criada por participante poderá ficar com situação **Aguardando validação** até a análise do responsável pelo espaço.
+
+O responsável poderá:
+
+- Aprovar.
+- Recusar, informando o motivo.
+- Solicitar correção ou esclarecimento.
+
+A validação deve registrar responsável, data, decisão e observação.
+
+**Recomendação de integridade:** uma operação aguardando validação não deve ser tratada como definitivamente conciliada no saldo oficial do espaço. O sistema poderá exibir seu impacto previsto separadamente, evitando que um registro ainda não aprovado altere os saldos consolidados.
+
+A validação do sistema não substitui a confirmação de que uma transferência ou pagamento realmente ocorreu. O registro deve distinguir a operação financeira realizada da sua aprovação administrativa.
+
+## 6. Cartões de crédito e faturas
+
+### 6.1. Compras no cartão
+
+**Decisão validada: a compra é reconhecida como despesa e vinculada à fatura.**
+
+Quando uma despesa compartilhada for paga com cartão:
+
+1. A compra é registrada como despesa na data correspondente.
+2. A despesa fica vinculada à fatura.
+3. As responsabilidades dos participantes são calculadas.
+4. Não há saída imediata da conta bancária.
+5. A saída bancária ocorre quando a fatura é paga.
+
+O pagamento da fatura não deve gerar uma segunda despesa compartilhada.
+
+### 6.2. Pagamento parcial de fatura vencida
+
+**Diretriz informada pelo usuário:** quando uma fatura estiver vencida, o sistema deverá perguntar qual valor foi efetivamente pago.
+
+Se o valor informado for inferior ao total devido, deverá oferecer:
+
+1. **Levar o saldo para a fatura seguinte:** o valor pendente é transportado para o próximo período.
+2. **Parcelar a fatura:** iniciar o fluxo de parcelamento, com condições e valores definidos.
+
+O sistema deverá registrar o valor efetivamente pago, o saldo transportado e os encargos associados, quando houver.
+
+A fatura não pode ser marcada como integralmente paga se ainda existir saldo pendente.
+
+### 6.3. Saldo transportado para a fatura seguinte
+
+Quando uma fatura receber saldo de uma fatura anterior, esse valor deverá ser identificado separadamente das novas compras.
+
+Ao registrar o pagamento da fatura seguinte, o sistema deverá permitir informar os encargos por atraso, quando existirem.
+
+Os encargos devem ser registrados separadamente do saldo original transportado, permitindo identificar:
+
+- Saldo anterior.
+- Novas compras.
+- Juros.
+- Multas.
+- Outros encargos.
+- Pagamentos realizados.
+- Saldo restante.
+
+### 6.4. Antecipação de fatura
+
+**Diretriz informada pelo usuário:** permitir pagamentos antes do vencimento.
+
+Quando uma fatura ainda não estiver vencida e o participante realizar um pagamento antecipado, o sistema deverá registrar uma antecipação vinculada à fatura.
+
+O registro deve permitir acompanhar:
+
+- Valor antecipado.
+- Data.
+- Conta utilizada.
+- Fatura relacionada.
+- Saldo restante da fatura.
+
+A antecipação não deve gerar uma nova despesa. Ela representa pagamento antecipado de obrigações já registradas.
+
+### 6.5. Compras parceladas
+
+**Recomendação:** preservar o comportamento atual do financeiro individual sempre que possível, mas garantir que o espaço compartilhado reconheça cada parcela e sua competência corretamente.
+
+Uma compra parcelada deve manter vínculo com a compra original e gerar parcelas identificáveis.
+
+Cada parcela deverá ter:
+
+- Valor.
+- Competência.
+- Fatura relacionada.
+- Responsabilidades dos participantes.
+- Situação de pagamento.
+
+A compra original não deve ser duplicada como uma despesa integral em cada mês.
+
+Ainda é necessário verificar como o sistema atual representa parcelamentos antes de definir a adaptação técnica.
+
+### 6.6. Estornos, juros, multas e encargos
+
+**Recomendação:** registrar esses eventos como movimentações financeiras próprias, vinculadas à compra, despesa ou fatura de origem.
+
+- **Estorno:** reduz ou cancela o valor correspondente da compra original, mantendo histórico.
+- **Juros:** registra o custo adicional associado ao atraso ou financiamento.
+- **Multa:** registra a penalidade aplicada.
+- **Outros encargos:** identificam custos adicionais que não fazem parte do valor original da compra.
+
+Encargos de atraso também devem poder ser associados a despesas pagas fora do prazo, mesmo quando não forem despesas de cartão.
+
+O sistema deve permitir identificar quem é responsável por cada encargo, conforme as regras do espaço e a origem da obrigação.
+
+### 6.7. Pagamento de fatura com mais de uma conta
+
+**Recomendação inicial:** permitir que uma fatura seja paga com uma única conta como padrão, mas suportar mais de uma origem de pagamento.
+
+Se houver pagamentos de contas diferentes, cada parte deve ser registrada individualmente e vinculada à mesma fatura.
+
+Exemplo:
+
+- Fatura de R$ 1.000.
+- Conta A paga R$ 600.
+- Conta B paga R$ 400.
+
+O sistema registra duas movimentações bancárias, mas reconhece apenas R$ 1.000 de pagamento da fatura, sem criar despesas duplicadas.
+
+## 7. Recorrências
+
+### 7.1. Modelo e ocorrências
+
+**Decisão validada: gerar ocorrências automaticamente.**
+
+As despesas recorrentes deverão ser gerenciadas a partir de um modelo separado das ocorrências financeiras individuais.
+
+Cada ocorrência possui seus próprios dados:
+
+- Valor.
+- Competência.
+- Vencimento.
+- Participantes.
+- Rateio.
+- Pagamentos.
+- Situação.
+- Histórico.
+
+A geração automática de ocorrências não significa pagamento automático.
+
+### 7.2. Alterações na recorrência
+
+**Decisão validada: solicitar confirmação antes de atualizar as próximas ocorrências.**
+
+O sistema deverá manter a possibilidade de escolher o alcance da alteração, conforme o fluxo já existente:
+
+- Somente esta ocorrência.
+- Todas as ocorrências aplicáveis.
+- Esta ocorrência e as próximas.
+
+Antes de aplicar uma mudança, deverá apresentar quais registros serão afetados.
+
+Ocorrências já consolidadas não devem ser reescritas silenciosamente.
+
+### 7.3. Ocorrências geradas e ainda não vencidas
+
+**Diretriz informada pelo usuário:** ocorrências ainda não vencidas não precisam ser tratadas como atrasos ou saldos vencidos.
+
+Elas devem permanecer como obrigações futuras, respeitando sua competência e vencimento.
+
+### 7.4. Ocorrências parcialmente pagas
+
+**Diretriz informada pelo usuário:** manter o saldo pendente e projetá-lo para o mês seguinte quando estiver atrasado.
+
+O valor original da ocorrência deve ser preservado. O saldo não pago deve permanecer identificado e aparecer na projeção do período seguinte.
+
+A projeção não deve criar uma segunda despesa. Deve representar a continuidade da obrigação anterior.
+
+## 8. Integração entre listas de compras e despesas
+
+**Decisão validada: permitir gerar uma despesa a partir de uma compra, mediante confirmação.**
+
+Quando uma compra for concluída em uma lista compartilhada, o sistema poderá oferecer a criação de uma despesa.
+
+A criação dependerá de confirmação do usuário.
+
+A despesa deverá representar o **valor total da compra**, enquanto o detalhamento dos itens ficará na observação ou nos dados de origem relacionados.
+
+Antes da confirmação, o sistema deverá apresentar:
+
+- Descrição.
+- Valor total.
+- Data.
+- Responsável pela compra.
+- Participantes envolvidos.
+- Critério de rateio.
+- Origem do pagamento.
+- Detalhamento dos itens.
+
+O usuário poderá revisar e ajustar as informações.
+
+### 8.1. Compra realizada por uma pessoa e rateada entre outras
+
+**Diretriz informada pelo usuário:** quando uma pessoa pagar integralmente uma compra que será dividida entre participantes, os valores devidos pelos demais deverão retornar como reembolso para quem realizou o pagamento.
+
+Exemplo:
+
+- Pessoa A realiza uma compra de R$ 300.
+- A compra é dividida igualmente entre A, B e C.
+- Responsabilidade de cada participante: R$ 100.
+- Pessoa A desembolsa R$ 300.
+- Pessoas B e C ficam responsáveis por R$ 100 cada.
+
+O sistema deverá registrar uma única despesa de R$ 300 e reconhecer R$ 200 como valores a compensar em favor de A.
+
+Os reembolsos realizados por B e C devem liquidar essas obrigações, sem gerar novas despesas compartilhadas.
+
+### 8.2. Prevenção de duplicidade
+
+- Concluir uma compra não deve gerar despesa automaticamente.
+- Uma mesma compra não pode originar despesas duplicadas.
+- Deve existir referência entre a compra original e a despesa gerada.
+- Alterações posteriores na lista não devem modificar silenciosamente uma despesa já criada.
+
+## 9. Integração com o financeiro individual
+
+A visão individual deve distinguir:
+
+- Despesas individuais.
+- Responsabilidades em despesas compartilhadas.
+- Valores efetivamente desembolsados.
+- Valores a receber.
+- Valores a pagar.
+- Adiantamentos enviados ou recebidos.
+- Contribuições aos recursos compartilhados.
+- Liquidações realizadas.
+- Pagamentos de cartão e faturas.
+
+Exemplo:
+
+Uma despesa compartilhada de R$ 400 foi dividida igualmente entre duas pessoas, mas paga integralmente pela Pessoa A.
+
+- Despesa compartilhada total: R$ 400.
+- Responsabilidade da Pessoa A: R$ 200.
+- Responsabilidade da Pessoa B: R$ 200.
+- Desembolso da Pessoa A: R$ 400.
+- Valor a compensar em favor de A: R$ 200.
+
+O sistema não deve registrar R$ 400 como despesa individual de A e, simultaneamente, registrar novamente R$ 200 como uma segunda despesa.
+
+## 10. Motor de saldos e conciliação
+
+O motor financeiro deverá considerar registros relacionados, em vez de depender exclusivamente de transações sintéticas ou descrições textuais.
+
+Deverá considerar:
+
+- Responsabilidades individuais.
+- Pagamentos reconhecidos.
+- Pagamentos parciais.
+- Adiantamentos.
+- Devoluções.
+- Conversões.
+- Contribuições aos recursos compartilhados.
+- Utilizações dos recursos.
+- Liquidações.
+- Obrigações acumuladas de períodos anteriores.
+- Encargos e estornos.
+
+O motor deverá calcular separadamente:
+
+1. Quanto cada participante deveria assumir.
+2. Quanto cada participante efetivamente desembolsou.
+3. Quanto cada participante adiantou ou recebeu.
+4. Quanto permanece pendente em cada despesa.
+5. Quanto cada participante tem a pagar ou receber.
+6. Quanto já foi liquidado.
+7. Quanto existe disponível nos recursos compartilhados.
+8. Quais operações aguardam validação.
+
+O mês será um filtro de consulta, não uma fronteira para a existência dos saldos.
+
+## 11. Validação, integridade e auditoria
+
+As operações financeiras dos participantes devem passar pela validação do responsável pelo espaço, conforme a diretriz definida.
+
+O sistema deverá distinguir:
+
+- Registro criado.
+- Operação realizada.
+- Operação aguardando validação.
+- Operação aprovada.
+- Operação recusada.
+- Operação estornada ou revertida.
+
+Toda operação relevante deve preservar:
+
+- Autor.
+- Data.
+- Valor.
+- Origem e destino.
+- Registros relacionados.
+- Responsável pela validação.
+- Decisão.
+- Justificativa.
+- Histórico de alterações.
+
+Registros financeiros devem utilizar identificadores estáveis dos usuários, sem depender exclusivamente de e-mail.
+
+Operações que envolvam vários registros devem preservar consistência, inclusive em caso de falha.
+
+Exclusões e alterações financeiras devem considerar dependências e impactos nos saldos.
+
+## 12. Decisões validadas e diretrizes consolidadas
+
+| Tema | Regra |
+|---|---|
+| Transferências entre participantes | Vinculadas à despesa quando tiverem finalidade específica |
+| Pagamento com cartão | Compra vinculada à fatura |
+| Recorrências | Geração automática de ocorrências |
+| Adiantamento não utilizado | Devolução ou conversão mediante decisão dos envolvidos |
+| Cancelamento com dinheiro transferido | Abrir fluxo de reversão |
+| Devolução de adiantamento | Pode ser parcial, conforme utilização e acordo |
+| Conversão de adiantamento | Confirmação dos participantes diretamente afetados |
+| Pagamentos parciais | Permitidos |
+| Saldo entre meses | Acumulação automática até liquidação |
+| Controle de recursos compartilhados | Dinâmico, com registro de entradas e utilizações |
+| Pagamento direto por participante | Vinculado à despesa e ao desembolso real |
+| Validação de operações | Ações financeiras de participantes passam pela validação do responsável pelo espaço |
+| Alteração de recorrências | Confirmação antes de atualizar ocorrências futuras |
+| Liquidação de saldos | Sugerir obrigações mais antigas, com ajuste manual |
+| Compras de listas | Geração de despesa mediante confirmação |
+| Despesa originada de compra | Valor total, com itens detalhados na observação |
+| Compra paga por um e rateada | Reembolsos aos responsáveis pelo desembolso |
+| Pagamento parcial de fatura vencida | Permitir transportar saldo ou parcelar |
+| Antecipação de fatura | Registrar pagamento antecipado vinculado à fatura |
+
+## 13. Pontos que ainda precisam de definição
+
+1. **Validação pelo responsável:** todas as operações financeiras precisam de aprovação antes de afetar os saldos oficiais? Ou somente operações que envolvem recursos compartilhados e alterações nas responsabilidades? Como tratar operações criadas pelo próprio responsável?
+2. **Recursos compartilhados:** quando alguém contribui sem destinar o dinheiro a uma despesa específica, o valor fica disponível para qualquer despesa do grupo ou precisa de uma finalidade aprovada?
+3. **Cancelamento:** se uma despesa já foi efetivamente paga a um fornecedor, como tratar a situação em que não há possibilidade de receber o dinheiro de volta?
+4. **Encargos:** como distribuir juros, multas e encargos quando o atraso foi causado por um participante específico? E quando não for possível identificar um responsável?
+5. **Parcelamento de fatura:** quais informações e condições devem ser registradas para representar o parcelamento e suas parcelas futuras?
+6. **Compras parceladas:** confirmar a compatibilidade da regra proposta com a lógica atual do financeiro individual.
+7. **Liquidações múltiplas:** confirmar se a primeira versão pode utilizar várias liquidações entre pares dentro de uma única operação agrupada.
+
+## 14. Diretriz para a próxima etapa
+
+Esta proposta representa as regras de negócio desejadas, não uma autorização para implementação.
+
+A próxima etapa deverá comparar as regras com a arquitetura atual do sistema, identificando:
+
+- O que já existe e pode ser preservado.
+- O que precisa ser adaptado.
+- Quais entidades e relacionamentos novos são necessários.
+- Quais dados atuais precisam ser migrados.
+- Quais funcionalidades dependem de outras.
+- Quais riscos existem para o histórico financeiro.
+- Quais alternativas técnicas são possíveis.
+
+Nenhuma alteração no código, banco de dados ou estrutura atual deve ser realizada antes da análise e aprovação da arquitetura proposta.

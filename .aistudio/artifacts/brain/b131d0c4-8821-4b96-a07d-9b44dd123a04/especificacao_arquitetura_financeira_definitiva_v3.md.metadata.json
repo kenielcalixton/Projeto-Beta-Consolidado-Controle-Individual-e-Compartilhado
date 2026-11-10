@@ -1,0 +1,5 @@
+{
+  "summary":  "Especificação técnica e contábil definitiva (v3.0) do Sistema Financeiro de Espaços Compartilhados e Finanças Pessoais, integrando todas as diretrizes decididas pelo usuário: modelo de dados desacoplado (responsabilidade, pagamentos e créditos bilaterais), alçada de aprovação 100%, quarentena histórica com tolerância zero, privacidade bancária com mascaramento, fundo de reserva coletivo sem cotas individuais, ciclo de vida de adiantamentos, máquinas de estado separadas, regras Firestore auditáveis, idempotência transacional, 18 cenários práticos detalhados e integração profunda com listas de compras.",
+  "updatedAt":  "2026-11-09T20:44:55.212973147Z",
+  "userFacing":  true
+}

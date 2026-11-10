@@ -1,0 +1,5 @@
+{
+  "summary":  "Proposta de Arquitetura de Dados Definitiva para Financeiro Individual, Espaços Compartilhados, Rateios Avulsos, Transferências, Aprovações e Listas de Aquisição. Contém diagnóstico da arquitetura legada, mapeamento de entidades (mantidas, adaptadas, criadas e descontinuadas), dicionário completo de campos em centavos inteiros e UIDs estáveis, diagramas relacionais, fluxos de gravação atômica, matriz de segurança Firestore, auditoria imutável, plano de evolução não-destrutivo e identificação estrita entre regras aprovadas e sugestões técnicas pendentes de aprovação.",
+  "updatedAt":  "2026-11-10T00:34:07.380914707Z",
+  "userFacing":  true
+}

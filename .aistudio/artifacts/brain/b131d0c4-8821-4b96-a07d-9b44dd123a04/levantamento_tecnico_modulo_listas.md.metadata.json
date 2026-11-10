@@ -1,0 +1,5 @@
+{
+  "summary":  "Levantamento técnico e funcional completo do Módulo de Listas de Aquisição (Acquisitions), cobrindo tipos de listas, máquinas de estado, estrutura de dados, taxonomia, regras de permissão/autoria, integrações existentes (comprovadas vs parciais vs inexistentes), limitações e plano de adaptação para a nova hierarquia (Individual vs Compartilhada).",
+  "updatedAt":  "2026-11-09T23:49:36.074877635Z",
+  "userFacing":  true
+}

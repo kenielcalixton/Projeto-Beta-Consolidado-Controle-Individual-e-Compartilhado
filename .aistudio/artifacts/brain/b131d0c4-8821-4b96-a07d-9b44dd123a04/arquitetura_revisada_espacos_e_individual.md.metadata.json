@@ -1,0 +1,5 @@
+{
+  "summary":  "Documento oficial da Arquitetura Revisada do Financeiro Coletivo e Individual, cobrindo: modelo relacional desacoplado, pagamentos parciais, liquidações FIFO por par, validação/aprovação com saldos oficiais vs projetados, migração segura em 4 fases com dry-run, motor de arredondamento Hamilton/Hare, complementação Firestore (transações atômicas, regras de segurança, idempotência), os 10 cenários detalhados, controle em paralelo da vida financeira individual e integração profunda com listas de compras.",
+  "updatedAt":  "2026-11-09T19:15:08.731780551Z",
+  "userFacing":  true
+}
