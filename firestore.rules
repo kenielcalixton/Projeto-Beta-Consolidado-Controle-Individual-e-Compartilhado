@@ -35,6 +35,11 @@ service cloud.firestore {
         request.auth.uid == get(/databases/$(database)/documents/spaces/$(spaceId)).data.creatorUid;
     }
 
+    function isAccountOwner(accountId) {
+      return isAuthenticated() &&
+        get(/databases/$(database)/documents/accounts/$(accountId)).data.userId == request.auth.uid;
+    }
+
     // 1. Contas Pessoais e Livro de Movimentações
     match /accounts/{accountId} {
       allow read: if isAuthenticated() && resource.data.userId == request.auth.uid;
@@ -44,60 +49,133 @@ service cloud.firestore {
         request.resource.data.id == accountId &&
         request.resource.data.projectedBalanceCents == 0 &&
         request.resource.data.isArchived == false;
-      // Atualização: titularidade mantida, campos estruturais imutáveis (id, userId, createdAt)
+      // Atualização: titularidade mantida, campos estruturais e saldo projetado imutáveis pelo cliente
       allow update: if isAuthenticated() && resource.data.userId == request.auth.uid &&
         request.resource.data.userId == resource.data.userId && // userId é imutável
         request.resource.data.id == resource.data.id && // id é imutável
-        request.resource.data.createdAt == resource.data.createdAt; // createdAt é imutável
+        request.resource.data.createdAt == resource.data.createdAt && // createdAt é imutável
+        request.resource.data.projectedBalanceCents == resource.data.projectedBalanceCents; // saldo alterado apenas pelo backend confiável
       allow delete: if false; // Contas com histórico contábil são arquivadas, nunca deletadas
 
-      // 1.1 Livro Oficial de Movimentações (Append-Only)
+      // 1.1 Livro Oficial de Movimentações (Append-Only, Escrita exclusiva via Backend Confiável Admin SDK)
       match /movements/{movementId} {
-        allow read: if isAuthenticated() && 
-          get(/databases/$(database)/documents/accounts/$(accountId)).data.userId == request.auth.uid;
-        // Inserção atômica: conta ativa, titular e autor coincidentes com auth.uid, valores e direção válidos
-        allow create: if isAuthenticated() && 
-          get(/databases/$(database)/documents/accounts/$(accountId)).data.userId == request.auth.uid &&
-          get(/databases/$(database)/documents/accounts/$(accountId)).data.isArchived == false &&
-          request.resource.data.accountId == accountId &&
-          request.resource.data.userId == request.auth.uid &&
-          request.resource.data.authorUid == request.auth.uid &&
-          request.resource.data.direction in ['inflow', 'outflow'] &&
-          request.resource.data.confirmationStatus in ['cleared', 'reconciled'] &&
-          request.resource.data.amountCents is int &&
-          request.resource.data.amountCents > 0;
+        allow read: if isAccountOwner(accountId);
+        allow create: if false; // Escrita direta pelo cliente bloqueada; processada via Cloud Functions
         allow update: if false; // Movimentos são estritamente imutáveis
-        allow delete: if false; // Estornos criam novos movimentos compensatórios
+        allow delete: if false; // Estornos criam novos movimentos compensatórios via Cloud Functions
       }
 
       // 1.2 Metadados Privados e Comprovantes
       match /private_payment_metadata/{paymentId} {
-        allow read, write: if isAuthenticated() && 
-          get(/databases/$(database)/documents/accounts/$(accountId)).data.userId == request.auth.uid;
+        allow read, write: if isAccountOwner(accountId);
       }
 
-      // 1.3 Faturas de Cartão e Pagamentos
+      // 1.3 Faturas de Cartão, Compras, Pagamentos e Carry-Overs (Escrita autoritativa no servidor)
       match /invoices/{invoiceMonth} {
-        allow read: if isAuthenticated() && 
-          get(/databases/$(database)/documents/accounts/$(accountId)).data.userId == request.auth.uid;
-        allow write: if isAuthenticated() && 
-          get(/databases/$(database)/documents/accounts/$(accountId)).data.userId == request.auth.uid;
+        allow read: if isAccountOwner(accountId);
+        allow write: if false;
+
+        match /charges/{chargeId} {
+          allow read: if isAccountOwner(accountId);
+          allow write: if false;
+        }
 
         match /payments/{paymentId} {
-          allow read, write: if isAuthenticated() && 
-            get(/databases/$(database)/documents/accounts/$(accountId)).data.userId == request.auth.uid;
+          allow read: if isAccountOwner(accountId);
+          allow write: if false;
         }
 
         match /carry_overs/{carryId} {
-          allow read, write: if isAuthenticated() && 
-            get(/databases/$(database)/documents/accounts/$(accountId)).data.userId == request.auth.uid;
+          allow read: if isAccountOwner(accountId);
+          allow write: if false;
         }
       }
     }
 
-    // 2. Transações e Obrigações Pessoais do Usuário
+    // 2. Transações, Categorias, Orçamentos, Transferências e Reembolsos Pessoais do Usuário
     match /users/{userId}/personal_transactions/{txId} {
-      allow read, write: if isOwner(userId);
+      allow read: if isOwner(userId);
+      allow write: if false; // Operações contábeis processadas exclusivamente via Cloud Functions
+
+      match /payments/{paymentId} {
+        allow read: if isOwner(userId);
+        allow write: if false;
+      }
+
+      match /payment_reversals/{reversalId} {
+        allow read: if isOwner(userId);
+        allow write: if false;
+      }
+    }
+
+    match /users/{userId}/categories/{categoryId} {
+      allow read, delete: if isOwner(userId);
+      allow create, update: if isOwner(userId) &&
+        request.resource.data.userId == request.auth.uid;
+    }
+
+    match /users/{userId}/budgets/{budgetId} {
+      allow read, delete: if isOwner(userId);
+      allow create, update: if isOwner(userId) &&
+        request.resource.data.userId == request.auth.uid &&
+        request.resource.data.plannedAmountCents is int &&
+        request.resource.data.plannedAmountCents > 0;
+    }
+
+    match /users/{userId}/internal_transfers/{transferId} {
+      allow read: if isOwner(userId);
+      allow write: if false; // Executado atomicamente via Cloud Functions
+    }
+
+    match /users/{userId}/personal_refunds/{refundId} {
+      allow read: if isOwner(userId);
+      allow write: if false; // Executado atomicamente via Cloud Functions
+
+      match /receipts/{receiptId} {
+        allow read: if isOwner(userId);
+        allow write: if false;
+      }
+    }
+
+    // Cobertura explícita para coleções equivalentes top-level (isolamento estrito por titular)
+    match /personal_incomes/{incomeId} {
+      allow read: if isAuthenticated() && resource.data.userId == request.auth.uid;
+      allow write: if false;
+      match /receipts/{receiptId} {
+        allow read: if isAuthenticated() &&
+          get(/databases/$(database)/documents/personal_incomes/$(incomeId)).data.userId == request.auth.uid;
+        allow write: if false;
+      }
+    }
+
+    match /personal_expenses/{expenseId} {
+      allow read: if isAuthenticated() && resource.data.userId == request.auth.uid;
+      allow write: if false;
+      match /payments/{paymentId} {
+        allow read: if isAuthenticated() &&
+          get(/databases/$(database)/documents/personal_expenses/$(expenseId)).data.userId == request.auth.uid;
+        allow write: if false;
+      }
+    }
+
+    match /credit_card_statements/{statementId} {
+      allow read: if isAuthenticated() && resource.data.userId == request.auth.uid;
+      allow write: if false;
+      match /charges/{chargeId} {
+        allow read: if isAuthenticated() &&
+          get(/databases/$(database)/documents/credit_card_statements/$(statementId)).data.userId == request.auth.uid;
+        allow write: if false;
+      }
+      match /payments/{paymentId} {
+        allow read: if isAuthenticated() &&
+          get(/databases/$(database)/documents/credit_card_statements/$(statementId)).data.userId == request.auth.uid;
+        allow write: if false;
+      }
+    }
+
+    match /personal_refunds/{refundId} {
+      allow read: if isAuthenticated() && resource.data.userId == request.auth.uid;
+      allow write: if false;
     }
 
     match /users/{userId}/notifications/{notificationId} {
@@ -173,7 +251,10 @@ service cloud.firestore {
 
     // 3.4 Convites Seguros para Espaços Compartilhados (Token SHA-256)
     match /space_invites/{tokenId} {
-      allow read: if true; // Aberto para validação de metadados do convite pelo tokenHash
+      // Leitura individual (get) aberta para validação do convite pelo tokenHash exato;
+      // Listagem (list) restrita exclusivamente a participantes ativos do espaço do convite (bloqueia listagem global e acesso de ex-participantes).
+      allow get: if true;
+      allow list: if isAuthenticated() && isSpaceMember(resource.data.spaceId);
       allow create: if isAuthenticated() && 
         isSpaceMember(request.resource.data.spaceId) && 
         isSpaceActive(request.resource.data.spaceId);
@@ -187,14 +268,13 @@ service cloud.firestore {
 
     // 4. Espaços Compartilhados e Governança
     match /spaces/{spaceId} {
-      // Leitura permitida para participantes ativos ou membros com histórico pregresso
-      allow read: if isAuthenticated() && (
-        request.auth.uid in resource.data.memberUids ||
-        ('historicalMemberUids' in resource.data && request.auth.uid in resource.data.historicalMemberUids)
-      );
+      // Leitura do documento operacional do espaço (que expõe memberUids atuais e monthlyBudgetCents)
+      // restrita EXCLUSIVAMENTE a participantes ativos (ex-participantes usam /historical_views/{memberUid}).
+      allow read: if isAuthenticated() && request.auth.uid in resource.data.memberUids;
       allow create: if isAuthenticated() && 
         request.resource.data.creatorUid == request.auth.uid &&
-        request.resource.data.ownerId == request.auth.uid;
+        request.resource.data.ownerId == request.auth.uid &&
+        request.resource.data.memberUids == [request.auth.uid];
       // Atualização estritamente reservada a participantes operacionais ativos (memberUids)
       allow update: if isSpaceMember(spaceId) && (
         // Somente o criador pode arquivar ou iniciar solicitação de dissolução
@@ -205,6 +285,17 @@ service cloud.firestore {
          !request.resource.data.diff(resource.data).affectedKeys().hasAny(['creatorUid', 'ownerId', 'spaceStatus']))
       );
       allow delete: if false;
+
+      // 4.0 Projeção de Consulta Histórica para Ex-Participantes (sem dados operacionais privados dos demais)
+      match /historical_views/{memberUid} {
+        allow read: if isOwner(memberUid) && isSpaceHistoricalMember(spaceId);
+        // Criação/atualização apenas pelo backend confiável (Admin SDK) ou durante saída/remoção autorizada em espaço ativo
+        allow write: if isSpaceActive(spaceId) && isSpaceMember(spaceId) && (
+          request.auth.uid == memberUid ||
+          request.auth.uid == get(/databases/$(database)/documents/spaces/$(spaceId)).data.ownerId ||
+          request.auth.uid == get(/databases/$(database)/documents/spaces/$(spaceId)).data.creatorUid
+        );
+      }
 
       // 4.1 Membros do Espaço
       match /members/{memberUid} {
@@ -244,21 +335,25 @@ service cloud.firestore {
         allow create: if isSpaceCreator(spaceId) && 
           request.resource.data.initiatedByUid == request.auth.uid;
         allow update: if isSpaceMember(spaceId) && (
-          // Cancelamento pelo criador
-          (isSpaceCreator(spaceId) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['requestStatus', 'cancelledAt', 'cancellationReason'])) ||
+          // Cancelamento voluntário pelo criador (o cancelamento por timeout é exclusivo do backend server-side)
+          (isSpaceCreator(spaceId) &&
+           request.resource.data.requestStatus == 'cancelled_by_creator' &&
+           request.resource.data.diff(resource.data).affectedKeys().hasOnly(['requestStatus', 'cancelledAt', 'cancellationReason'])) ||
           // Resposta do autor para a sua própria destinação
           (request.auth.uid in get(/databases/$(database)/documents/spaces/$(spaceId)).data.memberUids &&
-           request.resource.data.diff(resource.data).affectedKeys().hasOnly(['authorDestinations']))
+           request.resource.data.diff(resource.data).affectedKeys().hasOnly(['authorDestinations', 'requestStatus']))
         );
+        allow delete: if false;
       }
 
       // 4.4 Despesas Compartilhadas (Travadas se o espaço estiver arquivado)
       match /shared_expenses/{expenseId} {
-        // Leitura: Participante ativo OU ex-participante histórico consultando despesa que ele próprio criou ou respondeu
+        // Leitura: Participante ativo OU ex-participante histórico consultando despesa na qual foi autor, responsável ou participante
         allow read: if isSpaceMember(spaceId) || (
           isSpaceHistoricalMember(spaceId) && (
             resource.data.createdByUid == request.auth.uid ||
-            resource.data.responsibleUid == request.auth.uid
+            resource.data.responsibleUid == request.auth.uid ||
+            ('participantUids' in resource.data && request.auth.uid in resource.data.participantUids)
           )
         );
         allow create: if isSpaceMember(spaceId) && isSpaceActive(spaceId) &&
@@ -275,12 +370,24 @@ service cloud.firestore {
         allow delete: if false;
 
         match /liabilities/{memberUid} {
-          allow read: if isSpaceMember(spaceId);
+          // Ex-participante lê apenas a sua própria obrigação ou se foi responsável pela despesa
+          allow read: if isSpaceMember(spaceId) || (
+            isSpaceHistoricalMember(spaceId) && (
+              isOwner(memberUid) ||
+              get(/databases/$(database)/documents/spaces/$(spaceId)/shared_expenses/$(expenseId)).data.responsibleUid == request.auth.uid
+            )
+          );
           allow write: if isSpaceMember(spaceId) && isSpaceActive(spaceId);
         }
 
         match /payments/{paymentId} {
-          allow read: if isSpaceMember(spaceId);
+          // Ex-participante lê apenas pagamento que ele executou ou de despesa sob sua responsabilidade
+          allow read: if isSpaceMember(spaceId) || (
+            isSpaceHistoricalMember(spaceId) && (
+              resource.data.executedByUid == request.auth.uid ||
+              get(/databases/$(database)/documents/spaces/$(spaceId)/shared_expenses/$(expenseId)).data.responsibleUid == request.auth.uid
+            )
+          );
           allow create: if isSpaceMember(spaceId) && isSpaceActive(spaceId) &&
             request.resource.data.executedByUid == request.auth.uid;
           allow update: if isSpaceMember(spaceId) && isSpaceActive(spaceId) &&
@@ -288,12 +395,25 @@ service cloud.firestore {
         }
 
         match /bilateral_debts/{debtId} {
-          allow read: if isSpaceMember(spaceId);
+          // Ex-participante lê apenas dívida bilateral em que foi devedor ou credor
+          allow read: if isSpaceMember(spaceId) || (
+            isSpaceHistoricalMember(spaceId) && (
+              resource.data.debtorUid == request.auth.uid ||
+              resource.data.creditorUid == request.auth.uid
+            )
+          );
           allow write: if isSpaceMember(spaceId) && isSpaceActive(spaceId);
         }
 
         match /refunds/{refundId} {
-          allow read: if isSpaceMember(spaceId);
+          // Ex-participante lê apenas reembolso em que foi beneficiário, autor ou responsável pela despesa
+          allow read: if isSpaceMember(spaceId) || (
+            isSpaceHistoricalMember(spaceId) && (
+              resource.data.beneficiaryUid == request.auth.uid ||
+              resource.data.recordedByUid == request.auth.uid ||
+              get(/databases/$(database)/documents/spaces/$(spaceId)/shared_expenses/$(expenseId)).data.responsibleUid == request.auth.uid
+            )
+          );
           allow write: if isSpaceMember(spaceId) && isSpaceActive(spaceId) &&
             request.auth.uid == get(/databases/$(database)/documents/spaces/$(spaceId)/shared_expenses/$(expenseId)).data.responsibleUid;
         }
@@ -317,12 +437,22 @@ service cloud.firestore {
         );
 
         match /allocations/{allocationId} {
-          allow read: if isSpaceMember(spaceId);
+          allow read: if isSpaceMember(spaceId) || (
+            isSpaceHistoricalMember(spaceId) && (
+              get(/databases/$(database)/documents/spaces/$(spaceId)/settlements/$(settlementId)).data.debtorUid == request.auth.uid ||
+              get(/databases/$(database)/documents/spaces/$(spaceId)/settlements/$(settlementId)).data.creditorUid == request.auth.uid
+            )
+          );
           allow write: if isSpaceMember(spaceId) && isSpaceActive(spaceId);
         }
 
         match /reversions/{reversionId} {
-          allow read: if isSpaceMember(spaceId);
+          allow read: if isSpaceMember(spaceId) || (
+            isSpaceHistoricalMember(spaceId) && (
+              get(/databases/$(database)/documents/spaces/$(spaceId)/settlements/$(settlementId)).data.debtorUid == request.auth.uid ||
+              get(/databases/$(database)/documents/spaces/$(spaceId)/settlements/$(settlementId)).data.creditorUid == request.auth.uid
+            )
+          );
           allow write: if isSpaceMember(spaceId) && isSpaceActive(spaceId) &&
             request.auth.uid == get(/databases/$(database)/documents/spaces/$(spaceId)/settlements/$(settlementId)).data.creditorUid;
         }
@@ -417,6 +547,11 @@ service cloud.firestore {
       match /occurrences/{installmentNumber} {
         allow read, write: if isAuthenticated();
       }
+    }
+
+    // 8. Regra Collection Group para Consulta Histórica Restrita de Ex-Participantes
+    match /{path=**}/historical_views/{memberUid} {
+      allow list: if isAuthenticated() && resource.data.memberUid == request.auth.uid;
     }
   }
 }

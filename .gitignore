@@ -36,5 +36,5 @@ service-account*.json
 
 # Firebase e emuladores
 .firebase/
-.firebaserc
+functions/node_modules
 

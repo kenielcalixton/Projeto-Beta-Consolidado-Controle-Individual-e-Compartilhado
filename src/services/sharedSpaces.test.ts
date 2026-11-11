@@ -105,8 +105,8 @@ test('FASE 5 — Espaços Compartilhados (Arquitetura v3.1)', async (t) => {
     assert.equal(member.role, 'owner');
     assert.equal(member.participationStatus, 'active');
 
-    // Verifica trilha de auditoria
-    const audits = await getSpaceAuditEvents(space.id, true);
+    // Verifica trilha de auditoria (informando requesterUid obrigatório)
+    const audits = await getSpaceAuditEvents(space.id, userAlice.uid, true);
     assert.equal(audits.length, 1);
     assert.equal(audits[0].eventType, 'space_created');
   });
@@ -424,12 +424,12 @@ test('FASE 5 — Espaços Compartilhados (Arquitetura v3.1)', async (t) => {
     );
   });
 
-  await t.test('13. deve remover participante revogando acesso operacional e preservando histórico', async () => {
+  await t.test('13. deve remover participante revogando acesso operacional e preservando histórico sanitizado', async () => {
     const { space } = await createSpace(
       userAlice.uid,
       userAlice.name,
       userAlice.email,
-      { name: 'República Central' },
+      { name: 'República Central', monthlyBudgetCents: 300000 },
       true
     );
 
@@ -449,9 +449,12 @@ test('FASE 5 — Espaços Compartilhados (Arquitetura v3.1)', async (t) => {
     const bobActiveSpaces = await getUserSpaces(userBob.uid, false, true, 'active');
     assert.ok(!bobActiveSpaces.some((s) => s.id === space.id));
 
-    // Bob localiza o espaço no filtro de espaços com participação histórica
+    // Bob localiza o espaço no filtro de espaços com participação histórica (projeção sanitizada)
     const bobHistoricalSpaces = await getUserSpaces(userBob.uid, false, true, 'historical');
-    assert.ok(bobHistoricalSpaces.some((s) => s.id === space.id));
+    const bobHistView = bobHistoricalSpaces.find((s) => s.id === space.id);
+    assert.ok(bobHistView);
+    assert.deepEqual(bobHistView.memberUids, []); // Não vaza participantes atuais
+    assert.equal(bobHistView.monthlyBudgetCents, undefined); // Não vaza orçamento operacional atual
 
     // O registro histórico do membro existe com status 'removed_by_admin'
     const members = await getSpaceMembers(space.id, userAlice.uid, true);
@@ -459,14 +462,20 @@ test('FASE 5 — Espaços Compartilhados (Arquitetura v3.1)', async (t) => {
     assert.equal(bobMember?.participationStatus, 'removed_by_admin');
     assert.ok(bobMember?.exitedAt);
 
-    // Bob possui permissão de leitura histórica para conferir seus registros
+    // Bob consultando membros vê EXCLUSIVAMENTE seu próprio registro
+    const bobVisibleMembers = await getSpaceMembers(space.id, userBob.uid, true);
+    assert.equal(bobVisibleMembers.length, 1);
+    assert.equal(bobVisibleMembers[0].uid, userBob.uid);
+
+    // Bob possui permissão de leitura histórica explícita (allowHistorical = true) sanitizada
     const spaceConsult = await getSpaceById(space.id, userBob.uid, true, true);
     assert.ok(spaceConsult);
+    assert.deepEqual(spaceConsult.memberUids, []);
 
-    // Mas Bob tem o acesso operacional de escrita estritamente BLOQUEADO
+    // Mas Bob tem o acesso operacional padrão (allowHistorical = false) estritamente BLOQUEADO
     await assert.rejects(
       async () => {
-        await getSpaceById(space.id, userBob.uid, true, false);
+        await getSpaceById(space.id, userBob.uid, true);
       },
       /Violação de segurança: acesso não autorizado a espaço no qual o usuário não é participante ativo/i
     );
@@ -476,7 +485,7 @@ test('FASE 5 — Espaços Compartilhados (Arquitetura v3.1)', async (t) => {
       async () => {
         await updateSpace(space.id, userBob.uid, { name: 'Tentativa de Hack' }, true);
       },
-      /Apenas proprietários ou administradores podem editar/i
+      /acesso não autorizado a espaço no qual o usuário não é participante ativo/i
     );
 
     // Usuário completamente estranho (Dave) não tem nem acesso operacional nem histórico
@@ -713,7 +722,7 @@ test('FASE 5 — Espaços Compartilhados (Arquitetura v3.1)', async (t) => {
   });
 
   await t.test(
-    '21. separação estrita: ex-participante preserva consulta histórica de auditoria mas é bloqueado de gerar convites ou alterar papéis',
+    '21. separação estrita: ex-participante consulta apenas seus próprios eventos de auditoria e é bloqueado de listar convites, ver dissolução ou alterar papéis',
     async () => {
       const { space } = await createSpace(
         userAlice.uid,
@@ -733,38 +742,59 @@ test('FASE 5 — Espaços Compartilhados (Arquitetura v3.1)', async (t) => {
       // Bob se retira voluntariamente
       await leaveSpace(space.id, userBob.uid, userBob.name, true);
 
-      // 1. Bob como ex-participante consegue consultar os eventos de auditoria passados
-      const audits = await getSpaceAuditEvents(space.id, true);
-      assert.ok(audits.length > 0);
+      // Alice promove Carol a admin DEPOIS que Bob saiu (evento privado entre Alice e Carol)
+      await updateMemberRole(space.id, userAlice.uid, userAlice.name, userCarol.uid, 'admin', true);
 
-      // 2. Bob tenta gerar convite para um terceiro -> BLOQUEADO
+      // 1. Chamada sem requesterUid deve ser rejeitada
+      await assert.rejects(
+        async () => {
+          await getSpaceAuditEvents(space.id, '', true);
+        },
+        /Identidade do solicitante \(requesterUid\) é obrigatória/i
+      );
+
+      // 2. Bob como ex-participante consulta SOMENTE eventos nos quais foi ator ou alvo
+      const bobAudits = await getSpaceAuditEvents(space.id, userBob.uid, true);
+      assert.ok(bobAudits.length > 0);
+      assert.ok(
+        bobAudits.every(
+          (e) => e.performedByUid === userBob.uid || e.targetUid === userBob.uid
+        ),
+        'Ex-participante não pode visualizar eventos de terceiros nos quais não foi ator nem alvo'
+      );
+
+      // 3. Alice (membro ativo) vê todos os eventos, incluindo a mudança de papel de Carol
+      const aliceAudits = await getSpaceAuditEvents(space.id, userAlice.uid, true);
+      assert.ok(aliceAudits.length > bobAudits.length);
+
+      // 4. Bob tenta gerar convite -> BLOQUEADO
       await assert.rejects(
         async () => {
           await createSpaceInvite(space.id, userBob.uid, userBob.name, {}, true);
         },
-        /Apenas proprietários ou administradores/i
+        /acesso não autorizado a espaço no qual o usuário não é participante ativo/i
       );
 
-      // 3. Bob tenta alterar o papel de Carol -> BLOQUEADO
+      // 5. Bob tenta alterar o papel de Carol -> BLOQUEADO
       await assert.rejects(
         async () => {
           await updateMemberRole(space.id, userBob.uid, userBob.name, userCarol.uid, 'admin', true);
         },
-        /Apenas o proprietário ou o criador do espaço podem alterar papéis/i
+        /acesso não autorizado a espaço no qual o usuário não é participante ativo/i
       );
 
-      // 4. Bob tenta remover Carol -> BLOQUEADO
+      // 6. Bob tenta remover Carol -> BLOQUEADO
       await assert.rejects(
         async () => {
           await removeMemberFromSpace(space.id, userBob.uid, userBob.name, userCarol.uid, true);
         },
-        /Apenas proprietários ou administradores podem remover participantes/i
+        /acesso não autorizado a espaço no qual o usuário não é participante ativo/i
       );
     }
   );
 
   await t.test(
-    '22. idempotência estrita do processamento de timeout de dissolução (múltiplas invocações sem duplicidades)',
+    '22. idempotência concorrente e sequencial do processamento de timeout de dissolução (com reabertura de notificação e nome real do espaço)',
     async () => {
       const { space } = await createSpace(
         userAlice.uid,
@@ -779,6 +809,14 @@ test('FASE 5 — Espaços Compartilhados (Arquitetura v3.1)', async (t) => {
 
       const req = await initiateSpaceDissolution(space.id, userAlice.uid, userAlice.name, true);
 
+      // Bob marca a notificação inicial de dissolução como lida antes do timeout
+      const bobInitialNotifs = await getUserSpaceNotifications(userBob.uid, true);
+      const bobDissolutionNotif = bobInitialNotifs.find(
+        (n) => n.spaceId === space.id && n.type === 'dissolution_requested'
+      );
+      assert.ok(bobDissolutionNotif);
+      await markNotificationAsRead(userBob.uid, bobDissolutionNotif.id, true);
+
       // Predicado: com prazo no futuro, não expirou
       assert.equal(isDissolutionExpired(req), false);
       assert.equal(canCancelDissolutionDueToTimeout(req), false);
@@ -791,50 +829,41 @@ test('FASE 5 — Espaços Compartilhados (Arquitetura v3.1)', async (t) => {
       assert.equal(isDissolutionExpired(expiredReq), true);
       assert.equal(canCancelDissolutionDueToTimeout(expiredReq), true);
 
-      // Contagem de auditoria antes da 1a execução de timeout
-      const auditsBefore = await getSpaceAuditEvents(space.id, true);
+      // Contagem de auditoria antes da execução de timeout
+      const auditsBefore = await getSpaceAuditEvents(space.id, userAlice.uid, true);
       const cancelAuditsCountBefore = auditsBefore.filter((a) => a.eventType === 'dissolution_cancelled').length;
       assert.equal(cancelAuditsCountBefore, 0);
 
-      // 1ª Execução do processamento de timeout
-      const run1 = await processDissolutionTimeout(space.id, true);
+      // Execução CONCORRENTE de 5 chamadas simultâneas de timeout
+      const [run1, run2, run3] = await Promise.all([
+        processDissolutionTimeout(space.id, true),
+        processDissolutionTimeout(space.id, true),
+        processDissolutionTimeout(space.id, true),
+      ]);
+
       assert.equal(run1.requestStatus, 'auto_cancelled_timeout');
-      assert.ok(run1.cancelledAt);
-
-      // Deve ter criado exatamente 1 evento de auditoria
-      const auditsAfterRun1 = await getSpaceAuditEvents(space.id, true);
-      const cancelAuditsCount1 = auditsAfterRun1.filter((a) => a.eventType === 'dissolution_cancelled').length;
-      assert.equal(cancelAuditsCount1, 1);
-
-      // Contagem de notificações de Bob específicas deste espaço
-      const notifsBob1 = await getUserSpaceNotifications(userBob.uid, true);
-      const timeoutNotifsBobCount1 = notifsBob1.filter((n) => n.spaceId === space.id && n.type === 'dissolution_cancelled').length;
-      assert.equal(timeoutNotifsBobCount1, 1);
-
-      // 2ª Execução de repetição (idempotência)
-      const run2 = await processDissolutionTimeout(space.id, true);
       assert.equal(run2.requestStatus, 'auto_cancelled_timeout');
+      assert.equal(run3.requestStatus, 'auto_cancelled_timeout');
       assert.equal(run2.cancelledAt, run1.cancelledAt);
 
-      // Não duplicou auditoria
-      const auditsAfterRun2 = await getSpaceAuditEvents(space.id, true);
-      const cancelAuditsCount2 = auditsAfterRun2.filter((a) => a.eventType === 'dissolution_cancelled').length;
-      assert.equal(cancelAuditsCount2, 1);
+      // Deve ter criado exatamente 1 evento de auditoria
+      const auditsAfterConcurrent = await getSpaceAuditEvents(space.id, userAlice.uid, true);
+      const cancelAuditsCount1 = auditsAfterConcurrent.filter((a) => a.eventType === 'dissolution_cancelled').length;
+      assert.equal(cancelAuditsCount1, 1);
 
-      // Não duplicou notificações
-      const notifsBob2 = await getUserSpaceNotifications(userBob.uid, true);
-      const timeoutNotifsBobCount2 = notifsBob2.filter((n) => n.spaceId === space.id && n.type === 'dissolution_cancelled').length;
-      assert.equal(timeoutNotifsBobCount2, 1);
+      // Contagem de notificações de Bob específicas deste espaço (nome real do espaço e reabertura da pendente)
+      const notifsBob1 = await getUserSpaceNotifications(userBob.uid, true);
+      const timeoutNotifsBob = notifsBob1.filter(
+        (n) => n.spaceId === space.id && n.type === 'dissolution_cancelled'
+      );
+      assert.equal(timeoutNotifsBob.length, 1);
+      assert.equal(timeoutNotifsBob[0].spaceName, 'Espaço Idempotência Timeout');
 
-      // 3ª Execução de repetição (idempotência)
-      const run3 = await processDissolutionTimeout(space.id, true);
-      assert.equal(run3.requestStatus, 'auto_cancelled_timeout');
+      // Verifica que a notificação de decisão pendente de Bob foi reaberta (read === false)
+      const reopenedNotif = notifsBob1.find((n) => n.id === bobDissolutionNotif.id);
+      assert.equal(reopenedNotif?.read, false);
 
-      const auditsAfterRun3 = await getSpaceAuditEvents(space.id, true);
-      const cancelAuditsCount3 = auditsAfterRun3.filter((a) => a.eventType === 'dissolution_cancelled').length;
-      assert.equal(cancelAuditsCount3, 1);
-
-      // Proteção de dados: o espaço continua arquivado e íntegro
+      //Proteção de dados: o espaço continua arquivado e íntegro
       const spaceFinal = await getSpaceById(space.id, userAlice.uid, true);
       assert.equal(spaceFinal?.spaceStatus, 'archived');
     }

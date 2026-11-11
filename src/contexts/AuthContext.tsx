@@ -18,6 +18,23 @@ import {
   registerWithEmailPassword,
   sendPasswordReset,
 } from '../services/authService';
+import { universalStorage } from '../utils/universalStorage';
+
+const PRIVATE_FINANCE_STORAGE_KEYS = [
+  'mpf_active_demo_profile',
+  'mpf_v3_demo_accounts',
+  'mpf_v3_demo_movements',
+  'mpf_v3_demo_personal_transactions',
+  'mpf_v3_demo_transaction_payments',
+  'mpf_v3_demo_card_invoices',
+  'mpf_v3_demo_invoice_payments',
+  'mpf_v3_demo_invoice_carry_overs',
+  'mpf_v3_demo_internal_transfers',
+  'mpf_v3_demo_budgets',
+  'mpf_v3_demo_personal_refunds',
+  'mpf_v3_demo_refund_receipts',
+  'mpf_v3_demo_categories',
+];
 
 /**
  * Interface dos dados e métodos disponibilizados pelo AuthContext.
@@ -156,7 +173,10 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     setError(null);
     try {
       try {
-        localStorage.removeItem('mpf_active_demo_profile');
+        for (const key of PRIVATE_FINANCE_STORAGE_KEYS) {
+          universalStorage.removeItem(key);
+          localStorage.removeItem(key);
+        }
       } catch {}
 
       if (user && !user.isDemo) {

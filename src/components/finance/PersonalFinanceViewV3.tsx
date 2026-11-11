@@ -132,6 +132,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
   const [txDate, setTxDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [txStatus, setTxStatus] = useState<PersonalTransactionStatus>('paid');
   const [txNotes, setTxNotes] = useState('');
+  const [txIdempotencyKey, setTxIdempotencyKey] = useState('');
   const [txSubmitting, setTxSubmitting] = useState(false);
 
   // Modal Pagamento Parcial
@@ -140,6 +141,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
   const [partialAccount, setPartialAccount] = useState('');
   const [partialDate, setPartialDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [partialNotes, setPartialNotes] = useState('');
+  const [partialIdempotencyKey, setPartialIdempotencyKey] = useState('');
   const [partialSubmitting, setPartialSubmitting] = useState(false);
 
   // Modal Transferência
@@ -149,6 +151,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
   const [xferAmount, setXferAmount] = useState('');
   const [xferDate, setXferDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [xferDesc, setXferDesc] = useState('');
+  const [xferIdempotencyKey, setXferIdempotencyKey] = useState('');
   const [xferSubmitting, setXferSubmitting] = useState(false);
 
   // Modal Pagar Fatura
@@ -156,6 +159,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
   const [payInvSourceAcc, setPayInvSourceAcc] = useState('');
   const [payInvAmount, setPayInvAmount] = useState('');
   const [payInvDate, setPayInvDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [payInvIdempotencyKey, setPayInvIdempotencyKey] = useState('');
   const [payInvSubmitting, setPayInvSubmitting] = useState(false);
 
   // Modal Orçamento
@@ -171,6 +175,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
   const [refDebtor, setRefDebtor] = useState('');
   const [refAmount, setRefAmount] = useState('');
   const [refDesc, setRefDesc] = useState('');
+  const [refIdempotencyKey, setRefIdempotencyKey] = useState('');
   const [refSubmitting, setRefSubmitting] = useState(false);
 
   // Modal Receber Reembolso
@@ -178,6 +183,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
   const [receiveAmount, setReceiveAmount] = useState('');
   const [receiveAccount, setReceiveAccount] = useState('');
   const [receiveDate, setReceiveDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [receiveIdempotencyKey, setReceiveIdempotencyKey] = useState('');
   const [receiveSubmitting, setReceiveSubmitting] = useState(false);
 
   // Modal Nova Categoria
@@ -305,6 +311,11 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
     setTxSubmitting(true);
     setError(null);
     try {
+      const activeKey =
+        txIdempotencyKey ||
+        `idem_ui_ptx_${userId}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+      if (!txIdempotencyKey) setTxIdempotencyKey(activeKey);
+
       const selectedCat = categories.find((c) => c.id === txCategory);
       await createPersonalTransaction(
         userId,
@@ -320,6 +331,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
           dueDate: txDate,
           paymentDate: txStatus === 'paid' ? txDate : undefined,
           notes: txNotes.trim() || undefined,
+          idempotencyKey: activeKey,
         },
         isDemo
       );
@@ -345,6 +357,9 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
     setTxAccount('');
     setTxNotes('');
     setTxStatus('paid');
+    setTxIdempotencyKey(
+      `idem_ui_ptx_${userId}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
+    );
   };
 
   // 2. Amortização / Pagamento Parcial
@@ -370,6 +385,11 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
     setPartialSubmitting(true);
     setError(null);
     try {
+      const activeKey =
+        partialIdempotencyKey ||
+        `idem_ui_txpay_${partialTx.id}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+      if (!partialIdempotencyKey) setPartialIdempotencyKey(activeKey);
+
       await recordPartialPayment(
         partialTx.id,
         userId,
@@ -379,6 +399,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
           accountId: partialAccount,
           notes: partialNotes.trim() || undefined,
           authorUid: userId,
+          idempotencyKey: activeKey,
         },
         isDemo
       );
@@ -387,6 +408,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
       setPartialTx(null);
       setPartialAmount('');
       setPartialNotes('');
+      setPartialIdempotencyKey('');
       await loadAllData();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Falha na amortização';
@@ -438,6 +460,11 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
     setXferSubmitting(true);
     setError(null);
     try {
+      const activeKey =
+        xferIdempotencyKey ||
+        `idem_ui_xfer_${userId}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+      if (!xferIdempotencyKey) setXferIdempotencyKey(activeKey);
+
       await executeInternalTransfer(
         userId,
         {
@@ -446,6 +473,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
           amountCents: cents,
           transferDate: xferDate,
           description: xferDesc.trim() || undefined,
+          idempotencyKey: activeKey,
         },
         isDemo
       );
@@ -454,6 +482,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
       setIsTransferModalOpen(false);
       setXferAmount('');
       setXferDesc('');
+      setXferIdempotencyKey('');
       await loadAllData();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Falha na transferência';
@@ -485,6 +514,11 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
     setPayInvSubmitting(true);
     setError(null);
     try {
+      const activeKey =
+        payInvIdempotencyKey ||
+        `idem_ui_invpay_${payInvoiceModal.accountId}_${payInvoiceModal.invoiceMonth}_${Date.now()}`;
+      if (!payInvIdempotencyKey) setPayInvIdempotencyKey(activeKey);
+
       await payCardInvoice(
         {
           cardAccountId: payInvoiceModal.accountId,
@@ -493,6 +527,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
           amountPaidCents: cents,
           paymentDate: payInvDate,
           userId,
+          idempotencyKey: activeKey,
         },
         isDemo
       );
@@ -500,6 +535,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
       showToast(`Pagamento de fatura gravado: ${formatCentsToBRL(cents)} debitado na conta!`);
       setPayInvoiceModal(null);
       setPayInvAmount('');
+      setPayInvIdempotencyKey('');
       await loadAllData();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Falha no pagamento da fatura';
@@ -582,6 +618,11 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
     setRefSubmitting(true);
     setError(null);
     try {
+      const activeKey =
+        refIdempotencyKey ||
+        `idem_ui_ref_${userId}_${refTxId}_${Date.now()}`;
+      if (!refIdempotencyKey) setRefIdempotencyKey(activeKey);
+
       await createPersonalRefund(
         userId,
         {
@@ -589,6 +630,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
           debtorName: refDebtor.trim(),
           amountDueCents: cents,
           description: refDesc.trim() || undefined,
+          idempotencyKey: activeKey,
         },
         isDemo
       );
@@ -599,6 +641,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
       setRefAmount('');
       setRefDesc('');
       setRefTxId('');
+      setRefIdempotencyKey('');
       await loadAllData();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Falha ao registrar reembolso';
@@ -629,6 +672,11 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
     setReceiveSubmitting(true);
     setError(null);
     try {
+      const activeKey =
+        receiveIdempotencyKey ||
+        `idem_ui_refrec_${receiveRefundModal.id}_${Date.now()}`;
+      if (!receiveIdempotencyKey) setReceiveIdempotencyKey(activeKey);
+
       await recordRefundReceipt(
         userId,
         {
@@ -637,6 +685,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
           receiptDate: receiveDate,
           destinationAccountId: receiveAccount,
           authorUid: userId,
+          idempotencyKey: activeKey,
         },
         isDemo
       );
@@ -644,6 +693,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
       showToast(`Recebimento de reembolso creditado: ${formatCentsToBRL(cents)}!`);
       setReceiveRefundModal(null);
       setReceiveAmount('');
+      setReceiveIdempotencyKey('');
       await loadAllData();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Falha ao receber reembolso';
@@ -1155,6 +1205,8 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
               {invoices.map((inv) => {
                 const card = accounts.find((a) => a.id === inv.accountId);
                 const isPaid = inv.invoiceStatus === 'paid';
+                const isCarriedOver = inv.invoiceStatus === 'carried_over';
+                const isSettled = isPaid || isCarriedOver;
 
                 return (
                   <div
@@ -1181,12 +1233,14 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                           className={`px-2 py-0.5 text-[10px] font-bold rounded-md ${
                             isPaid
                               ? 'bg-emerald-50 text-emerald-700'
+                              : isCarriedOver
+                              ? 'bg-amber-100 text-amber-800 border border-amber-300'
                               : inv.invoiceStatus === 'partially_paid'
                               ? 'bg-amber-50 text-amber-700'
                               : 'bg-purple-50 text-purple-700'
                           }`}
                         >
-                          {inv.invoiceStatus.toUpperCase()}
+                          {isCarriedOver ? 'SALDO TRANSPORTADO' : inv.invoiceStatus.toUpperCase()}
                         </span>
                       </div>
 
@@ -1231,7 +1285,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
 
                     {/* Botão Pagar Fatura */}
                     <div className="mt-4 pt-3 border-t border-slate-100 flex items-center gap-2">
-                      {!isPaid && (
+                      {!isSettled && (
                         <button
                           onClick={() => {
                             setPayInvoiceModal(inv);
@@ -1420,7 +1474,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                         </div>
                       </div>
 
-                      {/* Valores */}
+                      {/* Valores: 3 indicadores distintos (Realizado, Comprometido, Previsto) */}
                       <div className="mt-4 pt-3 border-t border-slate-100 space-y-1 text-xs">
                         <div className="flex justify-between text-slate-500">
                           <span>Planejado:</span>
@@ -1429,15 +1483,33 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                           </span>
                         </div>
                         <div className="flex justify-between text-slate-500">
-                          <span>Utilizado:</span>
+                          <span>Realizado (Pago):</span>
                           <span className="font-semibold text-rose-600">
-                            {formatCentsToBRL(b.spentAmountCents)}
+                            {formatCentsToBRL(b.realizedAmountCents ?? b.spentAmountCents)}
+                          </span>
+                        </div>
+                        <div className="flex justify-between text-slate-500">
+                          <span>Comprometido (Pendente):</span>
+                          <span className="font-semibold text-amber-600">
+                            {formatCentsToBRL(b.committedAmountCents ?? 0)}
+                          </span>
+                        </div>
+                        <div className="flex justify-between text-slate-500">
+                          <span>Previsto (Projeção Total):</span>
+                          <span className="font-semibold text-blue-600">
+                            {formatCentsToBRL(b.forecastedAmountCents ?? b.spentAmountCents)} ({b.percentageForecasted ?? b.percentageUsed}%)
                           </span>
                         </div>
                         <div className="flex justify-between text-xs font-bold pt-1.5 border-t border-slate-100">
-                          <span>Saldo Restante:</span>
+                          <span>Saldo Disponível (Real):</span>
                           <span className={b.remainingAmountCents < 0 ? 'text-rose-600' : 'text-emerald-600'}>
                             {formatCentsToBRL(b.remainingAmountCents)}
+                          </span>
+                        </div>
+                        <div className="flex justify-between text-[11px] font-medium text-slate-500">
+                          <span>Saldo Projetado Final:</span>
+                          <span className={(b.projectedRemainingAmountCents ?? b.remainingAmountCents) < 0 ? 'text-rose-600' : 'text-slate-700'}>
+                            {formatCentsToBRL(b.projectedRemainingAmountCents ?? b.remainingAmountCents)}
                           </span>
                         </div>
                       </div>

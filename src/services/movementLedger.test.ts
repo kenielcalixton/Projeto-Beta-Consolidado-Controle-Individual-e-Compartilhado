@@ -858,7 +858,7 @@ describe('FASE 3 — Motor Contábil, Contas e Livro de Movimentações (v3.1)',
     assert.notEqual(idConta1, idConta2);
   });
 
-  it('20. deve diferenciar chaves que antes colidiriam em normalizações ingênuas graças ao hash SHA-256 (pix:123/abc vs pix_123_abc)', () => {
+  it('20. deve diferenciar chaves que antes colidiriam em normalizações ingênuas graças ao hash SHA-256 completo de 64 caracteres (pix:123/abc vs pix_123_abc)', () => {
     const keyA = 'pix:123/abc';
     const keyB = 'pix_123_abc';
 
@@ -866,10 +866,29 @@ describe('FASE 3 — Motor Contábil, Contas e Livro de Movimentações (v3.1)',
     const idB = generateMovementDocId('acc_1', keyB);
 
     assert.notEqual(idA, idB);
-    assert.ok(idA.startsWith('mov_pix_123_abc_'));
-    assert.ok(idB.startsWith('mov_pix_123_abc_'));
-    // Os sufixos de hash SHA-256 devem ser diferentes
-    assert.notEqual(idA.slice(-16), idB.slice(-16));
+    assert.ok(idA.startsWith('mov_'));
+    assert.ok(idB.startsWith('mov_'));
+    // Full 64-character SHA-256 hex digest suffix
+    const hashSuffixA = idA.split('_').pop()!;
+    const hashSuffixB = idB.split('_').pop()!;
+    assert.equal(hashSuffixA.length, 64);
+    assert.equal(hashSuffixB.length, 64);
+    // Rejeita tentativa de passar params.id começando com rev_ sem coincidir com generateReversalDocId
+    assert.throws(() => {
+      buildFinancialMovement({
+        id: 'rev_arbitrary_forged_id',
+        accountId: 'acc_1',
+        userId: USER_A,
+        direction: 'inflow',
+        amountCents: 1000,
+        effectiveDate: '2026-11-10',
+        originType: 'manual_adjustment',
+        originId: 'orig_1',
+        description: 'Bypass rev_ rejeitado',
+        authorUid: USER_A,
+        idempotencyKey: 'idem_test_1',
+      });
+    }, /não coincide com o ID determinístico/i);
   });
 
   it('21. deve auditar e detectar divergência intencional injetada no saldo projetado da conta', async () => {

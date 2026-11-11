@@ -48,6 +48,7 @@ export type FinancialMovementOriginType =
   | 'internal_transfer_out'
   | 'credit_card_payment'
   | 'adhoc_receipt'
+  | 'personal_refund'
   | 'custody_deposit'
   | 'custody_withdrawal'
   | 'custody_return'
@@ -151,7 +152,13 @@ export interface PrivatePaymentMetadata {
   createdAt: ISO8601String;
 }
 
-export type CreditCardInvoiceStatus = 'open' | 'closed' | 'partially_paid' | 'paid' | 'overdue';
+export type CreditCardInvoiceStatus =
+  | 'open'
+  | 'closed'
+  | 'partially_paid'
+  | 'paid'
+  | 'overdue'
+  | 'carried_over';
 
 /**
  * Competência mensal de fatura de cartão de crédito.
@@ -178,6 +185,28 @@ export interface CreditCardInvoice {
   /** totalDueAmountCents - totalPaidAmountCents */
   remainingBalanceCents: CentsInteger;
   invoiceStatus: CreditCardInvoiceStatus;
+  /** Competência de destino caso o saldo residual tenha sido transportado via carry-over */
+  carriedOverToMonth?: CompetenceMonthString;
+  updatedAt: ISO8601String;
+}
+
+/**
+ * Lançamento de compra alocado à fatura de cartão de crédito.
+ * Caminho Firestore: accounts/{accountId}/invoices/{invoiceMonth}/charges/{chargeId}
+ */
+export interface CreditCardInvoiceCharge {
+  id: string;
+  transactionId: string;
+  accountId: string;
+  userId: string;
+  invoiceMonth: CompetenceMonthString;
+  description: string;
+  amountCents: CentsInteger;
+  purchaseDate: DateString;
+  categoryId: string;
+  categoryName: string;
+  status: 'active' | 'cancelled';
+  createdAt: ISO8601String;
   updatedAt: ISO8601String;
 }
 
@@ -196,6 +225,7 @@ export interface InvoicePayment {
   /** FK FinancialMovement gerado na conta pagadora */
   financialMovementId: string;
   clientTransactionUuid: string;
+  idempotencyKey?: string;
   createdAt: ISO8601String;
 }
 
@@ -278,8 +308,43 @@ export interface PersonalTransactionPayment {
   accountId: string;
   financialMovementId: string;
   authorUid: string;
+  idempotencyKey?: string;
   notes?: string;
   createdAt: ISO8601String;
+}
+
+/**
+ * Evento compensatório de estorno de amortização / pagamento individual.
+ * Caminho Firestore: users/{userId}/personal_transactions/{txId}/payment_reversals/{reversalId}
+ * Registrado em modelo estritamente append-only sem mutação do pagamento original.
+ */
+export interface PersonalTransactionPaymentReversal {
+  id: string;
+  transactionId: string;
+  paymentId: string;
+  userId: string;
+  amountCents: CentsInteger;
+  originalFinancialMovementId: string;
+  reversalMovementId: string;
+  reversalDate: DateString;
+  reversedAt: ISO8601String;
+  authorUid: string;
+  reason: string;
+  idempotencyKey?: string;
+  createdAt: ISO8601String;
+}
+
+/**
+ * Visão consolidada de um pagamento individual acompanhado de seu eventual evento de estorno.
+ * Obtida via junção dinâmica entre o registro imutável do pagamento e os eventos da subcoleção payment_reversals.
+ */
+export interface PersonalTransactionPaymentView extends PersonalTransactionPayment {
+  isReversed: boolean;
+  reversal?: PersonalTransactionPaymentReversal;
+  reversalMovementId?: string;
+  reversalDate?: DateString;
+  reversedAt?: ISO8601String;
+  reversalReason?: string;
 }
 
 /**
@@ -319,9 +384,23 @@ export interface PersonalBudget {
 }
 
 export interface PersonalBudgetProgress extends PersonalBudget {
+  /** Indicador 1 — Realizado: despesas efetivamente reconhecidas como consumo no período */
+  realizedAmountCents: CentsInteger;
+  /** Alias de compatibilidade para realizedAmountCents */
   spentAmountCents: CentsInteger;
+  /** Indicador 2 — Comprometido: obrigações assumidas (pendentes/vencidas/saldo parcial) ainda não pagas */
+  committedAmountCents: CentsInteger;
+  /** Parcela estritamente estimada (status 'forecast') no período */
+  forecastOnlyAmountCents: CentsInteger;
+  /** Indicador 3 — Previsto: projeção total (Realizado + Comprometido + Estimativas futuras) */
+  forecastedAmountCents: CentsInteger;
+  /** Saldo livre em relação ao realizado (plannedAmountCents - realizedAmountCents) */
   remainingAmountCents: CentsInteger;
+  /** Saldo livre projetado considerando o previsto total (plannedAmountCents - forecastedAmountCents) */
+  projectedRemainingAmountCents: CentsInteger;
   percentageUsed: number;
+  percentageCommitted: number;
+  percentageForecasted: number;
   status: BudgetStatus;
 }
 
@@ -345,6 +424,7 @@ export interface PersonalRefund {
   remainingAmountCents: CentsInteger;
   status: PersonalRefundStatus;
   description: string;
+  idempotencyKey?: string;
   notes?: string;
   createdAt: ISO8601String;
   updatedAt: ISO8601String;
@@ -357,11 +437,14 @@ export interface PersonalRefund {
 export interface PersonalRefundReceipt {
   id: string;
   refundId: string;
+  originalTransactionId: string;
   userId: string;
   amountCents: CentsInteger;
   receiptDate: DateString;
   destinationAccountId: string;
   financialMovementId: string;
+  originType: 'personal_refund';
+  idempotencyKey?: string;
   authorUid: string;
   notes?: string;
   createdAt: ISO8601String;
@@ -376,6 +459,8 @@ export interface InternalAccountTransfer {
   userId: string;
   sourceAccountId: string;
   destinationAccountId: string;
+  sourceMovementId?: string;
+  destinationMovementId?: string;
   amountCents: CentsInteger;
   transferDate: DateString;
   description: string;

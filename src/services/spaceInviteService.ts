@@ -17,7 +17,10 @@ import {
   SpaceMember,
   SpaceMemberRole,
 } from '../types/financeV3';
-import { recordSpaceAuditEvent } from './spaceAuditService';
+import {
+  generateDeterministicAuditEventId,
+  recordSpaceAuditEvent,
+} from './spaceAuditService';
 import { sendSpaceNotification } from './spaceNotificationService';
 import { getSpaceById, getSpaceMembers } from './spaceService';
 import { universalStorage } from '../utils/universalStorage';
@@ -32,6 +35,8 @@ import { universalStorage } from '../utils/universalStorage';
  * 3. Validação temporal com prazo configurável (padrão 15 dias, sob aprovação).
  * 4. Bloqueio absoluto de convites para espaços arquivados.
  * 5. Associação atômica e inequívoca do UID autenticado aos membros do espaço.
+ * 6. SEGURANÇA (Problema 1): Ex-participantes e terceiros NÃO podem listar convites
+ *    do espaço (`getSpaceInvites` exige `allowHistorical = false`).
  */
 
 /** Prazo padrão configurável em dias (regra de 15 dias pendente de homologação definitiva) */
@@ -101,7 +106,7 @@ export async function createSpaceInvite(
   input: CreateSpaceInviteInput,
   isDemo = false
 ): Promise<{ invite: SpaceInvite; rawToken: string }> {
-  const space = await getSpaceById(spaceId, requesterUid, isDemo);
+  const space = await getSpaceById(spaceId, requesterUid, isDemo, false);
   if (!space) {
     throw new Error(`Espaço "${spaceId}" não encontrado.`);
   }
@@ -139,45 +144,39 @@ export async function createSpaceInvite(
     createdAt: now.toISOString(),
   };
 
+  const auditInput = {
+    spaceId,
+    eventType: 'invite_created' as const,
+    performedByUid: requesterUid,
+    performedByName: requesterName,
+    details: {
+      tokenHash,
+      invitedEmail: invite.invitedEmail,
+      role: invite.invitedRole,
+      expiresAt,
+    },
+    operationKey: `invite_create_${tokenHash}`,
+    timestamp: invite.createdAt,
+  };
+
   if (isDemo) {
     const invites = loadDemoInvites();
     invites.push(invite);
     saveDemoInvites(invites);
 
-    await recordSpaceAuditEvent(
-      {
-        spaceId,
-        eventType: 'invite_created',
-        performedByUid: requesterUid,
-        performedByName: requesterName,
-        details: {
-          invitedEmail: invite.invitedEmail,
-          role: invite.invitedRole,
-          expiresAt,
-        },
-      },
-      true
-    );
+    await recordSpaceAuditEvent(auditInput, true);
 
     return { invite, rawToken };
   }
 
-  await setDoc(doc(db, 'space_invites', tokenHash), invite);
+  const firestoreInvite: Record<string, unknown> = { ...invite };
+  if (firestoreInvite.invitedEmail === undefined) {
+    delete firestoreInvite.invitedEmail;
+  }
 
-  await recordSpaceAuditEvent(
-    {
-      spaceId,
-      eventType: 'invite_created',
-      performedByUid: requesterUid,
-      performedByName: requesterName,
-      details: {
-        invitedEmail: invite.invitedEmail,
-        role: invite.invitedRole,
-        expiresAt,
-      },
-    },
-    false
-  );
+  await setDoc(doc(db, 'space_invites', tokenHash), firestoreInvite);
+
+  await recordSpaceAuditEvent(auditInput, false);
 
   return { invite, rawToken };
 }
@@ -205,13 +204,19 @@ export async function getInviteByRawToken(
 
 /**
  * Lista todos os convites emitidos para um espaço.
+ * SEGURANÇA (Problema 1): Ex-participantes NÃO têm direito a consultar convites operacionais do espaço.
  */
 export async function getSpaceInvites(
   spaceId: string,
   requesterUid: string,
   isDemo = false
 ): Promise<SpaceInvite[]> {
-  await getSpaceById(spaceId, requesterUid, isDemo);
+  if (!requesterUid || !requesterUid.trim()) {
+    throw new Error('Identificação do solicitante (requesterUid) é obrigatória para consultar convites.');
+  }
+
+  // Exige participação ATIVA no espaço (allowHistorical = false)
+  await getSpaceById(spaceId, requesterUid, isDemo, false);
 
   if (isDemo) {
     return loadDemoInvites().filter((i) => i.spaceId === spaceId);
@@ -253,6 +258,7 @@ export async function acceptSpaceInvite(
 
   const cleanUid = user.uid.trim();
   const tokenHash = await hashToken(rawToken);
+  const operationKey = `invite_accept_${tokenHash}_${cleanUid}`;
 
   if (isDemo) {
     const invites = loadDemoInvites();
@@ -289,7 +295,6 @@ export async function acceptSpaceInvite(
 
     const now = new Date().toISOString();
 
-    // Atualiza status do convite
     const updatedInvite: SpaceInvite = {
       ...invite,
       tokenStatus: 'accepted',
@@ -300,7 +305,6 @@ export async function acceptSpaceInvite(
     invites[inviteIndex] = updatedInvite;
     saveDemoInvites(invites);
 
-    // Atualiza espaço (mantendo membro ativo e histórico)
     const updatedHistoricalUids = Array.from(
       new Set([...(space.historicalMemberUids || space.memberUids), cleanUid])
     );
@@ -312,7 +316,6 @@ export async function acceptSpaceInvite(
     spaces[spaceIndex] = updatedSpace;
     universalStorage.setItem('mpf_v3_demo_spaces', JSON.stringify(spaces));
 
-    // Cria/atualiza registro de membro
     const memberKey = `mpf_v3_demo_space_members_${space.id}`;
     const members = JSON.parse(universalStorage.getItem(memberKey) || '[]') as SpaceMember[];
     const existingMemberIdx = members.findIndex((m) => m.uid === cleanUid);
@@ -336,17 +339,19 @@ export async function acceptSpaceInvite(
     }
     universalStorage.setItem(memberKey, JSON.stringify(members));
 
-    await recordSpaceAuditEvent(
-      {
-        spaceId: space.id,
-        eventType: 'invite_accepted',
-        performedByUid: cleanUid,
-        performedByName: newMember.displayName,
-        targetUid: cleanUid,
-        details: { role: newMember.role },
-      },
-      true
-    );
+    const auditInput = {
+      spaceId: space.id,
+      eventType: 'invite_accepted' as const,
+      performedByUid: cleanUid,
+      performedByName: newMember.displayName,
+      targetUid: cleanUid,
+      details: { role: newMember.role, tokenHash },
+      operationKey,
+      timestamp: now,
+    };
+    const eventId = generateDeterministicAuditEventId(auditInput);
+
+    await recordSpaceAuditEvent({ ...auditInput, eventId }, true);
 
     await sendSpaceNotification(
       {
@@ -356,6 +361,9 @@ export async function acceptSpaceInvite(
         type: 'invite_accepted',
         title: 'Novo Participante no Espaço',
         message: `${newMember.displayName} aceitou o convite e ingressou no espaço "${space.name}".`,
+        senderUid: cleanUid,
+        originEventId: eventId,
+        governanceEventType: 'invite_accepted',
       },
       true
     );
@@ -363,108 +371,32 @@ export async function acceptSpaceInvite(
     return { space: updatedSpace, member: newMember };
   }
 
-  // Execução atômica no Firestore via transação
-  return await runTransaction(db, async (tx) => {
-    const inviteRef = doc(db, 'space_invites', tokenHash);
-    const inviteSnap = await tx.get(inviteRef);
+  // Execução atômica server-side via Cloud Function (Admin SDK) no Functions Emulator / Produção
+  const { httpsCallable } = await import('firebase/functions');
+  const { functions } = await import('./firebase');
 
-    if (!inviteSnap.exists()) {
-      throw new Error('Convite não encontrado ou token inválido.');
-    }
+  const callable = httpsCallable<
+    {
+      rawToken: string;
+      tokenHash: string;
+      user: { uid: string; displayName?: string; email?: string };
+      operationKey: string;
+    },
+    { space: Space; member: SpaceMember }
+  >(functions, 'acceptSpaceInviteOfficial');
 
-    const invite = inviteSnap.data() as SpaceInvite;
-    if (invite.tokenStatus !== 'pending') {
-      throw new Error(`Este convite não pode ser aceito pois seu status é: ${invite.tokenStatus}.`);
-    }
-
-    if (new Date(invite.expiresAt).getTime() < Date.now()) {
-      tx.update(inviteRef, { tokenStatus: 'expired' });
-      throw new Error('Este convite expirou e não pode mais ser aceito.');
-    }
-
-    const spaceRef = doc(db, 'spaces', invite.spaceId);
-    const spaceSnap = await tx.get(spaceRef);
-    if (!spaceSnap.exists()) {
-      throw new Error('O espaço associado a este convite não foi encontrado.');
-    }
-
-    const space = spaceSnap.data() as Space;
-    if (space.spaceStatus === 'archived') {
-      throw new Error('Não é possível ingressar em um espaço que se encontra arquivado.');
-    }
-
-    if (space.memberUids.includes(cleanUid)) {
-      throw new Error('Você já é um participante ativo deste espaço.');
-    }
-
-    const now = new Date().toISOString();
-
-    // 1. Marca convite como aceito
-    tx.update(inviteRef, {
-      tokenStatus: 'accepted',
-      acceptedByUid: cleanUid,
-      acceptedByName: user.displayName || 'Novo Participante',
-      acceptedAt: now,
-    });
-
-    // 2. Adiciona à lista canônica de membros ativos e membros históricos
-    const updatedMemberUids = [...space.memberUids, cleanUid];
-    const updatedHistoricalUids = Array.from(
-      new Set([...(space.historicalMemberUids || space.memberUids), cleanUid])
-    );
-    tx.update(spaceRef, {
-      memberUids: updatedMemberUids,
-      historicalMemberUids: updatedHistoricalUids,
-    });
-
-    // 3. Cria documento de membro
-    const memberRef = doc(db, 'spaces', invite.spaceId, 'members', cleanUid);
-    const newMember: SpaceMember = {
-      id: cleanUid,
-      spaceId: invite.spaceId,
+  const response = await callable({
+    rawToken,
+    tokenHash,
+    user: {
       uid: cleanUid,
-      displayName: user.displayName?.trim() || 'Novo Participante',
-      contactEmail: user.email?.trim() || '',
-      role: invite.invitedRole || 'member',
-      participationStatus: 'active',
-      invitedAt: invite.createdAt,
-      joinedAt: now,
-    };
-    tx.set(memberRef, newMember);
-
-    const updatedSpace: Space = {
-      ...space,
-      memberUids: updatedMemberUids,
-      historicalMemberUids: updatedHistoricalUids,
-    };
-    return { space: updatedSpace, member: newMember };
-  }).then(async (res) => {
-    await recordSpaceAuditEvent(
-      {
-        spaceId: res.space.id,
-        eventType: 'invite_accepted',
-        performedByUid: cleanUid,
-        performedByName: res.member.displayName,
-        targetUid: cleanUid,
-        details: { role: res.member.role },
-      },
-      false
-    );
-
-    await sendSpaceNotification(
-      {
-        userId: res.space.creatorUid,
-        spaceId: res.space.id,
-        spaceName: res.space.name,
-        type: 'invite_accepted',
-        title: 'Novo Participante no Espaço',
-        message: `${res.member.displayName} aceitou o convite e ingressou no espaço "${res.space.name}".`,
-      },
-      false
-    );
-
-    return res;
+      displayName: user.displayName,
+      email: user.email,
+    },
+    operationKey,
   });
+
+  return response.data;
 }
 
 /**
@@ -477,6 +409,7 @@ export async function rejectSpaceInvite(
 ): Promise<void> {
   const tokenHash = await hashToken(rawToken);
   const now = new Date().toISOString();
+  const operationKey = `invite_reject_${tokenHash}_${user.uid}`;
 
   if (isDemo) {
     const invites = loadDemoInvites();
@@ -501,6 +434,9 @@ export async function rejectSpaceInvite(
         eventType: 'invite_rejected',
         performedByUid: user.uid,
         performedByName: user.displayName || 'Usuário Convidado',
+        details: { tokenHash },
+        operationKey,
+        timestamp: now,
       },
       true
     );
@@ -508,11 +444,31 @@ export async function rejectSpaceInvite(
     return;
   }
 
+  const inviteSnap = await getDoc(doc(db, 'space_invites', tokenHash));
+  if (!inviteSnap.exists()) throw new Error('Convite não encontrado.');
+  const invite = inviteSnap.data() as SpaceInvite;
+  if (invite.tokenStatus !== 'pending') {
+    throw new Error('Este convite não está pendente.');
+  }
+
   await updateDoc(doc(db, 'space_invites', tokenHash), {
     tokenStatus: 'rejected',
     rejectedByUid: user.uid,
     rejectedAt: now,
   });
+
+  await recordSpaceAuditEvent(
+    {
+      spaceId: invite.spaceId,
+      eventType: 'invite_rejected',
+      performedByUid: user.uid,
+      performedByName: user.displayName || 'Usuário Convidado',
+      details: { tokenHash },
+      operationKey,
+      timestamp: now,
+    },
+    false
+  );
 }
 
 /**
@@ -525,6 +481,7 @@ export async function revokeSpaceInvite(
   isDemo = false
 ): Promise<void> {
   const now = new Date().toISOString();
+  const operationKey = `invite_revoke_${tokenHash}`;
 
   if (isDemo) {
     const invites = loadDemoInvites();
@@ -534,6 +491,8 @@ export async function revokeSpaceInvite(
     if (invite.tokenStatus !== 'pending') {
       throw new Error('Apenas convites pendentes podem ser revogados.');
     }
+
+    await getSpaceById(invite.spaceId, requesterUid, true, false);
 
     invites[idx] = {
       ...invite,
@@ -550,6 +509,8 @@ export async function revokeSpaceInvite(
         performedByUid: requesterUid,
         performedByName: requesterName,
         details: { tokenHash },
+        operationKey,
+        timestamp: now,
       },
       true
     );
@@ -557,9 +518,31 @@ export async function revokeSpaceInvite(
     return;
   }
 
+  const inviteSnap = await getDoc(doc(db, 'space_invites', tokenHash));
+  if (!inviteSnap.exists()) throw new Error('Convite não encontrado.');
+  const invite = inviteSnap.data() as SpaceInvite;
+  if (invite.tokenStatus !== 'pending') {
+    throw new Error('Apenas convites pendentes podem ser revogados.');
+  }
+
+  await getSpaceById(invite.spaceId, requesterUid, false, false);
+
   await updateDoc(doc(db, 'space_invites', tokenHash), {
     tokenStatus: 'revoked',
     revokedByUid: requesterUid,
     revokedAt: now,
   });
+
+  await recordSpaceAuditEvent(
+    {
+      spaceId: invite.spaceId,
+      eventType: 'invite_revoked',
+      performedByUid: requesterUid,
+      performedByName: requesterName,
+      details: { tokenHash },
+      operationKey,
+      timestamp: now,
+    },
+    false
+  );
 }

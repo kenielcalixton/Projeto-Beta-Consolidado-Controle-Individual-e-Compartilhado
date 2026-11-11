@@ -27,5 +27,5 @@
     "noFallthroughCasesInSwitch": true,
     "forceConsistentCasingInFileNames": true
   },
-  "exclude": ["dist"]
+  "exclude": ["dist", "functions"]
 }

@@ -94,6 +94,7 @@ export async function createPersonalBudget(
   const budgetId = `bgt_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
   const now = new Date().toISOString();
 
+  const cleanNotes = input.notes?.trim();
   const budget: PersonalBudget = {
     id: budgetId,
     userId,
@@ -101,7 +102,7 @@ export async function createPersonalBudget(
     categoryIds: input.categoryIds,
     competenceMonth: input.competenceMonth,
     plannedAmountCents: input.plannedAmountCents,
-    notes: input.notes?.trim() || undefined,
+    ...(cleanNotes ? { notes: cleanNotes } : {}),
     createdAt: now,
     updatedAt: now,
   };
@@ -225,24 +226,47 @@ export async function getUserBudgetsWithProgress(
   );
 
   return budgets.map((b) => {
-    // Soma despesas efetivamente reconhecidas nas categorias deste orçamento
+    // Separa os 3 indicadores do orçamento para as categorias vinculadas:
+    // 1. Realizado (spentAmountCents / realizedAmountCents): despesas pagas + parcela paga de parcialmente pagas (inclui compras de cartão na competência, sem contar pagamento de fatura).
+    // 2. Comprometido (committedAmountCents): despesas pendentes/atrasadas + saldo restante de parcialmente pagas.
+    // 3. Previsto (forecastOnlyAmountCents / forecastedAmountCents): despesas previstas (forecast) e projeção total do mês.
     const catSet = new Set(b.categoryIds);
-    let spent = 0;
+    let realized = 0;
+    let committed = 0;
+    let forecastOnly = 0;
 
     for (const tx of transactions) {
       if (catSet.has(tx.categoryId) && tx.status !== 'cancelled') {
         if (tx.status === 'paid') {
-          spent += tx.amountCents;
+          realized += tx.paidAmountCents !== undefined ? tx.paidAmountCents : tx.amountCents;
         } else if (tx.status === 'partially_paid') {
-          spent += tx.paidAmountCents || 0;
+          const paidPart = tx.paidAmountCents || 0;
+          const remPart = tx.remainingAmountCents ?? Math.max(0, tx.amountCents - paidPart);
+          realized += paidPart;
+          committed += remPart;
+        } else if (tx.status === 'pending' || tx.status === 'overdue') {
+          committed += tx.remainingAmountCents ?? tx.amountCents;
+        } else if (tx.status === 'forecast') {
+          forecastOnly += tx.amountCents;
         }
       }
     }
 
-    const remaining = b.plannedAmountCents - spent;
+    const forecastedTotal = realized + committed + forecastOnly;
+    const remaining = b.plannedAmountCents - realized;
+    const projectedRemaining = b.plannedAmountCents - forecastedTotal;
+
     const percentageUsed =
       b.plannedAmountCents > 0
-        ? Math.round((spent / b.plannedAmountCents) * 100)
+        ? Math.round((realized / b.plannedAmountCents) * 100)
+        : 0;
+    const percentageCommitted =
+      b.plannedAmountCents > 0
+        ? Math.round(((realized + committed) / b.plannedAmountCents) * 100)
+        : 0;
+    const percentageForecasted =
+      b.plannedAmountCents > 0
+        ? Math.round((forecastedTotal / b.plannedAmountCents) * 100)
         : 0;
 
     let status: BudgetStatus = 'on_track';
@@ -254,9 +278,16 @@ export async function getUserBudgetsWithProgress(
 
     return {
       ...b,
-      spentAmountCents: spent,
+      spentAmountCents: realized,
+      realizedAmountCents: realized,
+      committedAmountCents: committed,
+      forecastOnlyAmountCents: forecastOnly,
+      forecastedAmountCents: forecastedTotal,
       remainingAmountCents: remaining,
+      projectedRemainingAmountCents: projectedRemaining,
       percentageUsed,
+      percentageCommitted,
+      percentageForecasted,
       status,
     };
   });

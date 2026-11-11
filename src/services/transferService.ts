@@ -1,24 +1,25 @@
 import {
   collection,
-  doc,
-  getDoc,
   getDocs,
   query,
-  runTransaction,
-  setDoc,
-  where,
 } from 'firebase/firestore';
-import { db } from './firebase';
+import { httpsCallable } from 'firebase/functions';
+import { db, functions } from './firebase';
 import {
+  Account,
   CentsInteger,
   DateString,
   FinancialMovement,
   InternalAccountTransfer,
 } from '../types/financeV3';
-import { getUserAccounts } from './accountService';
-import { recordMovement } from './ledgerService';
+import { withDemoLock } from './ledgerService';
 import { universalStorage } from '../utils/universalStorage';
-import { validatePositiveCents } from '../utils/movementLedger';
+import {
+  buildFinancialMovement,
+  validateMovementPayloadMatch,
+  validatePositiveCents,
+} from '../utils/movementLedger';
+import { sha256Hex } from '../utils/hashUtils';
 
 /**
  * ==============================================================================
@@ -28,15 +29,16 @@ import { validatePositiveCents } from '../utils/movementLedger';
  *
  * Princípios Fundamentais:
  * 1. Não é receita nem despesa (não afeta resultado contábil do usuário).
- * 2. Gera 2 movimentos vinculados no Livro Financeiro:
+ * 2. Gera 2 movimentos vinculados no Livro Financeiro em TRANSAÇÃO ÚNICA ATÔMICA:
  *    - Saída ('outflow') na conta origem (originType: 'internal_transfer_out').
  *    - Entrada ('inflow') na conta destino (originType: 'internal_transfer_in').
  * 3. Invariância patrimonial: Saldo total consolidado (+V - V = 0) permanece idêntico.
  * 4. Isolamento estrito: Ambas as contas devem pertencer obrigatoriamente ao mesmo usuário.
- * 5. Idempotência por chave determinística para prevenção de transferências duplicadas.
+ * 5. Idempotência por chave determinística com validação estrita de payload.
  */
 
 const DEMO_TRANSFERS_KEY = 'mpf_v3_demo_internal_transfers';
+const DEMO_MOVEMENTS_KEY = 'mpf_v3_demo_movements';
 
 function loadDemoTransfers(): InternalAccountTransfer[] {
   try {
@@ -73,6 +75,9 @@ export interface TransferResult {
 
 /**
  * Executa uma transferência atômica entre duas contas do mesmo usuário.
+ * Em ambiente Firestore real/emulador, delega para executeInternalTransferOfficial (Admin SDK)
+ * garantindo que saída, entrada, ambos os saldos e o documento de transferência ocorram em
+ * uma única transação atômica.
  */
 export async function executeInternalTransfer(
   userId: string,
@@ -87,162 +92,211 @@ export async function executeInternalTransfer(
     throw new Error('A conta de origem e a conta de destino não podem ser iguais.');
   }
 
-  // 1. Validação de titularidade e estado das contas
-  let sourceAccount: any = null;
-  let destAccount: any = null;
-
-  if (isDemo) {
-    const raw = universalStorage.getItem('mpf_v3_demo_accounts');
-    const all = raw ? JSON.parse(raw) : [];
-    sourceAccount = all.find((a: any) => a.id === input.sourceAccountId) || null;
-    destAccount = all.find((a: any) => a.id === input.destinationAccountId) || null;
-  } else {
-    const [sSnap, dSnap] = await Promise.all([
-      getDoc(doc(db, 'accounts', input.sourceAccountId)),
-      getDoc(doc(db, 'accounts', input.destinationAccountId)),
-    ]);
-    if (sSnap.exists()) sourceAccount = sSnap.data();
-    if (dSnap.exists()) destAccount = dSnap.data();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(input.transferDate || '')) {
+    throw new Error('Data de transferência inválida. Use o formato YYYY-MM-DD.');
   }
 
-  if (!sourceAccount) {
-    throw new Error(`Conta de origem "${input.sourceAccountId}" não encontrada.`);
-  }
-  if (!destAccount) {
-    throw new Error(`Conta de destino "${input.destinationAccountId}" não encontrada.`);
-  }
-
-  if (sourceAccount.userId !== userId || destAccount.userId !== userId) {
-    throw new Error('Violação de segurança: Transferências entre contas só são permitidas entre contas do mesmo usuário.');
-  }
-
-  if (sourceAccount.isArchived) {
-    throw new Error(`A conta de origem "${sourceAccount.name}" está arquivada e não pode realizar saídas.`);
-  }
-  if (destAccount.isArchived) {
-    throw new Error(`A conta de destino "${destAccount.name}" está arquivada e não pode receber transferências.`);
-  }
-
-  const cleanDescription =
-    input.description?.trim() ||
-    `Transferência de ${sourceAccount.name} para ${destAccount.name}`;
-
+  const cleanDesc = input.description?.trim() || 'Transferência entre contas próprias';
   const idempotencyKey =
-    input.idempotencyKey ||
+    input.idempotencyKey?.trim() ||
     `idem_xfer_${userId}_${input.sourceAccountId}_${input.destinationAccountId}_${input.amountCents}_${input.transferDate}`;
 
-  const transferId = `xfer_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-
-  // 2. Checagem de idempotência no modo demo
   if (isDemo) {
-    const demoTransfers = loadDemoTransfers();
-    const existing = demoTransfers.find(
-      (t) => t.userId === userId && t.idempotencyKey === idempotencyKey
-    );
-    if (existing) {
-      // Re-executa as chamadas de gravação que retornarão os movimentos já existentes
-      const sourceMovement = await recordMovement(
-        {
-          accountId: sourceAccount.id,
-          userId,
-          direction: 'outflow',
-          amountCents: existing.amountCents,
-          effectiveDate: existing.transferDate,
-          originType: 'internal_transfer_out',
-          originId: existing.id,
-          description: `Transferência para ${destAccount.name}`,
-          authorUid: userId,
-          idempotencyKey: `mov_src_${existing.idempotencyKey}`,
-        },
-        true
+    return await withDemoLock(() => {
+      const accountsRaw = universalStorage.getItem('mpf_v3_demo_accounts');
+      const accounts: Account[] = accountsRaw ? JSON.parse(accountsRaw) : [];
+      const srcIdx = accounts.findIndex((a) => a.id === input.sourceAccountId);
+      const dstIdx = accounts.findIndex((a) => a.id === input.destinationAccountId);
+
+      const sourceAccount = srcIdx >= 0 ? accounts[srcIdx] : null;
+      const destAccount = dstIdx >= 0 ? accounts[dstIdx] : null;
+
+      if (!sourceAccount) {
+        throw new Error(`Conta de origem "${input.sourceAccountId}" não encontrada.`);
+      }
+      if (!destAccount) {
+        throw new Error(`Conta de destino "${input.destinationAccountId}" não encontrada.`);
+      }
+
+      if (sourceAccount.userId !== userId || destAccount.userId !== userId) {
+        throw new Error(
+          'Violação de segurança: Transferências entre contas só são permitidas entre contas do mesmo usuário.'
+        );
+      }
+
+      if (sourceAccount.isArchived) {
+        throw new Error(
+          `A conta de origem "${sourceAccount.name}" está arquivada e não pode realizar saídas.`
+        );
+      }
+      if (destAccount.isArchived) {
+        throw new Error(
+          `A conta de destino "${destAccount.name}" está arquivada e não pode receber transferências.`
+        );
+      }
+
+      if (sourceAccount.type === 'credit' || destAccount.type === 'credit') {
+        throw new Error(
+          'Transferências diretas não são permitidas para contas de cartão de crédito. Utilize o pagamento de fatura.'
+        );
+      }
+
+      const cleanSlug = idempotencyKey.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 24);
+      const transferId = `trf_${cleanSlug}_${sha256Hex(`${userId}:${idempotencyKey}`)}`;
+      const outIdemKey = `${idempotencyKey}_out`;
+      const inIdemKey = `${idempotencyKey}_in`;
+
+      const demoTransfers = loadDemoTransfers();
+      const movRaw = universalStorage.getItem(DEMO_MOVEMENTS_KEY);
+      const demoMovements: FinancialMovement[] = movRaw ? JSON.parse(movRaw) : [];
+
+      const existingTransfer = demoTransfers.find(
+        (t) => t.userId === userId && (t.id === transferId || t.idempotencyKey === idempotencyKey)
       );
 
-      const destinationMovement = await recordMovement(
-        {
-          accountId: destAccount.id,
-          userId,
-          direction: 'inflow',
-          amountCents: existing.amountCents,
-          effectiveDate: existing.transferDate,
-          originType: 'internal_transfer_in',
-          originId: existing.id,
-          description: `Transferência de ${sourceAccount.name}`,
-          authorUid: userId,
-          idempotencyKey: `mov_dst_${existing.idempotencyKey}`,
-        },
-        true
-      );
+      if (existingTransfer) {
+        if (
+          existingTransfer.sourceAccountId !== input.sourceAccountId ||
+          existingTransfer.destinationAccountId !== input.destinationAccountId ||
+          existingTransfer.amountCents !== input.amountCents ||
+          existingTransfer.transferDate !== input.transferDate
+        ) {
+          throw new Error(
+            `Conflito de idempotência: A chave "${idempotencyKey}" já foi utilizada para uma transferência com parâmetros divergentes.`
+          );
+        }
+
+        const existingOut = demoMovements.find(
+          (m) => m.accountId === sourceAccount.id && m.idempotencyKey === outIdemKey
+        );
+        const existingIn = demoMovements.find(
+          (m) => m.accountId === destAccount.id && m.idempotencyKey === inIdemKey
+        );
+
+        if (existingOut && existingIn) {
+          return {
+            transfer: existingTransfer,
+            sourceMovement: existingOut,
+            destinationMovement: existingIn,
+            isIdempotentReplay: true,
+          };
+        }
+      }
+
+      const candidateOut = buildFinancialMovement({
+        accountId: sourceAccount.id,
+        userId,
+        direction: 'outflow',
+        amountCents: input.amountCents,
+        effectiveDate: input.transferDate,
+        originType: 'internal_transfer_out',
+        originId: transferId,
+        description: `${cleanDesc} (Para: ${destAccount.name})`,
+        notes: `Transferência própria vinculada #${transferId}`,
+        authorUid: userId,
+        idempotencyKey: outIdemKey,
+      });
+
+      const candidateIn = buildFinancialMovement({
+        accountId: destAccount.id,
+        userId,
+        direction: 'inflow',
+        amountCents: input.amountCents,
+        effectiveDate: input.transferDate,
+        originType: 'internal_transfer_in',
+        originId: transferId,
+        description: `${cleanDesc} (De: ${sourceAccount.name})`,
+        notes: `Transferência própria vinculada #${transferId}`,
+        authorUid: userId,
+        idempotencyKey: inIdemKey,
+      });
+
+      const prevOut = demoMovements.find((m) => m.id === candidateOut.id);
+      if (prevOut) {
+        validateMovementPayloadMatch(prevOut, candidateOut);
+      }
+      const prevIn = demoMovements.find((m) => m.id === candidateIn.id);
+      if (prevIn) {
+        validateMovementPayloadMatch(prevIn, candidateIn);
+      }
+
+      const nowIso = new Date().toISOString();
+      if (!prevOut) {
+        demoMovements.push(candidateOut);
+        accounts[srcIdx].projectedBalanceCents -= input.amountCents;
+        accounts[srcIdx].updatedAt = nowIso;
+      }
+      if (!prevIn) {
+        demoMovements.push(candidateIn);
+        accounts[dstIdx].projectedBalanceCents += input.amountCents;
+        accounts[dstIdx].updatedAt = nowIso;
+      }
+
+      const transferRecord: InternalAccountTransfer = {
+        id: transferId,
+        userId,
+        sourceAccountId: input.sourceAccountId,
+        destinationAccountId: input.destinationAccountId,
+        amountCents: input.amountCents,
+        transferDate: input.transferDate,
+        description: cleanDesc,
+        idempotencyKey,
+        sourceMovementId: candidateOut.id,
+        destinationMovementId: candidateIn.id,
+        createdAt: existingTransfer ? existingTransfer.createdAt : nowIso,
+      };
+
+      if (!existingTransfer) {
+        demoTransfers.push(transferRecord);
+      }
+
+      universalStorage.setItem(DEMO_MOVEMENTS_KEY, JSON.stringify(demoMovements));
+      universalStorage.setItem('mpf_v3_demo_accounts', JSON.stringify(accounts));
+      saveDemoTransfers(demoTransfers);
 
       return {
-        transfer: existing,
-        sourceMovement,
-        destinationMovement,
-        isIdempotentReplay: true,
+        transfer: transferRecord,
+        sourceMovement: prevOut || candidateOut,
+        destinationMovement: prevIn || candidateIn,
+        isIdempotentReplay: false,
       };
-    }
+    });
   }
 
-  // 3. Registra os 2 movimentos vinculados no Livro Financeiro v3.1
-  const sourceMovement = await recordMovement(
+  // Execução Transacional Autoritativa via Cloud Function (Admin SDK)
+  const callable = httpsCallable<
     {
-      accountId: sourceAccount.id,
-      userId,
-      direction: 'outflow',
-      amountCents: input.amountCents,
-      effectiveDate: input.transferDate,
-      originType: 'internal_transfer_out',
-      originId: transferId,
-      description: `Transferência para ${destAccount.name}`,
-      notes: `Transferência própria vinculada #${transferId}`,
-      authorUid: userId,
-      idempotencyKey: `mov_src_${idempotencyKey}`,
+      userId: string;
+      sourceAccountId: string;
+      destinationAccountId: string;
+      amountCents: CentsInteger;
+      transferDate: DateString;
+      description?: string;
+      idempotencyKey: string;
     },
-    isDemo
-  );
-
-  const destinationMovement = await recordMovement(
     {
-      accountId: destAccount.id,
-      userId,
-      direction: 'inflow',
-      amountCents: input.amountCents,
-      effectiveDate: input.transferDate,
-      originType: 'internal_transfer_in',
-      originId: transferId,
-      description: `Transferência de ${sourceAccount.name}`,
-      notes: `Transferência própria vinculada #${transferId}`,
-      authorUid: userId,
-      idempotencyKey: `mov_dst_${idempotencyKey}`,
-    },
-    isDemo
-  );
+      transfer: InternalAccountTransfer;
+      outflowMovement: FinancialMovement;
+      inflowMovement: FinancialMovement;
+      isIdempotentReplay: boolean;
+    }
+  >(functions, 'executeInternalTransferOfficial');
 
-  const transferRecord: InternalAccountTransfer = {
-    id: transferId,
+  const response = await callable({
     userId,
     sourceAccountId: input.sourceAccountId,
     destinationAccountId: input.destinationAccountId,
     amountCents: input.amountCents,
     transferDate: input.transferDate,
-    description: cleanDescription,
+    description: cleanDesc,
     idempotencyKey,
-    createdAt: new Date().toISOString(),
-  };
-
-  if (isDemo) {
-    const list = loadDemoTransfers();
-    list.push(transferRecord);
-    saveDemoTransfers(list);
-  } else {
-    const xferRef = doc(db, 'users', userId, 'internal_transfers', transferId);
-    await setDoc(xferRef, transferRecord);
-  }
+  });
 
   return {
-    transfer: transferRecord,
-    sourceMovement,
-    destinationMovement,
-    isIdempotentReplay: false,
+    transfer: response.data.transfer,
+    sourceMovement: response.data.outflowMovement,
+    destinationMovement: response.data.inflowMovement,
+    isIdempotentReplay: response.data.isIdempotentReplay,
   };
 }
 

@@ -154,8 +154,10 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
         !isHistoricalOnly
           ? getSpaceInvites(space.id, userId, isDemo).catch(() => [])
           : Promise.resolve([]),
-        getSpaceAuditEvents(space.id, isDemo).catch(() => []),
-        getSpaceDissolutionRequest(space.id, userId, isDemo).catch(() => null),
+        getSpaceAuditEvents(space.id, userId, isDemo).catch(() => []),
+        !isHistoricalOnly
+          ? getSpaceDissolutionRequest(space.id, userId, isDemo).catch(() => null)
+          : Promise.resolve(null),
       ]);
       setMembers(mems);
       setInvites(invs);

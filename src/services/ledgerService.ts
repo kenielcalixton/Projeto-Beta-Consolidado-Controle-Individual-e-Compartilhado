@@ -5,15 +5,23 @@ import {
   getDocs,
   orderBy,
   query,
-  runTransaction,
-  where,
 } from 'firebase/firestore';
-import { db } from './firebase';
-import { Account, CentsInteger, FinancialMovement } from '../types/financeV3';
+import { httpsCallable } from 'firebase/functions';
+import { db, functions } from './firebase';
+import {
+  Account,
+  CentsInteger,
+  DateString,
+  FinancialMovement,
+  PersonalTransaction,
+  PersonalTransactionPayment,
+  PersonalTransactionPaymentReversal,
+} from '../types/financeV3';
 import {
   buildCompensatoryMovement,
   buildFinancialMovement,
   BuildMovementParams,
+  generatePaymentReversalDocId,
   generateReversalDocId,
   reconcileAccountBalance,
   validateMovementPayloadMatch,
@@ -30,10 +38,33 @@ import { universalStorage } from '../utils/universalStorage';
  * 2. Imutabilidade e ausência de status 'reversed' mutável.
  * 3. Estornos via movimentos compensatórios de contrapartida.
  * 4. Prevenção de duplicidade e idempotência.
- * 5. Consistência transacional do saldo projetado (projectedBalanceCents).
+ * 5. Consistência transacional do saldo projetado (projectedBalanceCents) via Backend Confiável.
  */
 
 const DEMO_MOVEMENTS_STORAGE_KEY = 'mpf_v3_demo_movements';
+
+// Fila de exclusão mútua em memória para serializar chamadas concorrentes (Promise.all) em modo demo
+let demoMutexChain: Promise<unknown> = Promise.resolve();
+let demoLockActive = false;
+
+export function withDemoLock<T>(task: () => Promise<T> | T): Promise<T> {
+  if (demoLockActive) {
+    return Promise.resolve().then(() => task());
+  }
+  const next = demoMutexChain.then(async () => {
+    demoLockActive = true;
+    try {
+      return await task();
+    } finally {
+      demoLockActive = false;
+    }
+  });
+  demoMutexChain = next.then(
+    () => undefined,
+    () => undefined
+  );
+  return next;
+}
 
 function loadDemoMovements(): FinancialMovement[] {
   try {
@@ -54,7 +85,9 @@ function saveDemoMovements(movements: FinancialMovement[]): void {
 
 /**
  * Registra uma nova movimentação financeira atômica no livro-razão.
- * Atualiza o saldo projetado da conta em transação única ACID.
+ * Em ambiente Firestore real/emulador, delega para a Cloud Function oficial (recordFinancialMovementOfficial)
+ * que valida titularidade, estado da conta, idempotência por SHA-256 completo e atualiza projectedBalanceCents
+ * via Admin SDK.
  */
 export async function recordMovement(
   params: BuildMovementParams,
@@ -63,115 +96,75 @@ export async function recordMovement(
   const movement = buildFinancialMovement(params);
 
   if (isDemo) {
-    // Validação de titularidade e estado de arquivamento da conta demo
-    const accountsRaw = universalStorage.getItem('mpf_v3_demo_accounts');
-    const accounts: Account[] = accountsRaw ? JSON.parse(accountsRaw) : [];
-    const targetAccount = accounts.find((a) => a.id === movement.accountId);
+    return await withDemoLock(() => {
+      const accountsRaw = universalStorage.getItem('mpf_v3_demo_accounts');
+      const accounts: Account[] = accountsRaw ? JSON.parse(accountsRaw) : [];
+      const targetAccount = accounts.find((a) => a.id === movement.accountId);
 
-    if (targetAccount) {
-      if (targetAccount.userId !== movement.userId) {
-        throw new Error(
-          'Violação de segurança: O titular da conta não coincide com o usuário informado.'
-        );
+      if (targetAccount) {
+        if (targetAccount.userId !== movement.userId) {
+          throw new Error(
+            'Violação de segurança: O titular da conta não coincide com o usuário informado.'
+          );
+        }
+        if (targetAccount.isArchived) {
+          throw new Error(
+            `A conta "${targetAccount.name}" está arquivada e não pode receber novas movimentações.`
+          );
+        }
       }
-      if (targetAccount.isArchived) {
-        throw new Error(
-          `A conta "${targetAccount.name}" está arquivada e não pode receber novas movimentações.`
-        );
+
+      const demoMovements = loadDemoMovements();
+
+      // Verificação de idempotência no modo demo
+      const exists = demoMovements.find(
+        (m) =>
+          m.accountId === movement.accountId &&
+          (m.id === movement.id || m.idempotencyKey === movement.idempotencyKey)
+      );
+      if (exists) {
+        validateMovementPayloadMatch(exists, movement);
+        return exists;
       }
-    }
 
-    const demoMovements = loadDemoMovements();
+      demoMovements.push(movement);
+      saveDemoMovements(demoMovements);
 
-    // Verificação de idempotência no modo demo
-    const exists = demoMovements.find(
-      (m) =>
-        m.accountId === movement.accountId &&
-        (m.id === movement.id || m.idempotencyKey === movement.idempotencyKey)
-    );
-    if (exists) {
-      validateMovementPayloadMatch(exists, movement);
-      return exists;
-    }
+      // Atualiza saldo em cache da conta demo
+      try {
+        const accIdx = accounts.findIndex((a) => a.id === movement.accountId);
+        if (accIdx >= 0) {
+          const delta =
+            movement.direction === 'inflow'
+              ? movement.amountCents
+              : -movement.amountCents;
+          accounts[accIdx].projectedBalanceCents += delta;
+          accounts[accIdx].updatedAt = new Date().toISOString();
+          universalStorage.setItem('mpf_v3_demo_accounts', JSON.stringify(accounts));
+        }
+      } catch {}
 
-    demoMovements.push(movement);
-    saveDemoMovements(demoMovements);
-
-    // Atualiza saldo em cache da conta demo
-    try {
-      const accIdx = accounts.findIndex((a) => a.id === movement.accountId);
-      if (accIdx >= 0) {
-        const delta =
-          movement.direction === 'inflow'
-            ? movement.amountCents
-            : -movement.amountCents;
-        accounts[accIdx].projectedBalanceCents += delta;
-        accounts[accIdx].updatedAt = new Date().toISOString();
-        universalStorage.setItem('mpf_v3_demo_accounts', JSON.stringify(accounts));
-      }
-    } catch {}
-
-    return movement;
+      return movement;
+    });
   }
 
-  // Persistência Transacional no Cloud Firestore
-  const accountRef = doc(db, 'accounts', movement.accountId);
-  const movementRef = doc(
-    db,
-    'accounts',
-    movement.accountId,
-    'movements',
-    movement.id
-  );
-
-  return await runTransaction(db, async (tx) => {
-    const accountSnap = await tx.get(accountRef);
-    if (!accountSnap.exists()) {
-      throw new Error(`Conta bancária "${movement.accountId}" não encontrada.`);
+  // Persistência Transacional Autoritativa via Cloud Function (Admin SDK)
+  const callable = httpsCallable<
+    BuildMovementParams,
+    {
+      movement: FinancialMovement;
+      newProjectedBalanceCents: CentsInteger;
+      isIdempotentReplay: boolean;
     }
+  >(functions, 'recordFinancialMovementOfficial');
 
-    const accountData = accountSnap.data() as Account;
-
-    // Isolamento e autorização estrita
-    if (accountData.userId !== movement.userId) {
-      throw new Error(
-        'Violação de segurança: O titular da conta não coincide com o usuário informado.'
-      );
-    }
-
-    // Regra v3.1: Contas arquivadas não recebem novas operações financeiras
-    if (accountData.isArchived) {
-      throw new Error(
-        `A conta "${accountData.name}" está arquivada e não pode receber novas movimentações.`
-      );
-    }
-
-    // Checagem de idempotência na subcoleção de movimentos da conta
-    const existingSnap = await tx.get(movementRef);
-    if (existingSnap.exists()) {
-      const existingMovement = existingSnap.data() as FinancialMovement;
-      validateMovementPayloadMatch(existingMovement, movement);
-      return existingMovement;
-    }
-
-    const delta =
-      movement.direction === 'inflow'
-        ? movement.amountCents
-        : -movement.amountCents;
-
-    const newProjectedBalance = (accountData.projectedBalanceCents || 0) + delta;
-
-    // 1. Grava o movimento imutável no livro-razão (subcoleção)
-    tx.set(movementRef, movement);
-
-    // 2. Atualiza a projeção de saldo da conta pai atomicamente
-    tx.update(accountRef, {
-      projectedBalanceCents: newProjectedBalance,
-      updatedAt: new Date().toISOString(),
-    });
-
-    return movement;
+  const response = await callable({
+    ...params,
+    id: movement.id,
+    idempotencyKey: movement.idempotencyKey,
   });
+
+  return response.data.movement;
 }
 
 /**
@@ -254,74 +247,132 @@ export async function reverseMovement(
   const compDocId = generateReversalDocId(movementId);
 
   if (isDemo) {
-    const demoMovements = loadDemoMovements();
-    const original = demoMovements.find(
-      (m) => m.accountId === accountId && m.id === movementId
-    );
-
-    if (!original) {
-      throw new Error(`Movimento "${movementId}" não encontrado.`);
-    }
-
-    if (original.reversalOfMovementId) {
-      throw new Error(
-        `Operação inválida: O movimento "${movementId}" já é um estorno compensatório e não pode ser re-estornado.`
+    return await withDemoLock(() => {
+      const demoMovements = loadDemoMovements();
+      const original = demoMovements.find(
+        (m) => m.accountId === accountId && m.id === movementId
       );
-    }
 
-    // Validação de titularidade e estado de arquivamento da conta demo
-    const accountsRaw = universalStorage.getItem('mpf_v3_demo_accounts');
-    const accounts: Account[] = accountsRaw ? JSON.parse(accountsRaw) : [];
-    const currentAcc = accounts.find((a) => a.id === accountId);
-    if (currentAcc) {
-      if (currentAcc.userId !== authorUid && original.userId !== authorUid) {
-        throw new Error('Permissão negada para estornar este movimento.');
+      if (!original) {
+        throw new Error(`Movimento "${movementId}" não encontrado.`);
       }
-      if (currentAcc.isArchived) {
-        throw new Error('Não é possível estornar movimentações em contas arquivadas.');
-      }
-    }
 
-    // Prevenção de duplicidade de reversão: checagem determinística
-    const existingComp = demoMovements.find(
-      (m) => m.id === compDocId || m.reversalOfMovementId === movementId
-    );
-    if (existingComp) {
-      if (options.idempotent) {
-        let currentBalance = 0;
-        try {
-          const accountsRaw = universalStorage.getItem('mpf_v3_demo_accounts');
-          if (accountsRaw) {
-            const accounts: Account[] = JSON.parse(accountsRaw);
+      if (original.reversalOfMovementId) {
+        throw new Error(
+          `Operação inválida: O movimento "${movementId}" já é um estorno compensatório e não pode ser re-estornado.`
+        );
+      }
+
+      const accountsRaw = universalStorage.getItem('mpf_v3_demo_accounts');
+      const accounts: Account[] = accountsRaw ? JSON.parse(accountsRaw) : [];
+      const currentAcc = accounts.find((a) => a.id === accountId);
+      if (currentAcc) {
+        if (currentAcc.userId !== authorUid && original.userId !== authorUid) {
+          throw new Error('Permissão negada para estornar este movimento.');
+        }
+        if (currentAcc.isArchived) {
+          throw new Error('Não é possível estornar movimentações em contas arquivadas.');
+        }
+      }
+
+      const existingComp = demoMovements.find(
+        (m) => m.id === compDocId || m.reversalOfMovementId === movementId
+      );
+      if (existingComp) {
+        if (options.idempotent) {
+          let currentBalance = 0;
+          try {
             const acc = accounts.find((a) => a.id === accountId);
             if (acc) currentBalance = acc.projectedBalanceCents;
-          }
-        } catch {}
-        return {
-          compensatoryMovement: existingComp,
-          newProjectedBalanceCents: currentBalance,
-        };
+          } catch {}
+          return {
+            compensatoryMovement: existingComp,
+            newProjectedBalanceCents: currentBalance,
+          };
+        }
+        throw new Error(
+          `O movimento "${movementId}" já possui um estorno compensatório registrado.`
+        );
       }
-      throw new Error(
-        `O movimento "${movementId}" já possui um estorno compensatório registrado.`
-      );
-    }
 
-    const compensatory = buildCompensatoryMovement({
-      originalMovement: original,
-      authorUid,
-      reason,
-    });
+      const compensatory = buildCompensatoryMovement({
+        originalMovement: original,
+        authorUid,
+        reason,
+      });
 
-    demoMovements.push(compensatory);
-    saveDemoMovements(demoMovements);
+      demoMovements.push(compensatory);
+      saveDemoMovements(demoMovements);
 
-    // Atualiza saldo na conta demo
-    let newBalance = 0;
-    try {
-      const accountsRaw = universalStorage.getItem('mpf_v3_demo_accounts');
-      if (accountsRaw) {
-        const accounts: Account[] = JSON.parse(accountsRaw);
+      // Sincroniza o efeito contábil do estorno na transação pessoal (sem cancelar a obrigação)
+      try {
+        if (original.originType === 'personal_expense' || original.originType === 'personal_income') {
+          const txsRaw = universalStorage.getItem('mpf_v3_demo_personal_transactions');
+          if (txsRaw) {
+            const txs: PersonalTransaction[] = JSON.parse(txsRaw);
+            let targetTx = txs.find((t) => t.id === original.originId && t.userId === original.userId);
+            const paymentsRaw = universalStorage.getItem('mpf_v3_demo_transaction_payments');
+            if (paymentsRaw) {
+              const payments: PersonalTransactionPayment[] = JSON.parse(paymentsRaw);
+              const pay = payments.find(
+                (p) =>
+                  p.id === original.originId ||
+                  p.financialMovementId === original.id ||
+                  p.id === `txpay_init_${original.originId}`
+              );
+              if (pay) {
+                if (!targetTx) {
+                  targetTx = txs.find((t) => t.id === pay.transactionId && t.userId === original.userId);
+                }
+                // Imutabilidade estrita: NÃO altera nem sobrescreve o registro original de pagamento.
+                // Cria um evento compensatório append-only em 'mpf_v3_demo_transaction_payment_reversals'.
+                const reversalsRaw = universalStorage.getItem('mpf_v3_demo_transaction_payment_reversals');
+                const reversals: PersonalTransactionPaymentReversal[] = reversalsRaw ? JSON.parse(reversalsRaw) : [];
+                const revId = generatePaymentReversalDocId(pay.id);
+                if (!reversals.some((r) => r.id === revId || r.paymentId === pay.id)) {
+                  reversals.push({
+                    id: revId,
+                    transactionId: pay.transactionId,
+                    paymentId: pay.id,
+                    userId: pay.userId,
+                    amountCents: pay.amountCents,
+                    originalFinancialMovementId: pay.financialMovementId,
+                    reversalMovementId: compensatory.id,
+                    reversalDate: (compensatory.effectiveDate || new Date().toISOString().split('T')[0]) as DateString,
+                    reversedAt: new Date().toISOString(),
+                    authorUid,
+                    reason: reason || 'Estorno contábil',
+                    idempotencyKey: `payrev_${pay.id}`,
+                    createdAt: new Date().toISOString(),
+                  });
+                  universalStorage.setItem('mpf_v3_demo_transaction_payment_reversals', JSON.stringify(reversals));
+                }
+              }
+            }
+            if (!targetTx && original.notes) {
+              const match = original.notes.match(/Amortização de #([a-zA-Z0-9_-]+)/);
+              if (match && match[1]) {
+                targetTx = txs.find((t) => t.id === match[1] && t.userId === original.userId);
+              }
+            }
+            if (targetTx && targetTx.status !== 'cancelled') {
+              const currentPaid = targetTx.paidAmountCents !== undefined ? targetTx.paidAmountCents : (targetTx.status === 'paid' ? targetTx.amountCents : 0);
+              const newPaid = Math.max(0, currentPaid - original.amountCents);
+              const newRemaining = Math.max(0, targetTx.amountCents - newPaid);
+              targetTx.paidAmountCents = newPaid;
+              targetTx.remainingAmountCents = newRemaining;
+              targetTx.status = newPaid === 0 ? 'pending' : 'partially_paid';
+              targetTx.updatedAt = new Date().toISOString();
+              universalStorage.setItem('mpf_v3_demo_personal_transactions', JSON.stringify(txs));
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('[DemoReversal] Erro ao sincronizar transação com estorno:', err);
+      }
+
+      let newBalance = 0;
+      try {
         const accIdx = accounts.findIndex((a) => a.id === accountId);
         if (accIdx >= 0) {
           const delta =
@@ -333,92 +384,43 @@ export async function reverseMovement(
           newBalance = accounts[accIdx].projectedBalanceCents;
           universalStorage.setItem('mpf_v3_demo_accounts', JSON.stringify(accounts));
         }
-      }
-    } catch {}
+      } catch {}
 
-    return {
-      compensatoryMovement: compensatory,
-      newProjectedBalanceCents: newBalance,
-    };
+      return {
+        compensatoryMovement: compensatory,
+        newProjectedBalanceCents: newBalance,
+      };
+    });
   }
 
-  // Execução Transacional Segura no Cloud Firestore com Chave Primária Determinística
-  const accountRef = doc(db, 'accounts', accountId);
-  const originalRef = doc(db, 'accounts', accountId, 'movements', movementId);
-  const compRef = doc(db, 'accounts', accountId, 'movements', compDocId);
-
-  return await runTransaction(db, async (tx) => {
-    // Leituras atômicas na mesma transação ACID
-    const [accSnap, origSnap, compSnap] = await Promise.all([
-      tx.get(accountRef),
-      tx.get(originalRef),
-      tx.get(compRef),
-    ]);
-
-    if (!accSnap.exists()) {
-      throw new Error(`Conta "${accountId}" não encontrada.`);
+  // Execução Transacional Autoritativa via Cloud Function (Admin SDK)
+  const callable = httpsCallable<
+    {
+      accountId: string;
+      movementId: string;
+      authorUid: string;
+      reason?: string;
+      idempotent?: boolean;
+    },
+    {
+      compensatoryMovement: FinancialMovement;
+      newProjectedBalanceCents: CentsInteger;
+      isIdempotentReplay?: boolean;
     }
-    if (!origSnap.exists()) {
-      throw new Error(`Movimento "${movementId}" não encontrado.`);
-    }
+  >(functions, 'reverseFinancialMovementOfficial');
 
-    const account = accSnap.data() as Account;
-    const original = origSnap.data() as FinancialMovement;
-
-    // Idempotência estrita a nível de documento
-    if (compSnap.exists()) {
-      if (options.idempotent) {
-        return {
-          compensatoryMovement: compSnap.data() as FinancialMovement,
-          newProjectedBalanceCents: account.projectedBalanceCents || 0,
-        };
-      }
-      throw new Error(
-        `O movimento "${movementId}" já possui estorno compensatório registrado.`
-      );
-    }
-
-    if (account.userId !== authorUid && original.userId !== authorUid) {
-      throw new Error('Permissão negada para estornar este movimento.');
-    }
-
-    if (account.isArchived) {
-      throw new Error('Não é possível estornar movimentações em contas arquivadas.');
-    }
-
-    if (original.reversalOfMovementId) {
-      throw new Error(
-        `Operação inválida: O movimento "${movementId}" já é um estorno compensatório e não pode ser re-estornado.`
-      );
-    }
-
-    const compensatory = buildCompensatoryMovement({
-      originalMovement: original,
-      authorUid,
-      reason,
-    });
-
-    const delta =
-      compensatory.direction === 'inflow'
-        ? compensatory.amountCents
-        : -compensatory.amountCents;
-
-    const newBalance = (account.projectedBalanceCents || 0) + delta;
-
-    // 1. Grava o novo movimento compensatório no caminho determinístico (append-only)
-    tx.set(compRef, compensatory);
-
-    // 2. Atualiza saldo da conta na mesma transação
-    tx.update(accountRef, {
-      projectedBalanceCents: newBalance,
-      updatedAt: new Date().toISOString(),
-    });
-
-    return {
-      compensatoryMovement: compensatory,
-      newProjectedBalanceCents: newBalance,
-    };
+  const response = await callable({
+    accountId,
+    movementId,
+    authorUid,
+    reason,
+    idempotent: options.idempotent,
   });
+
+  return {
+    compensatoryMovement: response.data.compensatoryMovement,
+    newProjectedBalanceCents: response.data.newProjectedBalanceCents,
+  };
 }
 
 export interface AccountBalanceAuditResult {
@@ -494,7 +496,7 @@ export interface ReconcileSyncResult {
 
 /**
  * Reconcilia integralmente o saldo de uma conta a partir da totalidade dos seus movimentos,
- * corrigindo qualquer desvio no cache de projeção de saldo.
+ * corrigindo qualquer desvio no cache de projeção de saldo via Backend Confiável.
  */
 export async function reconcileAndSyncAccountBalance(
   accountId: string,
@@ -502,78 +504,55 @@ export async function reconcileAndSyncAccountBalance(
   isDemo = false
 ): Promise<ReconcileSyncResult> {
   if (isDemo) {
-    const demoMovements = loadDemoMovements().filter(
-      (m) => m.accountId === accountId && m.userId === userId
-    );
-    const reconciled = reconcileAccountBalance(demoMovements);
-    let prev = 0;
-
-    try {
-      const accountsRaw = universalStorage.getItem('mpf_v3_demo_accounts');
-      if (accountsRaw) {
-        const accounts: Account[] = JSON.parse(accountsRaw);
-        const accIdx = accounts.findIndex((a) => a.id === accountId);
-        if (accIdx >= 0) {
-          prev = accounts[accIdx].projectedBalanceCents;
-          accounts[accIdx].projectedBalanceCents = reconciled;
-          accounts[accIdx].updatedAt = new Date().toISOString();
-          universalStorage.setItem('mpf_v3_demo_accounts', JSON.stringify(accounts));
-        }
-      }
-    } catch {}
-
-    const differenceCents = reconciled - prev;
-    const hasDivergence = differenceCents !== 0;
-
-    if (hasDivergence) {
-      console.warn(
-        `[LedgerSync] Saldo projetado corrigido para conta "${accountId}": ` +
-          `Anterior = ${prev} centavos, Reconciliado = ${reconciled} centavos, Desvio = ${differenceCents} centavos.`
+    return await withDemoLock(() => {
+      const demoMovements = loadDemoMovements().filter(
+        (m) => m.accountId === accountId && m.userId === userId
       );
-    }
+      const reconciled = reconcileAccountBalance(demoMovements);
+      let prev = 0;
 
-    return {
-      previousBalanceCents: prev,
-      reconciledBalanceCents: reconciled,
-      differenceCents,
-      hasDivergence,
-    };
-  }
+      try {
+        const accountsRaw = universalStorage.getItem('mpf_v3_demo_accounts');
+        if (accountsRaw) {
+          const accounts: Account[] = JSON.parse(accountsRaw);
+          const accIdx = accounts.findIndex((a) => a.id === accountId);
+          if (accIdx >= 0) {
+            prev = accounts[accIdx].projectedBalanceCents;
+            accounts[accIdx].projectedBalanceCents = reconciled;
+            accounts[accIdx].updatedAt = new Date().toISOString();
+            universalStorage.setItem('mpf_v3_demo_accounts', JSON.stringify(accounts));
+          }
+        }
+      } catch {}
 
-  const accountRef = doc(db, 'accounts', accountId);
-  const movements = await getAccountMovements(accountId, userId, false);
-  const reconciled = reconcileAccountBalance(movements);
+      const differenceCents = reconciled - prev;
+      const hasDivergence = differenceCents !== 0;
 
-  const accSnap = await runTransaction(db, async (tx) => {
-    const snap = await tx.get(accountRef);
-    if (!snap.exists()) {
-      throw new Error(`Conta "${accountId}" não encontrada.`);
-    }
-    const acc = snap.data() as Account;
-    const prev = acc.projectedBalanceCents || 0;
-
-    tx.update(accountRef, {
-      projectedBalanceCents: reconciled,
-      updatedAt: new Date().toISOString(),
+      return {
+        previousBalanceCents: prev,
+        reconciledBalanceCents: reconciled,
+        differenceCents,
+        hasDivergence,
+      };
     });
-
-    return { prev, reconciled };
-  });
-
-  const differenceCents = accSnap.reconciled - accSnap.prev;
-  const hasDivergence = differenceCents !== 0;
-
-  if (hasDivergence) {
-    console.warn(
-      `[LedgerSync] Saldo projetado no Firestore sincronizado para conta "${accountId}": ` +
-        `Anterior = ${accSnap.prev} centavos, Reconciliado = ${accSnap.reconciled} centavos, Desvio = ${differenceCents} centavos.`
-    );
   }
+
+  const callable = httpsCallable<
+    { accountId: string },
+    {
+      reconciledBalanceCents: CentsInteger;
+      previousProjectedBalanceCents: CentsInteger;
+      wasDivergent: boolean;
+    }
+  >(functions, 'reconcileAccountBalanceOfficial');
+
+  const response = await callable({ accountId });
+  const { reconciledBalanceCents, previousProjectedBalanceCents, wasDivergent } = response.data;
 
   return {
-    previousBalanceCents: accSnap.prev,
-    reconciledBalanceCents: accSnap.reconciled,
-    differenceCents,
-    hasDivergence,
+    previousBalanceCents: previousProjectedBalanceCents,
+    reconciledBalanceCents,
+    differenceCents: reconciledBalanceCents - previousProjectedBalanceCents,
+    hasDivergence: wasDivergent,
   };
 }

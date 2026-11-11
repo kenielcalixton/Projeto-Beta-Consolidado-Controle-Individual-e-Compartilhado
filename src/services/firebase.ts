@@ -1,25 +1,100 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
-import { getAuth, GoogleAuthProvider } from 'firebase/auth';
-import { doc, getDocFromServer, getFirestore } from 'firebase/firestore';
-import { getStorage } from 'firebase/storage';
+import { connectAuthEmulator, getAuth, GoogleAuthProvider } from 'firebase/auth';
+import {
+  connectFirestoreEmulator,
+  doc,
+  getDocFromServer,
+  getFirestore,
+} from 'firebase/firestore';
+import { connectFunctionsEmulator, getFunctions } from 'firebase/functions';
+import { connectStorageEmulator, getStorage } from 'firebase/storage';
 
-import { getActiveFirebaseConfig } from '../config/environment';
+import {
+  assertRemoteFirebaseIsolation,
+  getActiveFirebaseConfig,
+  getFirebaseEmulatorEndpoints,
+} from '../config/environment';
 
 /**
  * ============================================================================
- * CONFIGURAÇÃO UNIFICADA DO FIREBASE (PROJETO: teste-beta-fin-e-list)
+ * CONFIGURAÇÃO UNIFICADA DO FIREBASE E CONEXÃO AOS EMULADORES (v3.1)
  * ============================================================================
+ * Em desenvolvimento e testes locais, conecta obrigatoriamente ao Firebase
+ * Emulator Suite (projeto: demo-projeto-beta-v3) antes de qualquer operação,
+ * com guarda contra reconexão duplicada durante HMR.
  */
 export const MASTER_ADMIN_UID = 'GOgPDiSr6UP3VGR0zRcdFlgDseY2';
 
 export const firebaseConfig = getActiveFirebaseConfig();
+export const emulatorEndpoints = getFirebaseEmulatorEndpoints();
 
+// Garantia explícita de isolamento antes de inicializar os serviços
+assertRemoteFirebaseIsolation(firebaseConfig, emulatorEndpoints.enabled);
 
 export const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
 export const db = getFirestore(app);
 export const auth = getAuth(app);
 export const storage = getStorage(app);
+export const functions = getFunctions(app, 'us-central1');
 export const googleProvider = new GoogleAuthProvider();
+
+// Guarda global contra reconexão duplicada durante Hot Module Replacement (HMR) ou múltiplos imports
+const globalEmulatorState = globalThis as unknown as {
+  __MPF_FIREBASE_EMULATORS_CONNECTED__?: boolean;
+  __MPF_FIREBASE_CONNECTED_ENDPOINTS__?: {
+    projectId: string;
+    host: string;
+    authPort: number;
+    firestorePort: number;
+    storagePort: number;
+    functionsPort: number;
+  };
+};
+
+if (emulatorEndpoints.enabled && !globalEmulatorState.__MPF_FIREBASE_EMULATORS_CONNECTED__) {
+  connectAuthEmulator(
+    auth,
+    `http://${emulatorEndpoints.host}:${emulatorEndpoints.authPort}`,
+    { disableWarnings: true }
+  );
+  connectFirestoreEmulator(
+    db,
+    emulatorEndpoints.host,
+    emulatorEndpoints.firestorePort
+  );
+  connectStorageEmulator(
+    storage,
+    emulatorEndpoints.host,
+    emulatorEndpoints.storagePort
+  );
+  connectFunctionsEmulator(
+    functions,
+    emulatorEndpoints.host,
+    emulatorEndpoints.functionsPort
+  );
+
+  globalEmulatorState.__MPF_FIREBASE_EMULATORS_CONNECTED__ = true;
+  globalEmulatorState.__MPF_FIREBASE_CONNECTED_ENDPOINTS__ = {
+    projectId: firebaseConfig.projectId,
+    host: emulatorEndpoints.host,
+    authPort: emulatorEndpoints.authPort,
+    firestorePort: emulatorEndpoints.firestorePort,
+    storagePort: emulatorEndpoints.storagePort,
+    functionsPort: emulatorEndpoints.functionsPort,
+  };
+}
+
+/**
+ * Inspeciona o estado real da conexão aos emuladores para validação em testes e diagnóstico.
+ */
+export function getFirebaseConnectionDiagnostics() {
+  return {
+    projectId: firebaseConfig.projectId,
+    emulatorsEnabled: emulatorEndpoints.enabled,
+    emulatorsConnected: !!globalEmulatorState.__MPF_FIREBASE_EMULATORS_CONNECTED__,
+    endpoints: globalEmulatorState.__MPF_FIREBASE_CONNECTED_ENDPOINTS__ || null,
+  };
+}
 
 export enum OperationType {
   CREATE = 'create',

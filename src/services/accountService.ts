@@ -141,9 +141,9 @@ export async function createAccount(
     name: input.name.trim(),
     type: input.type,
     projectedBalanceCents: 0, // Saldo inicial sempre derivado do livro de movimentações (0)
-    creditLimitCents: input.creditLimitCents,
-    closingDay: input.closingDay,
-    dueDay: input.dueDay,
+    ...(input.creditLimitCents !== undefined ? { creditLimitCents: input.creditLimitCents } : {}),
+    ...(input.closingDay !== undefined ? { closingDay: input.closingDay } : {}),
+    ...(input.dueDay !== undefined ? { dueDay: input.dueDay } : {}),
     color: input.color || '#6366f1',
     icon: input.icon || 'ph-bank',
     isArchived: false,

@@ -140,7 +140,7 @@ export function generateMovementDocId(accountIdOrKey: string, idempotencyKey?: s
 
   const cleanSlug = key.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 24);
   const hashInput = accountId ? `${accountId}:${key}` : key;
-  const hash = sha256Hex(hashInput).slice(0, 16);
+  const hash = sha256Hex(hashInput);
 
   return `mov_${cleanSlug ? `${cleanSlug}_` : ''}${hash}`;
 }
@@ -151,8 +151,18 @@ export function generateMovementDocId(accountIdOrKey: string, idempotencyKey?: s
  */
 export function generateReversalDocId(originalMovementId: string): string {
   const clean = originalMovementId.trim().replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 32);
-  const hash = sha256Hex(originalMovementId).slice(0, 12);
+  const hash = sha256Hex(originalMovementId);
   return `rev_${clean}_${hash}`;
+}
+
+/**
+ * Gera o ID de documento determinístico para o evento compensatório de estorno de amortização individual.
+ * Garante unicidade e idempotência estrita na subcoleção users/{userId}/personal_transactions/{txId}/payment_reversals/{reversalId}.
+ */
+export function generatePaymentReversalDocId(paymentId: string): string {
+  const clean = paymentId.trim().replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 32);
+  const hash = sha256Hex(paymentId);
+  return `payrev_${clean}_${hash}`;
 }
 
 /**
@@ -230,22 +240,18 @@ export function buildFinancialMovement(params: BuildMovementParams): FinancialMo
     params.idempotencyKey ||
     `idem_${params.originType}_${params.originId}_${params.direction}_${params.amountCents}`;
 
-  // ID determinístico vinculado à chave de idempotência e ao escopo da conta
-  const expectedDocId = generateMovementDocId(params.accountId, idempotencyKey);
+  // ID determinístico vinculado à chave de idempotência e ao escopo da conta (ou ao estorno)
+  const expectedDocId = params.reversalOfMovementId
+    ? generateReversalDocId(params.reversalOfMovementId)
+    : generateMovementDocId(params.accountId, idempotencyKey);
 
-  // Validação estrita do ID: impede burla do determinismo
-  let id = expectedDocId;
-  if (params.id) {
-    if (params.id.startsWith('rev_')) {
-      id = params.id;
-    } else if (params.id !== expectedDocId) {
-      throw new Error(
-        `Identificador de documento inválido: O ID "${params.id}" fornecido não coincide com o ID determinístico derivado da chave de idempotência ("${expectedDocId}"). Não é permitido burlar o ID determinístico.`
-      );
-    } else {
-      id = params.id;
-    }
+  // Validação estrita do ID: impede burla do determinismo inclusive para estornos
+  if (params.id && params.id !== expectedDocId) {
+    throw new Error(
+      `Identificador de documento inválido: O ID "${params.id}" fornecido não coincide com o ID determinístico esperado ("${expectedDocId}"). Não é permitido burlar o ID determinístico.`
+    );
   }
+  const id = expectedDocId;
 
   return {
     id,

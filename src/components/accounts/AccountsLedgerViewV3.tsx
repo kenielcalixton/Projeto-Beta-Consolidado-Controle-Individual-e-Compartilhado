@@ -83,6 +83,7 @@ export const AccountsLedgerViewV3: React.FC<AccountsLedgerViewV3Props> = ({
   const [movEffectiveDate, setMovEffectiveDate] = useState(() =>
     new Date().toISOString().slice(0, 10)
   );
+  const [movIdempotencyKey, setMovIdempotencyKey] = useState('');
   const [movSubmitting, setMovSubmitting] = useState(false);
 
   // Formulário de Estorno
@@ -285,6 +286,13 @@ export const AccountsLedgerViewV3: React.FC<AccountsLedgerViewV3Props> = ({
     setMovSubmitting(true);
     setError(null);
     try {
+      const activeIdemKey =
+        movIdempotencyKey ||
+        `idem_manual_${selectedAccount.id}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+      if (!movIdempotencyKey) {
+        setMovIdempotencyKey(activeIdemKey);
+      }
+
       const newMov = await recordMovement(
         {
           accountId: selectedAccount.id,
@@ -292,11 +300,12 @@ export const AccountsLedgerViewV3: React.FC<AccountsLedgerViewV3Props> = ({
           amountCents,
           direction: movementDirection,
           originType: 'manual_adjustment',
-          originId: `manual_${Date.now()}`,
+          originId: activeIdemKey,
           authorUid: userId,
           description: movDescription.trim(),
           effectiveDate: movEffectiveDate,
           notes: `Lançamento manual registrado no Livro-Razão v3.1`,
+          idempotencyKey: activeIdemKey,
         },
         isDemo
       );
@@ -310,6 +319,7 @@ export const AccountsLedgerViewV3: React.FC<AccountsLedgerViewV3Props> = ({
       setIsMovementModalOpen(false);
       setMovDescription('');
       setMovAmountInput('');
+      setMovIdempotencyKey('');
 
       // Recarrega conta e movimentos
       await loadMovementsForAccount(selectedAccount);
@@ -786,6 +796,9 @@ export const AccountsLedgerViewV3: React.FC<AccountsLedgerViewV3Props> = ({
                       setMovementDirection('inflow');
                       setMovDescription('');
                       setMovAmountInput('');
+                      setMovIdempotencyKey(
+                        `idem_manual_${selectedAccount.id}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
+                      );
                       setIsMovementModalOpen(true);
                     }}
                     className="flex items-center gap-1.5 px-3.5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold rounded-xl shadow-xs transition-all"
@@ -799,6 +812,9 @@ export const AccountsLedgerViewV3: React.FC<AccountsLedgerViewV3Props> = ({
                       setMovementDirection('outflow');
                       setMovDescription('');
                       setMovAmountInput('');
+                      setMovIdempotencyKey(
+                        `idem_manual_${selectedAccount.id}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
+                      );
                       setIsMovementModalOpen(true);
                     }}
                     className="flex items-center gap-1.5 px-3.5 py-2 bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold rounded-xl shadow-xs transition-all"

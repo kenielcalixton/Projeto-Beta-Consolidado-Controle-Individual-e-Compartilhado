@@ -1,5 +1,6 @@
 import {
   collection,
+  collectionGroup,
   doc,
   getDoc,
   getDocs,
@@ -18,7 +19,10 @@ import {
   SpaceMemberRole,
   SpaceModuleType,
 } from '../types/financeV3';
-import { recordSpaceAuditEvent } from './spaceAuditService';
+import {
+  generateDeterministicAuditEventId,
+  recordSpaceAuditEvent,
+} from './spaceAuditService';
 import { notifySpaceMembers, sendSpaceNotification } from './spaceNotificationService';
 import { universalStorage } from '../utils/universalStorage';
 
@@ -35,7 +39,12 @@ import { universalStorage } from '../utils/universalStorage';
  * 2. Espaço arquivado é estritamente somente leitura (nenhuma mutação permitida).
  * 3. A remoção de participante revoga imediatamente o acesso operacional (removido
  *    de memberUids), mas preserva integralmente seu histórico e autoria de dados.
- * 4. Isolamento estrito: dados individuais nunca são expostos a participantes do espaço.
+ * 4. Isolamento estrito de ex-participantes (Problema 1):
+ *    - `historicalMemberUids` NÃO concede acesso irrestrito ao documento operacional
+ *      do espaço (não expõe `memberUids` atuais de terceiros, nem `monthlyBudgetCents`).
+ *    - Quando consultado em modo histórico (`allowHistorical = true`), retorna uma
+ *      projeção sanitizada (`sanitizeSpaceForHistoricalMember`).
+ *    - Por padrão, `getSpaceById` exige participação operacional ativa (`allowHistorical = false`).
  */
 
 const DEMO_SPACES_KEY = 'mpf_v3_demo_spaces';
@@ -76,6 +85,35 @@ function saveDemoMembers(spaceId: string, members: SpaceMember[]): void {
   } catch (err) {
     console.warn('[DemoStorage] Erro ao salvar membros:', err);
   }
+}
+
+/**
+ * Sanitiza os dados de um espaço para um ex-participante histórico, removendo:
+ * - Lista de membros ativos atuais (`memberUids: []`)
+ * - Lista de demais ex-participantes (`historicalMemberUids: [requesterUid]`)
+ * - Orçamento mensal operacional atual (`monthlyBudgetCents: undefined`)
+ */
+export function sanitizeSpaceForHistoricalMember(
+  space: Space,
+  requesterUid: string
+): Space {
+  return {
+    id: space.id,
+    creatorUid: space.creatorUid,
+    ownerId: space.ownerId,
+    name: space.name,
+    description: space.description,
+    icon: space.icon,
+    color: space.color,
+    spaceStatus: space.spaceStatus,
+    archivedAt: space.archivedAt,
+    archivedByUid: space.archivedByUid,
+    memberUids: [],
+    historicalMemberUids: [requesterUid],
+    enabledModules: space.enabledModules,
+    monthlyBudgetCents: undefined,
+    createdAt: space.createdAt,
+  };
 }
 
 export interface CreateSpaceInput {
@@ -180,6 +218,16 @@ export async function createSpace(
     joinedAt: now,
   };
 
+  const auditInput = {
+    spaceId,
+    eventType: 'space_created' as const,
+    performedByUid: creatorUid.trim(),
+    performedByName: creatorName?.trim() || 'Criador do Espaço',
+    details: { name: newSpace.name },
+    operationKey: `create_${spaceId}`,
+    timestamp: now,
+  };
+
   if (isDemo) {
     const spaces = loadDemoSpaces();
     spaces.unshift(newSpace);
@@ -188,34 +236,23 @@ export async function createSpace(
     const members = [initialMember];
     saveDemoMembers(spaceId, members);
 
-    await recordSpaceAuditEvent(
-      {
-        spaceId,
-        eventType: 'space_created',
-        performedByUid: creatorUid,
-        performedByName: creatorName,
-        details: { name: newSpace.name },
-      },
-      true
-    );
+    await recordSpaceAuditEvent(auditInput, true);
 
     return { space: newSpace, member: initialMember };
   }
 
-  // Gravação no Firestore
-  await setDoc(doc(db, 'spaces', spaceId), newSpace);
+  // Remove campos undefined antes de gravar no Firestore
+  const firestoreSpaceDoc: Record<string, unknown> = {
+    ...newSpace,
+  };
+  if (firestoreSpaceDoc.monthlyBudgetCents === undefined) {
+    delete firestoreSpaceDoc.monthlyBudgetCents;
+  }
+
+  await setDoc(doc(db, 'spaces', spaceId), firestoreSpaceDoc);
   await setDoc(doc(db, 'spaces', spaceId, 'members', creatorUid.trim()), initialMember);
 
-  await recordSpaceAuditEvent(
-    {
-      spaceId,
-      eventType: 'space_created',
-      performedByUid: creatorUid,
-      performedByName: creatorName,
-      details: { name: newSpace.name },
-    },
-    false
-  );
+  await recordSpaceAuditEvent(auditInput, false);
 
   return { space: newSpace, member: initialMember };
 }
@@ -225,8 +262,8 @@ export type SpaceViewMode = 'active' | 'historical' | 'all';
 /**
  * Consulta espaços aos quais o usuário pertence.
  * - 'active' (padrão): espaços onde o usuário é participante ativo (consta em memberUids).
- * - 'historical': espaços onde o usuário é ex-participante (consta em historicalMemberUids, mas não em memberUids).
- * - 'all': união de espaços ativos e históricos.
+ * - 'historical': espaços onde o usuário é ex-participante (projeção sanitizada sem dados operacionais atuais).
+ * - 'all': união de espaços ativos e projeções históricas.
  */
 export async function getUserSpaces(
   userId: string,
@@ -242,67 +279,92 @@ export async function getUserSpaces(
 
   if (isDemo) {
     const spaces = loadDemoSpaces();
-    return spaces.filter((s) => {
+    const filtered: Space[] = [];
+
+    for (const s of spaces) {
+      if (!Array.isArray(s.memberUids) || s.memberUids.length === 0) continue;
+      if (!includeArchived && s.spaceStatus === 'archived') continue;
+      if (s.spaceStatus === 'dissolved') continue;
+
       const isActive = s.memberUids.includes(cleanUid);
-      const isHistoricalOnly = !isActive && (s.historicalMemberUids?.includes(cleanUid) ?? false);
+      const isHistoricalOnly =
+        !isActive && (s.historicalMemberUids?.includes(cleanUid) ?? false);
 
-      if (viewMode === 'active' && !isActive) return false;
-      if (viewMode === 'historical' && !isHistoricalOnly) return false;
-      if (viewMode === 'all' && !isActive && !isHistoricalOnly) return false;
+      if (viewMode === 'active' && isActive) {
+        filtered.push(s);
+      } else if (viewMode === 'historical' && isHistoricalOnly) {
+        filtered.push(sanitizeSpaceForHistoricalMember(s, cleanUid));
+      } else if (viewMode === 'all') {
+        if (isActive) {
+          filtered.push(s);
+        } else if (isHistoricalOnly) {
+          filtered.push(sanitizeSpaceForHistoricalMember(s, cleanUid));
+        }
+      }
+    }
 
-      // Filtro de arquivamento
-      if (!includeArchived && s.spaceStatus === 'archived') return false;
-      // Não exibir espaços dissolvidos
-      if (s.spaceStatus === 'dissolved') return false;
-      return true;
-    });
+    return filtered;
   }
 
-  let q;
-  if (viewMode === 'active') {
-    q = query(
+  const resultMap = new Map<string, Space>();
+
+  if (viewMode === 'active' || viewMode === 'all') {
+    const activeQuery = query(
       collection(db, 'spaces'),
       where('memberUids', 'array-contains', cleanUid)
     );
-  } else {
-    // Para 'historical' ou 'all', consultamos historicalMemberUids
-    q = query(
-      collection(db, 'spaces'),
-      where('historicalMemberUids', 'array-contains', cleanUid)
-    );
+    const activeSnap = await getDocs(activeQuery);
+    activeSnap.forEach((d) => {
+      const raw = d.data() as Space;
+      const space: Space = { ...raw, id: d.id || raw.id };
+      if (!Array.isArray(space.memberUids) || space.memberUids.length === 0) return;
+      if (!includeArchived && space.spaceStatus === 'archived') return;
+      if (space.spaceStatus === 'dissolved') return;
+      resultMap.set(space.id, space);
+    });
   }
 
-  const snapshot = await getDocs(q);
-  const result: Space[] = [];
+  if (viewMode === 'historical' || viewMode === 'all') {
+    const histQuery = query(
+      collectionGroup(db, 'historical_views'),
+      where('memberUid', '==', cleanUid)
+    );
+    const histSnap = await getDocs(histQuery);
+    histSnap.forEach((d) => {
+      const raw = d.data() as Space & { spaceId?: string };
+      const spaceId = raw.spaceId || raw.id || d.id;
+      if (resultMap.has(spaceId)) return; // Se já é ativo, mantém o ativo (ou ignora se viewMode === 'historical')
+      const sanitized = sanitizeSpaceForHistoricalMember(
+        {
+          ...raw,
+          id: spaceId,
+          memberUids: [],
+          historicalMemberUids: [cleanUid],
+        },
+        cleanUid
+      );
+      if (!includeArchived && sanitized.spaceStatus === 'archived') return;
+      if (sanitized.spaceStatus === 'dissolved') return;
+      resultMap.set(spaceId, sanitized);
+    });
+  }
 
-  snapshot.forEach((d) => {
-    const raw = d.data() as Space;
-    const space: Space = { ...raw, id: d.id || raw.id };
-    if (!includeArchived && space.spaceStatus === 'archived') return;
-    if (space.spaceStatus === 'dissolved') return;
-
-    const isActive = space.memberUids.includes(cleanUid);
-    const isHistoricalOnly = !isActive && (space.historicalMemberUids?.includes(cleanUid) ?? false);
-
-    if (viewMode === 'active' && !isActive) return;
-    if (viewMode === 'historical' && !isHistoricalOnly) return;
-    if (viewMode === 'all' && !isActive && !isHistoricalOnly) return;
-
-    result.push(space);
-  });
-
-  return result.sort((a, b) => a.name.localeCompare(b.name));
+  return Array.from(resultMap.values()).sort((a, b) => a.name.localeCompare(b.name));
 }
 
 /**
  * Obtém os dados de um espaço específico, validando autorização do solicitante.
- * Suporta acesso operacional (membro ativo) e acesso histórico de consulta (ex-membro).
+ * SEGURANÇA (Problema 1):
+ * - Por padrão (`allowHistorical = false`), exige que o usuário seja PARTICIPANTE ATIVO (`memberUids`).
+ * - Quando `allowHistorical = true` e o usuário é ex-participante, retorna EXCLUSIVAMENTE
+ *   a projeção histórica sanitizada (`historical_views/{userId}`), sem expor `memberUids` atuais
+ *   nem `monthlyBudgetCents`.
  */
 export async function getSpaceById(
   spaceId: string,
   userId: string,
   isDemo = false,
-  allowHistorical = true
+  allowHistorical = false
 ): Promise<Space | null> {
   if (!spaceId || !userId) return null;
   const cleanUid = userId.trim();
@@ -315,28 +377,64 @@ export async function getSpaceById(
     const isActive = found.memberUids.includes(cleanUid);
     const isHistorical = found.historicalMemberUids?.includes(cleanUid) ?? false;
 
-    if (!isActive && (!allowHistorical || !isHistorical)) {
-      throw new Error(
-        'Violação de segurança: acesso não autorizado a espaço no qual o usuário não é participante ativo nem histórico.'
-      );
+    if (isActive) {
+      return found;
     }
-    return found;
-  }
 
-  const snap = await getDoc(doc(db, 'spaces', spaceId));
-  if (!snap.exists()) return null;
+    if (allowHistorical && isHistorical) {
+      return sanitizeSpaceForHistoricalMember(found, cleanUid);
+    }
 
-  const space = snap.data() as Space;
-  const isActive = space.memberUids.includes(cleanUid);
-  const isHistorical = space.historicalMemberUids?.includes(cleanUid) ?? false;
-
-  if (!isActive && (!allowHistorical || !isHistorical)) {
     throw new Error(
-      'Violação de segurança: acesso não autorizado a espaço no qual o usuário não é participante ativo nem histórico.'
+      'Violação de segurança: acesso não autorizado a espaço no qual o usuário não é participante ativo.'
     );
   }
 
-  return space;
+  // No Firestore, `spaces/{spaceId}` só permite leitura para participantes ativos (`memberUids`)
+  try {
+    const snap = await getDoc(doc(db, 'spaces', spaceId));
+    if (snap.exists()) {
+      const space = snap.data() as Space;
+      if (space.memberUids.includes(cleanUid)) {
+        return { ...space, id: snap.id || space.id };
+      }
+    } else if (!allowHistorical) {
+      return null;
+    }
+  } catch (err: unknown) {
+    // Se negado pelas regras para `spaces/{spaceId}` e `allowHistorical == true`, tenta a projeção histórica
+    if (!allowHistorical) {
+      throw new Error(
+        'Violação de segurança: acesso não autorizado a espaço no qual o usuário não é participante ativo.'
+      );
+    }
+  }
+
+  if (allowHistorical) {
+    try {
+      const histSnap = await getDoc(
+        doc(db, 'spaces', spaceId, 'historical_views', cleanUid)
+      );
+      if (histSnap.exists()) {
+        const raw = histSnap.data() as Space & { spaceId?: string };
+        return sanitizeSpaceForHistoricalMember(
+          {
+            ...raw,
+            id: raw.spaceId || spaceId,
+            memberUids: [],
+            historicalMemberUids: [cleanUid],
+          },
+          cleanUid
+        );
+      }
+    } catch {
+      // Ignora e lança erro de autorização abaixo
+    }
+  }
+
+  throw new Error(
+    'Violação de segurança: acesso não autorizado a espaço no qual o usuário não é participante ativo nem histórico.'
+  );
 }
 
 /**
@@ -350,7 +448,7 @@ export async function getSpaceMembers(
   userId: string,
   isDemo = false
 ): Promise<SpaceMember[]> {
-  const space = await getSpaceById(spaceId, userId, isDemo);
+  const space = await getSpaceById(spaceId, userId, isDemo, true);
   if (!space) return [];
 
   const isActive = space.memberUids.includes(userId);
@@ -383,7 +481,7 @@ export async function getSpaceMembers(
 }
 
 /**
- * Atualiza metadados gerais do espaço (bloqueado se o espaço estiver arquivado).
+ * Atualiza metadados gerais do espaço (bloqueado se o espaço estiver arquivado ou para ex-membros).
  */
 export async function updateSpace(
   spaceId: string,
@@ -393,7 +491,7 @@ export async function updateSpace(
 ): Promise<Space> {
   validateSpaceInput(input);
 
-  const space = await getSpaceById(spaceId, userId, isDemo);
+  const space = await getSpaceById(spaceId, userId, isDemo, false);
   if (!space) {
     throw new Error(`Espaço "${spaceId}" não encontrado.`);
   }
@@ -447,7 +545,7 @@ export async function archiveSpace(
   userName: string,
   isDemo = false
 ): Promise<Space> {
-  const space = await getSpaceById(spaceId, userId, isDemo);
+  const space = await getSpaceById(spaceId, userId, isDemo, false);
   if (!space) {
     throw new Error(`Espaço "${spaceId}" não encontrado.`);
   }
@@ -468,19 +566,22 @@ export async function archiveSpace(
     archivedByUid: userId,
   };
 
+  const operationKey = `archive_${spaceId}_${now}`;
+  const auditInput = {
+    spaceId,
+    eventType: 'space_archived' as const,
+    performedByUid: userId,
+    performedByName: userName,
+    operationKey,
+    timestamp: now,
+  };
+  const eventId = generateDeterministicAuditEventId(auditInput);
+
   if (isDemo) {
     const list = loadDemoSpaces().map((s) => (s.id === spaceId ? updated : s));
     saveDemoSpaces(list);
 
-    await recordSpaceAuditEvent(
-      {
-        spaceId,
-        eventType: 'space_archived',
-        performedByUid: userId,
-        performedByName: userName,
-      },
-      true
-    );
+    await recordSpaceAuditEvent({ ...auditInput, eventId }, true);
 
     await notifySpaceMembers(
       space.memberUids,
@@ -491,6 +592,9 @@ export async function archiveSpace(
         type: 'space_archived',
         title: 'Espaço Arquivado',
         message: `O espaço "${space.name}" foi arquivado pelo criador e entrou em modo somente leitura.`,
+        senderUid: userId,
+        originEventId: eventId,
+        governanceEventType: 'space_archived',
       },
       true
     );
@@ -504,15 +608,7 @@ export async function archiveSpace(
     archivedByUid: userId,
   });
 
-  await recordSpaceAuditEvent(
-    {
-      spaceId,
-      eventType: 'space_archived',
-      performedByUid: userId,
-      performedByName: userName,
-    },
-    false
-  );
+  await recordSpaceAuditEvent({ ...auditInput, eventId }, false);
 
   await notifySpaceMembers(
     space.memberUids,
@@ -523,6 +619,9 @@ export async function archiveSpace(
       type: 'space_archived',
       title: 'Espaço Arquivado',
       message: `O espaço "${space.name}" foi arquivado pelo criador e entrou em modo somente leitura.`,
+      senderUid: userId,
+      originEventId: eventId,
+      governanceEventType: 'space_archived',
     },
     false
   );
@@ -540,7 +639,7 @@ export async function unarchiveSpace(
   userName: string,
   isDemo = false
 ): Promise<Space> {
-  const space = await getSpaceById(spaceId, userId, isDemo);
+  const space = await getSpaceById(spaceId, userId, isDemo, false);
   if (!space) {
     throw new Error(`Espaço "${spaceId}" não encontrado.`);
   }
@@ -553,6 +652,7 @@ export async function unarchiveSpace(
     return space;
   }
 
+  const now: ISO8601String = new Date().toISOString();
   const updated: Space = {
     ...space,
     spaceStatus: 'active',
@@ -560,19 +660,22 @@ export async function unarchiveSpace(
     archivedByUid: undefined,
   };
 
+  const operationKey = `unarchive_${spaceId}_${space.archivedAt || now}`;
+  const auditInput = {
+    spaceId,
+    eventType: 'space_unarchived' as const,
+    performedByUid: userId,
+    performedByName: userName,
+    operationKey,
+    timestamp: now,
+  };
+  const eventId = generateDeterministicAuditEventId(auditInput);
+
   if (isDemo) {
     const list = loadDemoSpaces().map((s) => (s.id === spaceId ? updated : s));
     saveDemoSpaces(list);
 
-    await recordSpaceAuditEvent(
-      {
-        spaceId,
-        eventType: 'space_unarchived',
-        performedByUid: userId,
-        performedByName: userName,
-      },
-      true
-    );
+    await recordSpaceAuditEvent({ ...auditInput, eventId }, true);
 
     await notifySpaceMembers(
       space.memberUids,
@@ -583,6 +686,9 @@ export async function unarchiveSpace(
         type: 'space_unarchived',
         title: 'Espaço Reativado',
         message: `O espaço "${space.name}" foi desarquivado pelo criador e suas operações normais foram restabelecidas.`,
+        senderUid: userId,
+        originEventId: eventId,
+        governanceEventType: 'space_unarchived',
       },
       true
     );
@@ -596,15 +702,7 @@ export async function unarchiveSpace(
     archivedByUid: null,
   });
 
-  await recordSpaceAuditEvent(
-    {
-      spaceId,
-      eventType: 'space_unarchived',
-      performedByUid: userId,
-      performedByName: userName,
-    },
-    false
-  );
+  await recordSpaceAuditEvent({ ...auditInput, eventId }, false);
 
   await notifySpaceMembers(
     space.memberUids,
@@ -615,6 +713,9 @@ export async function unarchiveSpace(
       type: 'space_unarchived',
       title: 'Espaço Reativado',
       message: `O espaço "${space.name}" foi desarquivado pelo criador e suas operações normais foram restabelecidas.`,
+      senderUid: userId,
+      originEventId: eventId,
+      governanceEventType: 'space_unarchived',
     },
     false
   );
@@ -633,7 +734,7 @@ export async function updateMemberRole(
   newRole: SpaceMemberRole,
   isDemo = false
 ): Promise<SpaceMember> {
-  const space = await getSpaceById(spaceId, requesterUid, isDemo);
+  const space = await getSpaceById(spaceId, requesterUid, isDemo, false);
   if (!space) {
     throw new Error(`Espaço "${spaceId}" não encontrado.`);
   }
@@ -662,6 +763,8 @@ export async function updateMemberRole(
     role: newRole,
   };
 
+  const operationKey = `role_${spaceId}_${targetUid}_${target.role}_to_${newRole}`;
+
   if (isDemo) {
     const list = loadDemoMembers(spaceId).map((m) => (m.uid === targetUid ? updatedTarget : m));
     saveDemoMembers(spaceId, list);
@@ -675,6 +778,7 @@ export async function updateMemberRole(
         targetUid,
         targetName: target.displayName,
         details: { newRole },
+        operationKey,
       },
       true
     );
@@ -695,6 +799,7 @@ export async function updateMemberRole(
       targetUid,
       targetName: target.displayName,
       details: { newRole },
+      operationKey,
     },
     false
   );
@@ -706,6 +811,7 @@ export async function updateMemberRole(
  * Remove um participante do espaço.
  * REGRA DE SEGURANÇA E INTEGRIDADE:
  * - O participante é removido de `memberUids`, revogando acesso imediato às regras do Firestore.
+ * - Cria/atualiza a projeção histórica sanitizada em `spaces/{spaceId}/historical_views/{targetUid}`.
  * - Seu status no registro de membro muda para `'removed_by_admin'`.
  * - Seus registros históricos de despesas, pagamentos e obrigações são 100% PRESERVADOS.
  * - O criador do espaço nunca pode ser removido.
@@ -717,7 +823,7 @@ export async function removeMemberFromSpace(
   targetUid: string,
   isDemo = false
 ): Promise<void> {
-  const space = await getSpaceById(spaceId, requesterUid, isDemo);
+  const space = await getSpaceById(spaceId, requesterUid, isDemo, false);
   if (!space) {
     throw new Error(`Espaço "${spaceId}" não encontrado.`);
   }
@@ -747,8 +853,20 @@ export async function removeMemberFromSpace(
     new Set([...(space.historicalMemberUids || space.memberUids), targetUid])
   );
 
+  const operationKey = `remove_${spaceId}_${targetUid}_${target.joinedAt || now}`;
+  const auditInput = {
+    spaceId,
+    eventType: 'member_removed' as const,
+    performedByUid: requesterUid,
+    performedByName: requesterName,
+    targetUid,
+    targetName: target.displayName,
+    operationKey,
+    timestamp: now,
+  };
+  const eventId = generateDeterministicAuditEventId(auditInput);
+
   if (isDemo) {
-    // Atualiza espaço
     const updatedSpace: Space = {
       ...space,
       memberUids: updatedMemberUids,
@@ -756,7 +874,6 @@ export async function removeMemberFromSpace(
     };
     saveDemoSpaces(loadDemoSpaces().map((s) => (s.id === spaceId ? updatedSpace : s)));
 
-    // Atualiza membro
     const updatedMember: SpaceMember = {
       ...target,
       participationStatus: 'removed_by_admin',
@@ -764,17 +881,7 @@ export async function removeMemberFromSpace(
     };
     saveDemoMembers(spaceId, loadDemoMembers(spaceId).map((m) => (m.uid === targetUid ? updatedMember : m)));
 
-    await recordSpaceAuditEvent(
-      {
-        spaceId,
-        eventType: 'member_removed',
-        performedByUid: requesterUid,
-        performedByName: requesterName,
-        targetUid,
-        targetName: target.displayName,
-      },
-      true
-    );
+    await recordSpaceAuditEvent({ ...auditInput, eventId }, true);
 
     await sendSpaceNotification(
       {
@@ -784,6 +891,9 @@ export async function removeMemberFromSpace(
         type: 'member_removed',
         title: 'Remoção de Espaço',
         message: `Você foi removido do espaço "${space.name}" por ${requesterName}. Seus registros históricos permanecem preservados.`,
+        senderUid: requesterUid,
+        originEventId: eventId,
+        governanceEventType: 'member_removed',
       },
       true
     );
@@ -791,11 +901,27 @@ export async function removeMemberFromSpace(
     return;
   }
 
-  // Firestore: remoção atômica
+  const historicalProjection = {
+    ...sanitizeSpaceForHistoricalMember(space, targetUid),
+    spaceId,
+    memberUid: targetUid,
+    exitedAt: now,
+  };
+  delete (historicalProjection as Record<string, unknown>).monthlyBudgetCents;
+  if (historicalProjection.archivedAt === undefined) {
+    delete (historicalProjection as Record<string, unknown>).archivedAt;
+  }
+  if (historicalProjection.archivedByUid === undefined) {
+    delete (historicalProjection as Record<string, unknown>).archivedByUid;
+  }
+
+  // Firestore: remoção atômica + gravação da projeção histórica sanitizada
   await runTransaction(db, async (tx) => {
     const spaceRef = doc(db, 'spaces', spaceId);
     const memberRef = doc(db, 'spaces', spaceId, 'members', targetUid);
+    const histViewRef = doc(db, 'spaces', spaceId, 'historical_views', targetUid);
 
+    tx.set(histViewRef, historicalProjection);
     tx.update(spaceRef, {
       memberUids: updatedMemberUids,
       historicalMemberUids: updatedHistoricalMemberUids,
@@ -806,17 +932,7 @@ export async function removeMemberFromSpace(
     });
   });
 
-  await recordSpaceAuditEvent(
-    {
-      spaceId,
-      eventType: 'member_removed',
-      performedByUid: requesterUid,
-      performedByName: requesterName,
-      targetUid,
-      targetName: target.displayName,
-    },
-    false
-  );
+  await recordSpaceAuditEvent({ ...auditInput, eventId }, false);
 
   await sendSpaceNotification(
     {
@@ -826,6 +942,9 @@ export async function removeMemberFromSpace(
       type: 'member_removed',
       title: 'Remoção de Espaço',
       message: `Você foi removido do espaço "${space.name}" por ${requesterName}. Seus registros históricos permanecem preservados.`,
+      senderUid: requesterUid,
+      originEventId: eventId,
+      governanceEventType: 'member_removed',
     },
     false
   );
@@ -840,7 +959,7 @@ export async function leaveSpace(
   memberName: string,
   isDemo = false
 ): Promise<void> {
-  const space = await getSpaceById(spaceId, memberUid, isDemo);
+  const space = await getSpaceById(spaceId, memberUid, isDemo, false);
   if (!space) {
     throw new Error(`Espaço "${spaceId}" não encontrado.`);
   }
@@ -865,6 +984,17 @@ export async function leaveSpace(
     new Set([...(space.historicalMemberUids || space.memberUids), memberUid])
   );
 
+  const operationKey = `leave_${spaceId}_${memberUid}_${member.joinedAt || now}`;
+  const auditInput = {
+    spaceId,
+    eventType: 'member_voluntary_exit' as const,
+    performedByUid: memberUid,
+    performedByName: memberName,
+    operationKey,
+    timestamp: now,
+  };
+  const eventId = generateDeterministicAuditEventId(auditInput);
+
   if (isDemo) {
     const updatedSpace: Space = {
       ...space,
@@ -880,15 +1010,7 @@ export async function leaveSpace(
     };
     saveDemoMembers(spaceId, loadDemoMembers(spaceId).map((m) => (m.uid === memberUid ? updatedMember : m)));
 
-    await recordSpaceAuditEvent(
-      {
-        spaceId,
-        eventType: 'member_voluntary_exit',
-        performedByUid: memberUid,
-        performedByName: memberName,
-      },
-      true
-    );
+    await recordSpaceAuditEvent({ ...auditInput, eventId }, true);
 
     await notifySpaceMembers(
       updatedMemberUids,
@@ -899,6 +1021,9 @@ export async function leaveSpace(
         type: 'member_exited',
         title: 'Participante Saiu',
         message: `${memberName} retirou-se voluntariamente do espaço "${space.name}".`,
+        senderUid: memberUid,
+        originEventId: eventId,
+        governanceEventType: 'member_voluntary_exit',
       },
       true
     );
@@ -906,10 +1031,26 @@ export async function leaveSpace(
     return;
   }
 
+  const historicalProjection = {
+    ...sanitizeSpaceForHistoricalMember(space, memberUid),
+    spaceId,
+    memberUid,
+    exitedAt: now,
+  };
+  delete (historicalProjection as Record<string, unknown>).monthlyBudgetCents;
+  if (historicalProjection.archivedAt === undefined) {
+    delete (historicalProjection as Record<string, unknown>).archivedAt;
+  }
+  if (historicalProjection.archivedByUid === undefined) {
+    delete (historicalProjection as Record<string, unknown>).archivedByUid;
+  }
+
   await runTransaction(db, async (tx) => {
     const spaceRef = doc(db, 'spaces', spaceId);
     const memberRef = doc(db, 'spaces', spaceId, 'members', memberUid);
+    const histViewRef = doc(db, 'spaces', spaceId, 'historical_views', memberUid);
 
+    tx.set(histViewRef, historicalProjection);
     tx.update(spaceRef, {
       memberUids: updatedMemberUids,
       historicalMemberUids: updatedHistoricalMemberUids,
@@ -920,15 +1061,7 @@ export async function leaveSpace(
     });
   });
 
-  await recordSpaceAuditEvent(
-    {
-      spaceId,
-      eventType: 'member_voluntary_exit',
-      performedByUid: memberUid,
-      performedByName: memberName,
-    },
-    false
-  );
+  await recordSpaceAuditEvent({ ...auditInput, eventId }, false);
 
   await notifySpaceMembers(
     updatedMemberUids,
@@ -939,6 +1072,9 @@ export async function leaveSpace(
       type: 'member_exited',
       title: 'Participante Saiu',
       message: `${memberName} retirou-se voluntariamente do espaço "${space.name}".`,
+      senderUid: memberUid,
+      originEventId: eventId,
+      governanceEventType: 'member_voluntary_exit',
     },
     false
   );

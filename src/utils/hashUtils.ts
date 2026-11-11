@@ -37,12 +37,17 @@ export function sha256Hex(message: string): string {
 
   // Pre-processamento / Padding (bloco de 512 bits)
   const bitLength = utf8.length * 8;
+  const highBits = Math.floor(bitLength / 0x100000000);
+  const lowBits = bitLength >>> 0;
   utf8.push(0x80);
   while (utf8.length % 64 !== 56) {
     utf8.push(0);
   }
-  for (let i = 7; i >= 0; i--) {
-    utf8.push((bitLength >>> (i * 8)) & 0xff);
+  for (let i = 3; i >= 0; i--) {
+    utf8.push((highBits >>> (i * 8)) & 0xff);
+  }
+  for (let i = 3; i >= 0; i--) {
+    utf8.push((lowBits >>> (i * 8)) & 0xff);
   }
 
   // Valores iniciais H (primeiros 32 bits das partes fracionárias das raízes quadradas dos primeiros 8 primos)

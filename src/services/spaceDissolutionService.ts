@@ -1,12 +1,11 @@
 import {
-  collection,
   doc,
   getDoc,
-  getDocs,
   setDoc,
   updateDoc,
 } from 'firebase/firestore';
-import { db } from './firebase';
+import { httpsCallable } from 'firebase/functions';
+import { db, functions } from './firebase';
 import {
   AuthorDataDestinationDecision,
   ISO8601String,
@@ -14,9 +13,17 @@ import {
   SpaceDissolutionRequest,
   SpaceDissolutionRequestStatus,
 } from '../types/financeV3';
-import { recordSpaceAuditEvent } from './spaceAuditService';
-import { notifySpaceMembers, sendSpaceNotification } from './spaceNotificationService';
+import {
+  generateDeterministicAuditEventId,
+  recordSpaceAuditEvent,
+} from './spaceAuditService';
+import {
+  notifySpaceMembers,
+  reopenDemoPendingAuthorNotifications,
+  sendSpaceNotification,
+} from './spaceNotificationService';
 import { getSpaceById, getSpaceMembers } from './spaceService';
+import { sha256Hex } from '../utils/hashUtils';
 import { universalStorage } from '../utils/universalStorage';
 
 /**
@@ -28,14 +35,23 @@ import { universalStorage } from '../utils/universalStorage';
  * 2. Prazo estrito e improrrogável de 30 DIAS para manifestação individual de todos os autores.
  * 3. Cada autor decide de forma soberana o destino de seus registros autorais.
  * 4. Silêncio NUNCA é consentimento: se decorridos 30 dias houver qualquer decisão em 'pending',
- *    a solicitação é AUTOMATICAMENTE CANCELADA, os dados são 100% preservados e o espaço
- *    permanece arquivado em modo somente leitura.
- * 5. Não há exclusão física ou migração remota automática nesta fase.
+ *    a solicitação é AUTOMATICAMENTE CANCELADA, os dados são 100% preservados, o espaço
+ *    permanece arquivado em modo somente leitura e as notificações dos autores pendentes
+ *    são reabertas de forma idempotente.
+ * 5. Execução Server-Side Transacional (Problema 3):
+ *    No Firestore/Emulator, `processDissolutionTimeout` executa via Cloud Function
+ *    `processSpaceDissolutionTimeout` dentro de `db.runTransaction` com IDs determinísticos
+ *    SHA-256 vinculados a `spaceId + initiatedAt`, garantindo que múltiplas chamadas
+ *    concorrentes (`Promise.all`) resultem em uma única transição, um único evento de
+ *    auditoria e uma única notificação por destinatário.
  */
 
 export const DISSOLUTION_DEADLINE_DAYS = 30;
 
 const DEMO_DISSOLUTION_PREFIX = 'mpf_v3_demo_dissolution_';
+
+// Mutex assíncrono por espaço para serializar chamadas concorrentes em modo Demo
+const demoTimeoutLocks = new Map<string, Promise<SpaceDissolutionRequest>>();
 
 function getDemoDissolution(spaceId: string): SpaceDissolutionRequest | null {
   try {
@@ -61,6 +77,17 @@ function saveDemoDissolution(spaceId: string, req: SpaceDissolutionRequest | nul
   }
 }
 
+function getDemoSpaceName(spaceId: string): string {
+  try {
+    const raw = universalStorage.getItem('mpf_v3_demo_spaces');
+    const spaces: Space[] = raw ? JSON.parse(raw) : [];
+    const found = spaces.find((s) => s.id === spaceId);
+    return found?.name || 'Espaço Compartilhado';
+  } catch {
+    return 'Espaço Compartilhado';
+  }
+}
+
 /**
  * Inicia formalmente o processo de solicitação de dissolução definitiva do espaço.
  * REGRA: Exclusiva do criador do espaço (creatorUid).
@@ -71,7 +98,7 @@ export async function initiateSpaceDissolution(
   requesterName: string,
   isDemo = false
 ): Promise<SpaceDissolutionRequest> {
-  const space = await getSpaceById(spaceId, requesterUid, isDemo);
+  const space = await getSpaceById(spaceId, requesterUid, isDemo, false);
   if (!space) {
     throw new Error(`Espaço "${spaceId}" não encontrado.`);
   }
@@ -82,7 +109,6 @@ export async function initiateSpaceDissolution(
     );
   }
 
-  // Verifica se já existe solicitação aberta
   const existing = await getSpaceDissolutionRequest(spaceId, requesterUid, isDemo);
   if (existing && existing.requestStatus === 'pending_author_responses') {
     throw new Error('Já existe um processo formal de dissolução em andamento para este espaço.');
@@ -95,7 +121,6 @@ export async function initiateSpaceDissolution(
     now.getTime() + DISSOLUTION_DEADLINE_DAYS * 24 * 60 * 60 * 1000
   ).toISOString();
 
-  // Mapeia todos os membros conhecidos para colher suas decisões individuais
   const authorDestinations: SpaceDissolutionRequest['authorDestinations'] = {};
   for (const m of members) {
     authorDestinations[m.uid] = {
@@ -120,7 +145,6 @@ export async function initiateSpaceDissolution(
     authorDestinations,
   };
 
-  // Se o espaço não estava arquivado, transiciona para arquivado para garantir modo somente leitura imediato
   if (space.spaceStatus !== 'archived') {
     const updatedSpace: Space = {
       ...space,
@@ -144,19 +168,22 @@ export async function initiateSpaceDissolution(
     }
   }
 
+  const operationKey = `dissolution_init_${spaceId}_${initiatedAt}`;
+  const auditInput = {
+    spaceId,
+    eventType: 'dissolution_requested' as const,
+    performedByUid: requesterUid,
+    performedByName: requesterName,
+    details: { deadlineDate, authorsCount: Object.keys(authorDestinations).length },
+    operationKey,
+    timestamp: initiatedAt,
+  };
+  const eventId = generateDeterministicAuditEventId(auditInput);
+
   if (isDemo) {
     saveDemoDissolution(spaceId, dissolutionRequest);
 
-    await recordSpaceAuditEvent(
-      {
-        spaceId,
-        eventType: 'dissolution_requested',
-        performedByUid: requesterUid,
-        performedByName: requesterName,
-        details: { deadlineDate, authorsCount: Object.keys(authorDestinations).length },
-      },
-      true
-    );
+    await recordSpaceAuditEvent({ ...auditInput, eventId }, true);
 
     await notifySpaceMembers(
       space.memberUids,
@@ -167,6 +194,9 @@ export async function initiateSpaceDissolution(
         type: 'dissolution_requested',
         title: 'Solicitação de Dissolução do Espaço',
         message: `O criador iniciou a solicitação de dissolução do espaço "${space.name}". Você tem até 30 dias (${new Date(deadlineDate).toLocaleDateString()}) para definir a destinação dos seus registros.`,
+        senderUid: requesterUid,
+        originEventId: eventId,
+        governanceEventType: 'dissolution_requested',
       },
       true
     );
@@ -176,16 +206,7 @@ export async function initiateSpaceDissolution(
 
   await setDoc(doc(db, 'spaces', spaceId, 'dissolution', 'request'), dissolutionRequest);
 
-  await recordSpaceAuditEvent(
-    {
-      spaceId,
-      eventType: 'dissolution_requested',
-      performedByUid: requesterUid,
-      performedByName: requesterName,
-      details: { deadlineDate, authorsCount: Object.keys(authorDestinations).length },
-    },
-    false
-  );
+  await recordSpaceAuditEvent({ ...auditInput, eventId }, false);
 
   await notifySpaceMembers(
     space.memberUids,
@@ -196,6 +217,9 @@ export async function initiateSpaceDissolution(
       type: 'dissolution_requested',
       title: 'Solicitação de Dissolução do Espaço',
       message: `O criador iniciou a solicitação de dissolução do espaço "${space.name}". Você tem até 30 dias para definir a destinação dos seus registros.`,
+      senderUid: requesterUid,
+      originEventId: eventId,
+      governanceEventType: 'dissolution_requested',
     },
     false
   );
@@ -205,13 +229,15 @@ export async function initiateSpaceDissolution(
 
 /**
  * Consulta a solicitação de dissolução de um espaço.
+ * SEGURANÇA (Problema 1): Exige que o solicitante seja participante ATIVO (`allowHistorical = false`),
+ * impedindo que ex-participantes leiam decisões individuais privadas dos autores ativos.
  */
 export async function getSpaceDissolutionRequest(
   spaceId: string,
   userId: string,
   isDemo = false
 ): Promise<SpaceDissolutionRequest | null> {
-  await getSpaceById(spaceId, userId, isDemo);
+  await getSpaceById(spaceId, userId, isDemo, false);
 
   if (isDemo) {
     return getDemoDissolution(spaceId);
@@ -244,7 +270,6 @@ export async function submitAuthorDestinationDecision(
 
   // Verifica se o prazo de 30 dias já expirou
   if (new Date().getTime() > new Date(req.deadlineDate).getTime()) {
-    // Cancela automaticamente por estouro de prazo
     return await checkAndCancelExpiredDissolution(spaceId, isDemo);
   }
 
@@ -257,12 +282,11 @@ export async function submitAuthorDestinationDecision(
     ...req.authorDestinations,
     [authorUid]: {
       decision,
-      targetSpaceId: targetSpaceId?.trim() || undefined,
+      ...(targetSpaceId?.trim() ? { targetSpaceId: targetSpaceId.trim() } : {}),
       decidedAt: now,
     },
   };
 
-  // Verifica se todos os autores responderam (nenhum sobrou em 'pending')
   const allAnswered = Object.values(updatedDestinations).every(
     (d) => d.decision !== 'pending'
   );
@@ -277,6 +301,8 @@ export async function submitAuthorDestinationDecision(
     requestStatus: nextStatus,
   };
 
+  const operationKey = `dissolution_decision_${spaceId}_${req.initiatedAt}_${authorUid}_${decision}`;
+
   if (isDemo) {
     saveDemoDissolution(spaceId, updatedReq);
 
@@ -287,6 +313,8 @@ export async function submitAuthorDestinationDecision(
         performedByUid: authorUid,
         performedByName: authorName,
         details: { decision, allAnswered },
+        operationKey,
+        timestamp: now,
       },
       true
     );
@@ -306,6 +334,8 @@ export async function submitAuthorDestinationDecision(
       performedByUid: authorUid,
       performedByName: authorName,
       details: { decision, allAnswered },
+      operationKey,
+      timestamp: now,
     },
     false
   );
@@ -315,7 +345,6 @@ export async function submitAuthorDestinationDecision(
 
 /**
  * Predicado puro: verifica se o prazo de 30 dias da solicitação expirou.
- * (Apenas leitura e computação temporal; sem efeito colateral).
  */
 export function isDissolutionExpired(
   req: SpaceDissolutionRequest,
@@ -343,133 +372,147 @@ export function canCancelDissolutionDueToTimeout(
 }
 
 /**
- * Processa o timeout da solicitação de dissolução de forma rigorosamente IDEMPOTENTE.
+ * Processa o timeout da solicitação de dissolução de forma TRANSACIONAL e IDEMPOTENTE.
  *
- * REGRA MANDATÓRIA (D5 / A5): Silêncio NUNCA é consentimento. Preservação integral dos dados.
- *
- * Propriedades de Idempotência:
- * - Se a solicitação já estiver cancelada por timeout ('auto_cancelled_timeout'), retorna imediatamente
- *   sem regravar o documento, sem criar eventos duplicados na trilha de auditoria e sem reenviar notificações.
- * - Se o prazo ainda não expirou ou não há pendências, retorna o estado original sem mutação.
- * - Quando o timeout é acionado pela 1ª vez:
- *     1. Persiste o status 'auto_cancelled_timeout'.
- *     2. Registra um único evento de auditoria imutável ('dissolution_cancelled').
- *     3. Dispara notificações informando o encerramento do prazo e a proteção integral dos dados.
- *     4. Mantém o espaço e todos os seus lançamentos 100% íntegros e preservados.
+ * REGRA MANDATÓRIA (Problema 3):
+ * - No modo Firestore/Emulator (`isDemo = false`): delega a execução integralmente para
+ *   a Cloud Function `processSpaceDissolutionTimeout` (que usa Admin SDK + `db.runTransaction`).
+ * - No modo Demo (`isDemo = true`): serializa execuções concorrentes via lock assíncrono
+ *   por espaço e utiliza IDs determinísticos SHA-256 vinculados ao ciclo `spaceId + initiatedAt`.
+ * - Reabre as notificações dos autores pendentes e utiliza o nome real do espaço.
  */
 export async function processDissolutionTimeout(
   spaceId: string,
   isDemo = false,
   now: Date = new Date()
 ): Promise<SpaceDissolutionRequest> {
-  const req = isDemo
-    ? getDemoDissolution(spaceId)
-    : ((await getDoc(doc(db, 'spaces', spaceId, 'dissolution', 'request'))).data() as SpaceDissolutionRequest | null);
-
-  if (!req) {
-    throw new Error('Solicitação de dissolução não encontrada.');
+  if (!spaceId || !spaceId.trim()) {
+    throw new Error('O identificador do espaço (spaceId) é obrigatório.');
   }
-
-  // Idempotência: Se já foi cancelado por timeout, não reprocessa nada
-  if (req.requestStatus === 'auto_cancelled_timeout') {
-    return req;
-  }
-
-  // Se não atende aos critérios para cancelamento por timeout, retorna sem alterar
-  if (!canCancelDissolutionDueToTimeout(req, now)) {
-    return req;
-  }
-
-  const pendingAuthors = Object.entries(req.authorDestinations).filter(
-    ([, v]) => v.decision === 'pending'
-  );
-
-  const nowIso = now.toISOString();
-  const updatedReq: SpaceDissolutionRequest = {
-    ...req,
-    requestStatus: 'auto_cancelled_timeout',
-    cancelledAt: nowIso,
-    cancellationReason:
-      'Cancelamento automático: decorrido o prazo improrrogável de 30 dias com decisões pendentes de autores. Silêncio não é consentimento. Dados preservados integralmente.',
-  };
 
   if (isDemo) {
-    saveDemoDissolution(spaceId, updatedReq);
+    const existingLock = demoTimeoutLocks.get(spaceId);
+    if (existingLock) {
+      return await existingLock;
+    }
 
-    await recordSpaceAuditEvent(
-      {
-        spaceId,
-        eventType: 'dissolution_cancelled',
-        performedByUid: 'system',
-        performedByName: 'Sistema (Automação de Integridade)',
-        details: { reason: updatedReq.cancellationReason },
-      },
-      true
-    );
+    const task = (async () => {
+      const req = getDemoDissolution(spaceId);
+      if (!req) {
+        throw new Error('Solicitação de dissolução não encontrada.');
+      }
 
-    // Notifica os autores pendentes e o criador informando o cancelamento
-    for (const [uid] of pendingAuthors) {
-      await sendSpaceNotification(
+      if (req.requestStatus === 'auto_cancelled_timeout') {
+        return req;
+      }
+
+      if (!canCancelDissolutionDueToTimeout(req, now)) {
+        return req;
+      }
+
+      const pendingAuthors = Object.entries(req.authorDestinations)
+        .filter(([, v]) => v.decision === 'pending')
+        .map(([uid]) => uid);
+
+      const realSpaceName = getDemoSpaceName(spaceId);
+      const nowIso = now.toISOString();
+      const cancellationReason =
+        'Cancelamento automático: decorrido o prazo improrrogável de 30 dias com decisões pendentes de autores. Silêncio não é consentimento. Dados preservados integralmente.';
+
+      const updatedReq: SpaceDissolutionRequest = {
+        ...req,
+        requestStatus: 'auto_cancelled_timeout',
+        cancelledAt: nowIso,
+        cancellationReason,
+      };
+
+      // Atualiza estado antes de disparar eventos determinísticos
+      saveDemoDissolution(spaceId, updatedReq);
+
+      const requestCycleKey = `${spaceId}|${req.initiatedAt}`;
+      const deterministicAuditId = `audit_timeout_${sha256Hex(requestCycleKey).slice(0, 32)}`;
+
+      await recordSpaceAuditEvent(
         {
-          userId: uid,
           spaceId,
-          spaceName: 'Espaço',
-          type: 'dissolution_cancelled',
-          title: 'Solicitação de Dissolução Cancelada',
-          message:
-            'O prazo de 30 dias encerrou com decisões pendentes. A solicitação foi cancelada e seus dados continuam 100% protegidos.',
+          eventType: 'dissolution_cancelled',
+          performedByUid: 'system',
+          performedByName: 'Sistema (Automação de Integridade)',
+          details: {
+            reason: cancellationReason,
+            pendingAuthors,
+            initiatedAt: req.initiatedAt,
+            deadlineDate: req.deadlineDate,
+          },
+          eventId: deterministicAuditId,
+          timestamp: nowIso,
         },
         true
       );
-    }
 
-    return updatedReq;
+      // Reabre notificações pendentes e envia notificação única de cancelamento com nome real do espaço
+      const recipientUids = Array.from(new Set([...pendingAuthors, req.initiatedByUid]));
+      for (const uid of pendingAuthors) {
+        reopenDemoPendingAuthorNotifications(
+          uid,
+          spaceId,
+          realSpaceName,
+          deterministicAuditId,
+          nowIso
+        );
+      }
+
+      for (const uid of recipientUids) {
+        const deterministicNotifId = `notif_timeout_cancel_${sha256Hex(`${requestCycleKey}|${uid}`).slice(0, 32)}`;
+        await sendSpaceNotification(
+          {
+            notificationId: deterministicNotifId,
+            userId: uid,
+            spaceId,
+            spaceName: realSpaceName,
+            type: 'dissolution_cancelled',
+            title: 'Solicitação de Dissolução Cancelada',
+            message: `O prazo de 30 dias do espaço "${realSpaceName}" encerrou com decisões pendentes. A solicitação foi cancelada e seus dados continuam 100% protegidos.`,
+            originEventId: deterministicAuditId,
+          },
+          true
+        );
+      }
+
+      return updatedReq;
+    })();
+
+    demoTimeoutLocks.set(spaceId, task);
+    try {
+      return await task;
+    } finally {
+      demoTimeoutLocks.delete(spaceId);
+    }
   }
 
-  await updateDoc(doc(db, 'spaces', spaceId, 'dissolution', 'request'), {
-    requestStatus: 'auto_cancelled_timeout',
-    cancelledAt: nowIso,
-    cancellationReason: updatedReq.cancellationReason,
+  // Modo Firestore / Emulator: execução transacional server-side via Cloud Function (Admin SDK)
+  const callable = httpsCallable<
+    { spaceId: string; referenceNowIso: string },
+    { dissolutionRequest: SpaceDissolutionRequest }
+  >(functions, 'processSpaceDissolutionTimeout');
+
+  const response = await callable({
+    spaceId,
+    referenceNowIso: now.toISOString(),
   });
 
-  await recordSpaceAuditEvent(
-    {
-      spaceId,
-      eventType: 'dissolution_cancelled',
-      performedByUid: 'system',
-      performedByName: 'Sistema (Automação de Integridade)',
-      details: { reason: updatedReq.cancellationReason },
-    },
-    false
-  );
-
-  for (const [uid] of pendingAuthors) {
-    await sendSpaceNotification(
-      {
-        userId: uid,
-        spaceId,
-        spaceName: 'Espaço',
-        type: 'dissolution_cancelled',
-        title: 'Solicitação de Dissolução Cancelada',
-        message:
-          'O prazo de 30 dias encerrou com decisões pendentes. A solicitação foi cancelada e seus dados continuam 100% protegidos.',
-      },
-      false
-    );
-  }
-
-  return updatedReq;
+  return response.data.dissolutionRequest;
 }
 
 /**
  * Avalia o prazo da solicitação e executa o processamento de timeout se aplicável.
- * Mantido para compatibilidade retrospectiva de chamadas.
  */
 export async function checkAndCancelExpiredDissolution(
   spaceId: string,
-  isDemo = false
+  isDemo = false,
+  now: Date = new Date()
 ): Promise<SpaceDissolutionRequest> {
-  return processDissolutionTimeout(spaceId, isDemo);
+  return processDissolutionTimeout(spaceId, isDemo, now);
 }
 
 /**
@@ -482,7 +525,7 @@ export async function cancelDissolutionByCreator(
   reason?: string,
   isDemo = false
 ): Promise<SpaceDissolutionRequest> {
-  const space = await getSpaceById(spaceId, creatorUid, isDemo);
+  const space = await getSpaceById(spaceId, creatorUid, isDemo, false);
   if (!space) {
     throw new Error(`Espaço "${spaceId}" não encontrado.`);
   }
@@ -506,6 +549,8 @@ export async function cancelDissolutionByCreator(
     cancellationReason,
   };
 
+  const operationKey = `dissolution_cancel_creator_${spaceId}_${req.initiatedAt}`;
+
   if (isDemo) {
     saveDemoDissolution(spaceId, updatedReq);
 
@@ -516,6 +561,8 @@ export async function cancelDissolutionByCreator(
         performedByUid: creatorUid,
         performedByName: creatorName,
         details: { cancellationReason },
+        operationKey,
+        timestamp: nowIso,
       },
       true
     );
@@ -536,6 +583,8 @@ export async function cancelDissolutionByCreator(
       performedByUid: creatorUid,
       performedByName: creatorName,
       details: { cancellationReason },
+      operationKey,
+      timestamp: nowIso,
     },
     false
   );

@@ -1,13 +1,14 @@
 import {
   collection,
-  doc,
   getDocs,
   orderBy,
   query,
-  setDoc,
+  where,
 } from 'firebase/firestore';
-import { db } from './firebase';
+import { httpsCallable } from 'firebase/functions';
+import { db, functions } from './firebase';
 import { ISO8601String, SpaceAuditEvent, SpaceAuditEventType } from '../types/financeV3';
+import { sha256Hex } from '../utils/hashUtils';
 import { universalStorage } from '../utils/universalStorage';
 
 /**
@@ -19,25 +20,27 @@ import { universalStorage } from '../utils/universalStorage';
  *
  * CONTRATO DE SEGURANÇA E ARQUITETURA — AUDITORIA CONFIÁVEL (TRUSTED AUDIT RECORDER):
  * 1. Vulnerabilidade mitigada:
- *    Permitir que clientes criem registros arbitrários na subcoleção `audit` possibilita
- *    que um cliente forje eventos falsos de governança (arquivamento, remoção, dissolução).
- * 2. Regra no Firestore (`firestore.rules`):
- *    - `allow create: if false;` (bloqueio estrito de escrita direta pelo cliente).
- *    - `allow update, delete: if false;` (imutabilidade garantida).
- *    - `allow read: if isSpaceMember(spaceId) || (isSpaceHistoricalMember(spaceId) && (resource.data.performedByUid == request.auth.uid || resource.data.targetUid == request.auth.uid));`
- *      (ex-membros consultam SOMENTE eventos nos quais foram os atores ou alvos).
- * 3. Operação em Produção:
- *    Eventos oficiais de governança são registrados exclusivamente pelo backend confiável
- *    (Cloud Functions / Admin SDK) acoplados à execução real e autorizada das transações.
- * 4. Operação em Demonstração:
- *    Persistência local em `universalStorage` com garantia de unicidade por identificador determinístico.
+ *    Clientes nunca escrevem diretamente em `spaces/{spaceId}/audit` (`allow create: if false` em firestore.rules).
+ * 2. Backend Server-Side Real:
+ *    Em ambiente Firebase (Emulator / Produção), eventos oficiais de governança são gravados
+ *    exclusivamente pela Cloud Function `recordOfficialSpaceGovernanceEvent` (que utiliza o
+ *    Firebase Admin SDK após validar a identidade e a autoridade do solicitante no espaço).
+ * 3. Idempotência Determinística:
+ *    Todos os eventos utilizam `eventId` determinístico derivado por SHA-256 dos parâmetros
+ *    canônicos da operação, impedindo duplicações em reprocessamentos.
+ * 4. Consulta Histórica Restrita:
+ *    Ex-participantes consultam exclusivamente os eventos onde `performedByUid == requesterUid`
+ *    ou `targetUid == requesterUid`, utilizando filtros `where` compatíveis com `firestore.rules`.
  */
 
 export const CRITICAL_GOVERNANCE_AUDIT_EVENTS: readonly SpaceAuditEventType[] = [
   'space_created',
   'space_archived',
   'space_unarchived',
-  'member_invited',
+  'invite_created',
+  'invite_accepted',
+  'invite_rejected',
+  'invite_revoked',
   'member_joined',
   'member_role_changed',
   'member_removed',
@@ -82,20 +85,49 @@ export interface RecordAuditEventInput {
   targetName?: string;
   details?: Record<string, unknown>;
   timestamp?: ISO8601String;
-  eventId?: string; // Suporte a identificador determinístico para garantir idempotência estrita
+  /** Identificador determinístico explícito ou chave de operação para derivação SHA-256 */
+  eventId?: string;
+  operationKey?: string;
+}
+
+/**
+ * Gera um identificador determinístico SHA-256 para eventos de auditoria.
+ */
+export function generateDeterministicAuditEventId(input: RecordAuditEventInput): string {
+  if (input.eventId && input.eventId.trim()) {
+    return input.eventId.trim();
+  }
+  const canonicalKey =
+    input.operationKey ||
+    [
+      input.spaceId,
+      input.eventType,
+      input.performedByUid,
+      input.targetUid || '',
+      JSON.stringify(input.details || {}),
+    ].join('|');
+
+  const digest = sha256Hex(`${input.spaceId}|${input.eventType}|${canonicalKey}`).slice(0, 32);
+  return `audit_${digest}`;
 }
 
 /**
  * Registra um evento imutável na trilha de auditoria do espaço.
- * No modo demo: persiste em armazenamento local deduplicando por eventId.
- * No modo real: grava via despachante confiável (regras bloqueiam escrita direta de clientes).
+ * - Modo demo: persiste em `universalStorage` deduplicando pelo ID determinístico.
+ * - Modo real/emulador: invoca a Cloud Function `recordOfficialSpaceGovernanceEvent` (Admin SDK).
  */
 export async function recordSpaceAuditEvent(
   input: RecordAuditEventInput,
   isDemo = false
 ): Promise<SpaceAuditEvent> {
-  const eventId =
-    input.eventId || `audit_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+  if (!input.spaceId?.trim()) {
+    throw new Error('spaceId é obrigatório para registrar auditoria.');
+  }
+  if (!input.performedByUid?.trim()) {
+    throw new Error('performedByUid é obrigatório para registrar auditoria.');
+  }
+
+  const eventId = generateDeterministicAuditEventId(input);
   const timestamp = input.timestamp || new Date().toISOString();
 
   const event: SpaceAuditEvent = {
@@ -112,74 +144,117 @@ export async function recordSpaceAuditEvent(
 
   if (isDemo) {
     const events = getDemoAuditEvents(input.spaceId);
-    // Deduplicação determinística: substitui se já existir, senão anexa
     const existingIndex = events.findIndex((e) => e.id === event.id);
     if (existingIndex >= 0) {
-      events[existingIndex] = event;
-    } else {
-      events.push(event);
+      return events[existingIndex];
     }
+    events.push(event);
     saveDemoAuditEvents(input.spaceId, events);
     return event;
   }
 
-  // No modo real, a escrita direta pelo cliente em 'spaces/{spaceId}/audit' é bloqueada
-  // pelas regras de segurança (allow create: if false).
-  try {
-    await setDoc(doc(db, 'spaces', input.spaceId, 'audit', eventId), event);
-  } catch {
-    console.info(
-      `[TrustedAuditRecorder] Evento "${input.eventType}" registrado pelo backend confiável (escrita direta do cliente restrita).`
-    );
-  }
+  // Invoca a Cloud Function server-side confiável (Admin SDK) no Functions Emulator / Produção
+  const callable = httpsCallable<
+    RecordAuditEventInput & { eventId: string },
+    { auditEvent: SpaceAuditEvent }
+  >(functions, 'recordOfficialSpaceGovernanceEvent');
 
-  return event;
+  const response = await callable({
+    ...input,
+    eventId,
+    timestamp,
+  });
+
+  return response.data.auditEvent;
 }
 
 /**
  * Consulta a trilha de auditoria de um espaço ordenada cronologicamente (mais recentes primeiro).
- * Se informado `requesterUid` e o solicitante for um ex-participante histórico,
- * filtra estritamente para os eventos nos quais ele próprio foi o ator ou o alvo,
- * protegendo dados e decisões privadas dos demais participantes.
+ * REQUISITO DE SEGURANÇA (Problema 1 - Acesso Histórico):
+ * - Exige `requesterUid` válido para verificar se o solicitante é participante ativo ou ex-participante.
+ * - Não retorna todos os eventos quando `requesterUid` estiver ausente.
+ * - Para ex-participantes históricos, executa consultas filtradas (`performedByUid == requesterUid`
+ *   e `targetUid == requesterUid`) compatíveis com `firestore.rules`, nunca uma consulta irrestrita.
  */
 export async function getSpaceAuditEvents(
   spaceId: string,
-  requesterUidOrDemo?: string | boolean,
-  isDemoParam = false
+  requesterUid: string,
+  isDemo = false
 ): Promise<SpaceAuditEvent[]> {
-  const isDemo = typeof requesterUidOrDemo === 'boolean' ? requesterUidOrDemo : isDemoParam;
-  const requesterUid = typeof requesterUidOrDemo === 'string' ? requesterUidOrDemo : undefined;
+  if (!spaceId || !spaceId.trim()) {
+    throw new Error('O identificador do espaço (spaceId) é obrigatório para consultar a auditoria.');
+  }
+  if (typeof requesterUid !== 'string' || !requesterUid.trim()) {
+    throw new Error(
+      'Identidade do solicitante (requesterUid) é obrigatória para consultar eventos de auditoria.'
+    );
+  }
+
+  const cleanUid = requesterUid.trim();
 
   if (isDemo) {
-    let events = getDemoAuditEvents(spaceId);
-    if (requesterUid) {
-      // Verifica se o solicitante é apenas ex-membro (histórico)
-      const rawSpaces = universalStorage.getItem('mpf_v3_demo_spaces');
-      const spaces = rawSpaces ? JSON.parse(rawSpaces) : [];
-      const space = spaces.find((s: any) => s.id === spaceId);
-      const isActive = space?.memberUids?.includes(requesterUid);
-      if (!isActive) {
-        events = events.filter(
-          (e) => e.performedByUid === requesterUid || e.targetUid === requesterUid
-        );
-      }
+    const rawSpaces = universalStorage.getItem('mpf_v3_demo_spaces');
+    const spaces = rawSpaces ? JSON.parse(rawSpaces) : [];
+    const space = spaces.find((s: { id: string }) => s.id === spaceId);
+    if (!space) return [];
+
+    const isActive = Array.isArray(space.memberUids) && space.memberUids.includes(cleanUid);
+    const isHistorical =
+      Array.isArray(space.historicalMemberUids) && space.historicalMemberUids.includes(cleanUid);
+
+    if (!isActive && !isHistorical) {
+      throw new Error('Violação de segurança: usuário sem vínculo ativo ou histórico com o espaço.');
     }
+
+    let events = getDemoAuditEvents(spaceId);
+    if (!isActive) {
+      events = events.filter(
+        (e) => e.performedByUid === cleanUid || e.targetUid === cleanUid
+      );
+    }
+
     return events.sort(
       (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
     );
   }
 
-  const q = query(
-    collection(db, 'spaces', spaceId, 'audit'),
-    orderBy('timestamp', 'desc')
-  );
+  // No Firestore, verifica se o solicitante é membro ativo consultando seu registro de membro
+  const { getDoc, doc: firestoreDoc } = await import('firebase/firestore');
+  const memberSnap = await getDoc(firestoreDoc(db, 'spaces', spaceId, 'members', cleanUid));
+  if (!memberSnap.exists()) {
+    throw new Error('Violação de segurança: solicitante não possui registro de participação neste espaço.');
+  }
 
-  const snapshot = await getDocs(q);
-  const events: SpaceAuditEvent[] = [];
-  snapshot.forEach((d) => {
-    const ev = { ...(d.data() as SpaceAuditEvent), id: d.id };
-    events.push(ev);
+  const memberData = memberSnap.data();
+  const isActiveMember = memberData.participationStatus === 'active';
+
+  const auditCol = collection(db, 'spaces', spaceId, 'audit');
+
+  if (isActiveMember) {
+    const q = query(auditCol, orderBy('timestamp', 'desc'));
+    const snapshot = await getDocs(q);
+    const events: SpaceAuditEvent[] = [];
+    snapshot.forEach((d) => {
+      events.push({ ...(d.data() as SpaceAuditEvent), id: d.id });
+    });
+    return events;
+  }
+
+  // Ex-participante histórico: executa queries com filtros explícitos exigidos pelas Security Rules
+  const [byActorSnap, byTargetSnap] = await Promise.all([
+    getDocs(query(auditCol, where('performedByUid', '==', cleanUid))),
+    getDocs(query(auditCol, where('targetUid', '==', cleanUid))),
+  ]);
+
+  const mergedMap = new Map<string, SpaceAuditEvent>();
+  byActorSnap.forEach((d) => {
+    mergedMap.set(d.id, { ...(d.data() as SpaceAuditEvent), id: d.id });
+  });
+  byTargetSnap.forEach((d) => {
+    mergedMap.set(d.id, { ...(d.data() as SpaceAuditEvent), id: d.id });
   });
 
-  return events;
+  return Array.from(mergedMap.values()).sort(
+    (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+  );
 }
