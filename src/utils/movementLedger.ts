@@ -325,3 +325,50 @@ export function buildCompensatoryMovement(params: BuildReversalParams): Financia
     confirmationStatus: 'cleared',
   });
 }
+
+/**
+ * ==============================================================================
+ * GERADORES DETERMINÍSTICOS PARA FASE 6 — RATEIOS E REEMBOLSOS COMPARTILHADOS
+ * ==============================================================================
+ */
+
+export function generateSharedExpenseDocId(spaceId: string, idempotencyKey: string): string {
+  const cleanSpace = (spaceId || '').trim();
+  const cleanKey = (idempotencyKey || '').trim();
+  const cleanSlug = cleanKey.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 24);
+  const hash = sha256Hex(`exp:${cleanSpace}:${cleanKey}`);
+  return `exp_${cleanSlug ? `${cleanSlug}_` : ''}${hash.slice(0, 32)}`;
+}
+
+export function generatePaymentDeclarationDocId(expenseId: string, idempotencyKey: string): string {
+  const cleanExp = (expenseId || '').trim();
+  const cleanKey = (idempotencyKey || '').trim();
+  const cleanSlug = cleanKey.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 24);
+  const hash = sha256Hex(`decl:${cleanExp}:${cleanKey}`);
+  return `decl_${cleanSlug ? `${cleanSlug}_` : ''}${hash.slice(0, 32)}`;
+}
+
+export function generatePaymentApprovalDocId(declarationId: string, idempotencyKey: string): string {
+  const cleanDecl = (declarationId || '').trim();
+  const cleanKey = (idempotencyKey || '').trim();
+  const cleanSlug = cleanKey.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 24);
+  const hash = sha256Hex(`appr:${cleanDecl}:${cleanKey}`);
+  return `appr_${cleanSlug ? `${cleanSlug}_` : ''}${hash.slice(0, 32)}`;
+}
+
+export function generateApprovalRevocationDocId(approvalId: string, idempotencyKey: string): string {
+  const cleanAppr = (approvalId || '').trim();
+  const cleanKey = (idempotencyKey || '').trim();
+  const cleanSlug = cleanKey.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 24);
+  const hash = sha256Hex(`revoc:${cleanAppr}:${cleanKey}`);
+  return `revoc_${cleanSlug ? `${cleanSlug}_` : ''}${hash.slice(0, 32)}`;
+}
+
+export function generateSupplierRefundDocId(expenseId: string, idempotencyKey: string): string {
+  const cleanExp = (expenseId || '').trim();
+  const cleanKey = (idempotencyKey || '').trim();
+  const cleanSlug = cleanKey.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 24);
+  const hash = sha256Hex(`supref:${cleanExp}:${cleanKey}`);
+  return `supref_${cleanSlug ? `${cleanSlug}_` : ''}${hash.slice(0, 32)}`;
+}
+

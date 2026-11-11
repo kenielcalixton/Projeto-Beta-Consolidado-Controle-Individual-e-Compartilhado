@@ -3122,4 +3122,801 @@ export const recordRefundReceiptOfficial = onCall(
   }
 );
 
+// ==============================================================================
+// BACKEND REAL — FASE 6: RATEIOS E REEMBOLSOS COMPARTILHADOS (v3.1)
+// ==============================================================================
+
+export function serverGenerateSharedExpenseDocId(spaceId, key) {
+  const cleanSpace = String(spaceId || '').trim();
+  const cleanKey = String(key || '').trim();
+  const cleanSlug = cleanKey.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 24);
+  const hash = crypto.createHash('sha256').update(`exp:${cleanSpace}:${cleanKey}`).digest('hex');
+  return `exp_${cleanSlug ? `${cleanSlug}_` : ''}${hash.slice(0, 32)}`;
+}
+
+export function serverGeneratePaymentDeclarationDocId(expenseId, key) {
+  const cleanExp = String(expenseId || '').trim();
+  const cleanKey = String(key || '').trim();
+  const cleanSlug = cleanKey.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 24);
+  const hash = crypto.createHash('sha256').update(`decl:${cleanExp}:${cleanKey}`).digest('hex');
+  return `decl_${cleanSlug ? `${cleanSlug}_` : ''}${hash.slice(0, 32)}`;
+}
+
+export function serverGeneratePaymentApprovalDocId(declarationId, key) {
+  const cleanDecl = String(declarationId || '').trim();
+  const cleanKey = String(key || '').trim();
+  const cleanSlug = cleanKey.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 24);
+  const hash = crypto.createHash('sha256').update(`appr:${cleanDecl}:${cleanKey}`).digest('hex');
+  return `appr_${cleanSlug ? `${cleanSlug}_` : ''}${hash.slice(0, 32)}`;
+}
+
+export function serverGenerateApprovalRevocationDocId(approvalId, key) {
+  const cleanAppr = String(approvalId || '').trim();
+  const cleanKey = String(key || '').trim();
+  const cleanSlug = cleanKey.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 24);
+  const hash = crypto.createHash('sha256').update(`revoc:${cleanAppr}:${cleanKey}`).digest('hex');
+  return `revoc_${cleanSlug ? `${cleanSlug}_` : ''}${hash.slice(0, 32)}`;
+}
+
+export function serverGenerateSupplierRefundDocId(expenseId, key) {
+  const cleanExp = String(expenseId || '').trim();
+  const cleanKey = String(key || '').trim();
+  const cleanSlug = cleanKey.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 24);
+  const hash = crypto.createHash('sha256').update(`supref:${cleanExp}:${cleanKey}`).digest('hex');
+  return `supref_${cleanSlug ? `${cleanSlug}_` : ''}${hash.slice(0, 32)}`;
+}
+
+export async function executeServerSideCreateSharedExpense(db, callerUid, payload) {
+  if (!callerUid) {
+    throw new HttpsError('unauthenticated', 'Autenticação obrigatória.');
+  }
+  const cleanUid = callerUid.trim();
+  const {
+    spaceId,
+    title,
+    description,
+    totalOriginalAmountCents,
+    competenceMonth,
+    competenceDate,
+    dueDate,
+    categoryId,
+    categoryName,
+    createdByUid,
+    responsibleUid,
+    payerUid,
+    originType,
+    originRefId,
+    splitMethod,
+    calculatedSplits = [],
+    idempotencyKey,
+  } = payload || {};
+
+  if (!spaceId || !title || !totalOriginalAmountCents || !competenceMonth || !competenceDate) {
+    throw new HttpsError('invalid-argument', 'Campos obrigatórios ausentes para criar despesa compartilhada.');
+  }
+
+  const spaceRef = db.collection('spaces').doc(String(spaceId).trim());
+  const spaceSnap = await spaceRef.get();
+  if (!spaceSnap.exists) {
+    throw new HttpsError('not-found', `Espaço "${spaceId}" não encontrado.`);
+  }
+  const spaceData = spaceSnap.data();
+  if (spaceData.spaceStatus === 'archived' || spaceData.spaceStatus === 'dissolved') {
+    throw new HttpsError('failed-precondition', 'Espaço arquivado ou dissolvido: operações financeiras bloqueadas.');
+  }
+  if (!Array.isArray(spaceData.memberUids) || !spaceData.memberUids.includes(cleanUid)) {
+    throw new HttpsError('permission-denied', 'Acesso negado: Você não é membro ativo deste espaço.');
+  }
+
+  // Verifica conservação contábil
+  const sumSplits = calculatedSplits.reduce((acc, s) => acc + (s.assignedShareAmountCents || 0), 0);
+  if (sumSplits !== totalOriginalAmountCents) {
+    throw new HttpsError('invalid-argument', `A soma das cotas (${sumSplits}) deve ser estritamente igual ao total (${totalOriginalAmountCents}).`);
+  }
+
+  const finalKey = idempotencyKey?.trim() || `idem_exp_${spaceId}_${Date.now()}`;
+  const expenseId = serverGenerateSharedExpenseDocId(spaceId, finalKey);
+  const expenseRef = spaceRef.collection('shared_expenses').doc(expenseId);
+
+  return await db.runTransaction(async (tx) => {
+    const expSnap = await tx.get(expenseRef);
+    if (expSnap.exists) {
+      const existingData = expSnap.data();
+      const liabsSnap = await spaceRef.collection('shared_expenses').doc(expenseId).collection('liabilities').get();
+      const liabilities = liabsSnap.docs.map((d) => d.data());
+      return { expense: existingData, liabilities };
+    }
+
+    const now = new Date().toISOString();
+    const newExpense = {
+      id: expenseId,
+      spaceId: String(spaceId).trim(),
+      title: String(title).trim(),
+      description: description ? String(description).trim() : null,
+      totalOriginalAmountCents,
+      competenceMonth: String(competenceMonth).trim(),
+      competenceDate: String(competenceDate).trim(),
+      dueDate: dueDate ? String(dueDate).trim() : null,
+      categoryId: String(categoryId).trim(),
+      categoryName: String(categoryName).trim(),
+      createdByUid: cleanUid,
+      responsibleUid: String(responsibleUid).trim(),
+      payerUid: payerUid ? String(payerUid).trim() : String(responsibleUid).trim(),
+      participantUids: calculatedSplits.map((s) => s.memberUid),
+      validationStatus: 'approved',
+      validatedByUid: String(responsibleUid).trim(),
+      validatedAt: now,
+      commitmentStatus: 'active',
+      paymentExecutionStatus: 'unpaid',
+      totalPaidToSupplierCents: 0,
+      originType: originType || 'manual',
+      originRefId: originRefId || null,
+      idempotencyKey: finalKey,
+      createdAt: now,
+    };
+
+    tx.set(expenseRef, newExpense);
+
+    const savedLiabilities = [];
+    for (const split of calculatedSplits) {
+      const liabRef = expenseRef.collection('liabilities').doc(String(split.memberUid).trim());
+      const liabData = {
+        id: String(split.memberUid).trim(),
+        expenseId,
+        spaceId: String(spaceId).trim(),
+        memberUid: String(split.memberUid).trim(),
+        memberName: String(split.memberName).trim(),
+        assignedShareAmountCents: split.assignedShareAmountCents,
+        adjustedShareAmountCents: split.adjustedShareAmountCents,
+        paidAmountCents: 0,
+        remainingAmountCents: split.adjustedShareAmountCents,
+        status: 'pending',
+        splitMethod: split.splitMethod || 'equal',
+        splitRatio: split.splitRatio || null,
+        roundingRemainderRank: split.roundingRemainderRank || null,
+      };
+      tx.set(liabRef, liabData);
+      savedLiabilities.push(liabData);
+    }
+
+    return { expense: newExpense, liabilities: savedLiabilities };
+  });
+}
+
+export async function executeServerSideDeclareExpensePayment(db, callerUid, payload) {
+  if (!callerUid) {
+    throw new HttpsError('unauthenticated', 'Autenticação obrigatória.');
+  }
+  const cleanUid = callerUid.trim();
+  const {
+    spaceId,
+    expenseId,
+    memberUid,
+    memberName,
+    amountCents,
+    paymentDate,
+    paymentMethod,
+    sourceAccountId,
+    proofUrl,
+    notes,
+    idempotencyKey,
+  } = payload || {};
+
+  if (!spaceId || !expenseId || !amountCents || !paymentDate) {
+    throw new HttpsError('invalid-argument', 'Campos obrigatórios ausentes para declaração de pagamento.');
+  }
+  if (memberUid !== cleanUid) {
+    throw new HttpsError('permission-denied', 'Violação de identidade: você só pode declarar pagamentos da sua própria cota.');
+  }
+
+  const spaceRef = db.collection('spaces').doc(String(spaceId).trim());
+  const spaceSnap = await spaceRef.get();
+  if (!spaceSnap.exists) {
+    throw new HttpsError('not-found', 'Espaço não encontrado.');
+  }
+  const spaceData = spaceSnap.data();
+  if (spaceData.spaceStatus === 'archived' || spaceData.spaceStatus === 'dissolved') {
+    throw new HttpsError('failed-precondition', 'Espaço arquivado ou dissolvido.');
+  }
+  if (!Array.isArray(spaceData.memberUids) || !spaceData.memberUids.includes(cleanUid)) {
+    throw new HttpsError('permission-denied', 'Você não é membro ativo deste espaço.');
+  }
+
+  const expenseRef = spaceRef.collection('shared_expenses').doc(String(expenseId).trim());
+  const liabRef = expenseRef.collection('liabilities').doc(cleanUid);
+  const finalKey = idempotencyKey?.trim() || `idem_decl_${expenseId}_${cleanUid}_${Date.now()}`;
+  const declId = serverGeneratePaymentDeclarationDocId(expenseId, finalKey);
+  const declRef = expenseRef.collection('payment_declarations').doc(declId);
+
+  return await db.runTransaction(async (tx) => {
+    const [expSnap, liabSnap, declSnap] = await Promise.all([
+      tx.get(expenseRef),
+      tx.get(liabRef),
+      tx.get(declRef),
+    ]);
+
+    if (!expSnap.exists) {
+      throw new HttpsError('not-found', 'Despesa compartilhada não encontrada.');
+    }
+    if (!liabSnap.exists) {
+      throw new HttpsError('not-found', 'Obrigação do membro não encontrada nesta despesa.');
+    }
+    if (declSnap.exists) {
+      return declSnap.data();
+    }
+
+    const expense = expSnap.data();
+    const liab = liabSnap.data();
+    const remaining = liab.remainingAmountCents ?? liab.adjustedShareAmountCents;
+    if (amountCents <= 0 || amountCents > remaining) {
+      throw new HttpsError('invalid-argument', `Valor declarado (${amountCents}) inválido ou excede o saldo devedor restante (${remaining}).`);
+    }
+
+    const now = new Date().toISOString();
+    const newDecl = {
+      id: declId,
+      expenseId: String(expenseId).trim(),
+      spaceId: String(spaceId).trim(),
+      memberUid: cleanUid,
+      memberName: memberName ? String(memberName).trim() : 'Membro',
+      responsibleUid: expense.responsibleUid,
+      amountCents,
+      paymentDate: String(paymentDate).trim(),
+      paymentMethod: paymentMethod || 'pix',
+      sourceAccountId: sourceAccountId || null,
+      proofUrl: proofUrl || null,
+      notes: notes ? String(notes).trim() : null,
+      status: 'pending_validation',
+      idempotencyKey: finalKey,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    tx.set(declRef, newDecl);
+    tx.update(liabRef, { status: 'in_validation' });
+
+    // Notificação ao responsável financeiro
+    if (expense.responsibleUid) {
+      const notifId = `notif_${declId}`;
+      const notifRef = db.collection('users').doc(expense.responsibleUid).collection('notifications').doc(notifId);
+      tx.set(notifRef, {
+        id: notifId,
+        userId: expense.responsibleUid,
+        spaceId: String(spaceId).trim(),
+        spaceName: spaceData.name || 'Espaço Compartilhado',
+        type: 'member_role_changed',
+        title: 'Pagamento de rateio informado',
+        message: `${newDecl.memberName} informou o pagamento de R$ ${(amountCents / 100).toFixed(2)} referente a "${expense.title}".`,
+        read: false,
+        originEventId: declId,
+        createdAt: now,
+      }, { merge: true });
+    }
+
+    return newDecl;
+  });
+}
+
+export async function executeServerSideValidateExpensePayment(db, callerUid, payload) {
+  if (!callerUid) {
+    throw new HttpsError('unauthenticated', 'Autenticação obrigatória.');
+  }
+  const cleanUid = callerUid.trim();
+  const {
+    spaceId,
+    expenseId,
+    declarationId,
+    decision,
+    destinationAccountId,
+    rejectionReason,
+    idempotencyKey,
+  } = payload || {};
+
+  if (!spaceId || !expenseId || !declarationId || !decision) {
+    throw new HttpsError('invalid-argument', 'Parâmetros obrigatórios ausentes para validação.');
+  }
+  if (decision !== 'approved' && decision !== 'rejected') {
+    throw new HttpsError('invalid-argument', `Decisão inválida: "${decision}". Deve ser "approved" ou "rejected".`);
+  }
+
+  const spaceRef = db.collection('spaces').doc(String(spaceId).trim());
+  const spaceSnap = await spaceRef.get();
+  if (!spaceSnap.exists) {
+    throw new HttpsError('not-found', 'Espaço não encontrado.');
+  }
+  const spaceData = spaceSnap.data();
+  if (spaceData.spaceStatus === 'archived' || spaceData.spaceStatus === 'dissolved') {
+    throw new HttpsError('failed-precondition', 'Espaço arquivado ou dissolvido.');
+  }
+
+  const expenseRef = spaceRef.collection('shared_expenses').doc(String(expenseId).trim());
+  const declRef = expenseRef.collection('payment_declarations').doc(String(declarationId).trim());
+
+  const finalKey = idempotencyKey?.trim() || `idem_appr_${declarationId}_${decision}_${Date.now()}`;
+  const approvalId = serverGeneratePaymentApprovalDocId(declarationId, finalKey);
+  const approvalRef = expenseRef.collection('payment_approvals').doc(approvalId);
+
+  return await db.runTransaction(async (tx) => {
+    const [expSnap, declSnap, apprSnap] = await Promise.all([
+      tx.get(expenseRef),
+      tx.get(declRef),
+      decision === 'approved' ? tx.get(approvalRef) : Promise.resolve({ exists: false }),
+    ]);
+
+    if (!expSnap.exists) {
+      throw new HttpsError('not-found', 'Despesa compartilhada não encontrada.');
+    }
+    const expense = expSnap.data();
+
+    // REGRA FUNDAMENTAL DE SEGURANÇA: Somente o responsibleUid tem autoridade para validar!
+    if (expense.responsibleUid !== cleanUid) {
+      throw new HttpsError(
+        'permission-denied',
+        `Acesso negado: Somente o responsável financeiro da despesa (${expense.responsibleUid}) tem competência para validar pagamentos.`
+      );
+    }
+
+    if (!declSnap.exists) {
+      throw new HttpsError('not-found', 'Declaração de pagamento não encontrada.');
+    }
+    const decl = declSnap.data();
+
+    if (decision === 'approved' && apprSnap.exists) {
+      const existingAppr = apprSnap.data();
+      const liabSnap = await tx.get(expenseRef.collection('liabilities').doc(decl.memberUid));
+      return { approval: existingAppr, liability: liabSnap.data() };
+    }
+
+    const liabRef = expenseRef.collection('liabilities').doc(decl.memberUid);
+    const liabSnap = await tx.get(liabRef);
+    if (!liabSnap.exists) {
+      throw new HttpsError('not-found', 'Obrigação do membro não encontrada.');
+    }
+    const liab = liabSnap.data();
+    const now = new Date().toISOString();
+
+    if (decision === 'approved') {
+      if (decl.status === 'approved') {
+        throw new HttpsError('already-exists', 'Esta declaração já foi aprovada.');
+      }
+
+      let financialMovementId = null;
+      let movRecord = null;
+      if (destinationAccountId) {
+        const accRef = db.collection('accounts').doc(String(destinationAccountId).trim());
+        const accSnap = await tx.get(accRef);
+        if (!accSnap.exists) {
+          throw new HttpsError('not-found', `Conta bancária "${destinationAccountId}" não encontrada.`);
+        }
+        const accData = accSnap.data();
+        if (accData.userId !== cleanUid) {
+          throw new HttpsError('permission-denied', 'Conta bancária informada não pertence ao responsável financeiro.');
+        }
+        if (isAccountArchivedServer(accData)) {
+          throw new HttpsError('failed-precondition', 'Não é possível receber reembolso em conta arquivada.');
+        }
+
+        const movId = serverGenerateMovementDocId(destinationAccountId, `reimb_mov_${approvalId}`);
+        const movRef = accRef.collection('movements').doc(movId);
+        const movSnap = await tx.get(movRef);
+
+        if (!movSnap.exists) {
+          financialMovementId = movId;
+          movRecord = {
+            id: movId,
+            accountId: String(destinationAccountId).trim(),
+            userId: cleanUid,
+            direction: 'inflow',
+            amountCents: decl.amountCents,
+            effectiveDate: decl.paymentDate,
+            registeredAt: now,
+            originType: 'shared_reimbursement',
+            originId: approvalId,
+            confirmationStatus: 'cleared',
+            idempotencyKey: `reimb_mov_${approvalId}`,
+            description: `Reembolso de rateio recebido: ${expense.title} (${decl.memberName})`,
+            authorUid: cleanUid,
+          };
+          tx.set(movRef, movRecord);
+          const currentBal = accData.projectedBalanceCents || 0;
+          tx.update(accRef, { projectedBalanceCents: currentBal + decl.amountCents });
+        } else {
+          financialMovementId = movId;
+          movRecord = movSnap.data();
+        }
+      }
+
+      const approval = {
+        id: approvalId,
+        expenseId: String(expenseId).trim(),
+        spaceId: String(spaceId).trim(),
+        declarationId: String(declarationId).trim(),
+        memberUid: decl.memberUid,
+        responsibleUid: cleanUid,
+        amountCents: decl.amountCents,
+        destinationAccountId: destinationAccountId ? String(destinationAccountId).trim() : null,
+        financialMovementId,
+        approvedAt: now,
+        approverUid: cleanUid,
+        isRevoked: false,
+        idempotencyKey: finalKey,
+        createdAt: now,
+      };
+
+      tx.set(approvalRef, approval);
+      tx.update(declRef, { status: 'approved', updatedAt: now });
+
+      const currentPaid = liab.paidAmountCents || 0;
+      const newPaid = currentPaid + decl.amountCents;
+      const remaining = Math.max(0, liab.adjustedShareAmountCents - newPaid);
+      const newStatus = remaining === 0 ? 'paid' : 'partially_paid';
+
+      const updatedLiability = {
+        ...liab,
+        paidAmountCents: newPaid,
+        remainingAmountCents: remaining,
+        status: newStatus,
+      };
+      tx.set(liabRef, updatedLiability);
+
+      // Notificação ao devedor
+      const notifId = `notif_appr_${approvalId}`;
+      const notifRef = db.collection('users').doc(decl.memberUid).collection('notifications').doc(notifId);
+      tx.set(notifRef, {
+        id: notifId,
+        userId: decl.memberUid,
+        spaceId: String(spaceId).trim(),
+        spaceName: spaceData.name || 'Espaço Compartilhado',
+        type: 'member_role_changed',
+        title: 'Pagamento aprovado!',
+        message: `Seu pagamento de R$ ${(decl.amountCents / 100).toFixed(2)} referente a "${expense.title}" foi aprovado pelo responsável.`,
+        read: false,
+        originEventId: approvalId,
+        createdAt: now,
+      }, { merge: true });
+
+      return { approval, liability: updatedLiability, movement: movRecord };
+    } else {
+      // Rejection
+      if (!rejectionReason || !String(rejectionReason).trim()) {
+        throw new HttpsError('invalid-argument', 'Justificativa de rejeição é estritamente obrigatória.');
+      }
+
+      tx.update(declRef, {
+        status: 'rejected',
+        rejectionReason: String(rejectionReason).trim(),
+        updatedAt: now,
+      });
+
+      const currentPaid = liab.paidAmountCents || 0;
+      const newStatus = currentPaid > 0 ? 'partially_paid' : 'pending';
+      const updatedLiability = { ...liab, status: newStatus };
+      tx.set(liabRef, updatedLiability);
+
+      // Notificação ao devedor
+      const notifId = `notif_rej_${declarationId}`;
+      const notifRef = db.collection('users').doc(decl.memberUid).collection('notifications').doc(notifId);
+      tx.set(notifRef, {
+        id: notifId,
+        userId: decl.memberUid,
+        spaceId: String(spaceId).trim(),
+        spaceName: spaceData.name || 'Espaço Compartilhado',
+        type: 'member_role_changed',
+        title: 'Pagamento não reconhecido',
+        message: `O pagamento de R$ ${(decl.amountCents / 100).toFixed(2)} em "${expense.title}" foi recusado. Motivo: ${rejectionReason.trim()}`,
+        read: false,
+        originEventId: declarationId,
+        createdAt: now,
+      }, { merge: true });
+
+      return { declaration: { ...decl, status: 'rejected', rejectionReason: String(rejectionReason).trim() }, liability: updatedLiability };
+    }
+  });
+}
+
+export async function executeServerSideRevokeExpensePaymentApproval(db, callerUid, payload) {
+  if (!callerUid) {
+    throw new HttpsError('unauthenticated', 'Autenticação obrigatória.');
+  }
+  const cleanUid = callerUid.trim();
+  const {
+    spaceId,
+    expenseId,
+    approvalId,
+    reason,
+    idempotencyKey,
+  } = payload || {};
+
+  if (!spaceId || !expenseId || !approvalId || !reason || !String(reason).trim()) {
+    throw new HttpsError('invalid-argument', 'Parâmetros obrigatórios ausentes para revogação da aprovação.');
+  }
+
+  const spaceRef = db.collection('spaces').doc(String(spaceId).trim());
+  const spaceSnap = await spaceRef.get();
+  if (!spaceSnap.exists) {
+    throw new HttpsError('not-found', 'Espaço não encontrado.');
+  }
+  const spaceData = spaceSnap.data();
+
+  const expenseRef = spaceRef.collection('shared_expenses').doc(String(expenseId).trim());
+  const approvalRef = expenseRef.collection('payment_approvals').doc(String(approvalId).trim());
+
+  const finalKey = idempotencyKey?.trim() || `idem_revoc_${approvalId}_${Date.now()}`;
+  const revocationId = serverGenerateApprovalRevocationDocId(approvalId, finalKey);
+  const revocationRef = expenseRef.collection('approval_revocations').doc(revocationId);
+
+  return await db.runTransaction(async (tx) => {
+    const [expSnap, apprSnap, revocSnap] = await Promise.all([
+      tx.get(expenseRef),
+      tx.get(approvalRef),
+      tx.get(revocationRef),
+    ]);
+
+    if (!expSnap.exists) {
+      throw new HttpsError('not-found', 'Despesa compartilhada não encontrada.');
+    }
+    const expense = expSnap.data();
+    if (expense.responsibleUid !== cleanUid) {
+      throw new HttpsError('permission-denied', 'Somente o responsável financeiro da despesa pode revogar aprovações.');
+    }
+
+    if (!apprSnap.exists) {
+      throw new HttpsError('not-found', 'Aprovação de pagamento não encontrada.');
+    }
+    const approval = apprSnap.data();
+
+    if (revocSnap.exists) {
+      const existingRev = revocSnap.data();
+      const liabSnap = await tx.get(expenseRef.collection('liabilities').doc(approval.memberUid));
+      return { revocation: existingRev, liability: liabSnap.data() };
+    }
+
+    if (approval.isRevoked) {
+      throw new HttpsError('already-exists', 'Esta aprovação de pagamento já se encontra revogada.');
+    }
+
+    const liabRef = expenseRef.collection('liabilities').doc(approval.memberUid);
+    const liabSnap = await tx.get(liabRef);
+    if (!liabSnap.exists) {
+      throw new HttpsError('not-found', 'Obrigação do participante não encontrada.');
+    }
+    const liab = liabSnap.data();
+    const now = new Date().toISOString();
+
+    let compensatoryMovement = null;
+    if (approval.financialMovementId && approval.destinationAccountId) {
+      const accRef = db.collection('accounts').doc(approval.destinationAccountId);
+      const accSnap = await tx.get(accRef);
+      if (accSnap.exists) {
+        const accData = accSnap.data();
+        const revMovId = serverGenerateReversalDocId(approval.financialMovementId);
+        const revMovRef = accRef.collection('movements').doc(revMovId);
+        const revMovSnap = await tx.get(revMovRef);
+
+        if (!revMovSnap.exists) {
+          compensatoryMovement = {
+            id: revMovId,
+            accountId: approval.destinationAccountId,
+            userId: cleanUid,
+            direction: 'outflow',
+            amountCents: approval.amountCents,
+            effectiveDate: now.split('T')[0],
+            registeredAt: now,
+            originType: 'manual_adjustment',
+            originId: revMovId,
+            confirmationStatus: 'cleared',
+            idempotencyKey: `reversal_${approval.financialMovementId}`,
+            reversalOfMovementId: approval.financialMovementId,
+            description: `Estorno contábil de: Reembolso de rateio recebido - Motivo: ${reason.trim()}`,
+            authorUid: cleanUid,
+          };
+          tx.set(revMovRef, compensatoryMovement);
+          const currentBal = accData.projectedBalanceCents || 0;
+          tx.update(accRef, { projectedBalanceCents: currentBal - approval.amountCents });
+        }
+      }
+    }
+
+    const revocation = {
+      id: revocationId,
+      expenseId: String(expenseId).trim(),
+      spaceId: String(spaceId).trim(),
+      approvalId: String(approvalId).trim(),
+      declarationId: approval.declarationId,
+      memberUid: approval.memberUid,
+      responsibleUid: cleanUid,
+      revokedAmountCents: approval.amountCents,
+      compensatoryMovementId: compensatoryMovement?.id || null,
+      reason: String(reason).trim(),
+      revokedByUid: cleanUid,
+      revokedAt: now,
+      idempotencyKey: finalKey,
+      createdAt: now,
+    };
+
+    tx.set(revocationRef, revocation);
+    tx.update(approvalRef, { isRevoked: true, revokedAt: now, revocationId });
+
+    // Restaura saldo da obrigação
+    const currentPaid = liab.paidAmountCents || 0;
+    const restoredPaid = Math.max(0, currentPaid - approval.amountCents);
+    const remaining = liab.adjustedShareAmountCents - restoredPaid;
+    const newStatus = restoredPaid === 0 ? 'pending' : 'partially_paid';
+
+    const updatedLiability = {
+      ...liab,
+      paidAmountCents: restoredPaid,
+      remainingAmountCents: remaining,
+      status: newStatus,
+    };
+    tx.set(liabRef, updatedLiability);
+
+    // Notificação ao devedor
+    const notifId = `notif_revoc_${revocationId}`;
+    const notifRef = db.collection('users').doc(approval.memberUid).collection('notifications').doc(notifId);
+    tx.set(notifRef, {
+      id: notifId,
+      userId: approval.memberUid,
+      spaceId: String(spaceId).trim(),
+      spaceName: spaceData.name || 'Espaço Compartilhado',
+      type: 'member_role_changed',
+      title: 'Aprovação de pagamento revogada',
+      message: `A aprovação do pagamento em "${expense.title}" foi cancelada pelo responsável. Motivo: ${reason.trim()}`,
+      read: false,
+      originEventId: revocationId,
+      createdAt: now,
+    }, { merge: true });
+
+    return { revocation, liability: updatedLiability, compensatoryMovement };
+  });
+}
+
+export async function executeServerSideRecordSharedRefund(db, callerUid, payload) {
+  if (!callerUid) {
+    throw new HttpsError('unauthenticated', 'Autenticação obrigatória.');
+  }
+  const cleanUid = callerUid.trim();
+  const {
+    spaceId,
+    expenseId,
+    refundType,
+    amountRefundedCents,
+    lossAmountCents = 0,
+    recipientUid,
+    destinationAccountId,
+    date,
+    justification,
+    idempotencyKey,
+  } = payload || {};
+
+  if (!spaceId || !expenseId || !justification) {
+    throw new HttpsError('invalid-argument', 'Campos obrigatórios ausentes para reembolso de fornecedor.');
+  }
+
+  const spaceRef = db.collection('spaces').doc(String(spaceId).trim());
+  const spaceSnap = await spaceRef.get();
+  if (!spaceSnap.exists) {
+    throw new HttpsError('not-found', 'Espaço não encontrado.');
+  }
+  const expenseRef = spaceRef.collection('shared_expenses').doc(String(expenseId).trim());
+  const finalKey = idempotencyKey?.trim() || `idem_supref_${expenseId}_${Date.now()}`;
+  const refundId = serverGenerateSupplierRefundDocId(expenseId, finalKey);
+  const refundRef = expenseRef.collection('refunds').doc(refundId);
+
+  return await db.runTransaction(async (tx) => {
+    const [expSnap, refSnap] = await Promise.all([
+      tx.get(expenseRef),
+      tx.get(refundRef),
+    ]);
+
+    if (!expSnap.exists) {
+      throw new HttpsError('not-found', 'Despesa não encontrada.');
+    }
+    const expense = expSnap.data();
+    if (expense.responsibleUid !== cleanUid && expense.createdByUid !== cleanUid) {
+      throw new HttpsError('permission-denied', 'Acesso negado para registrar reembolso comercial.');
+    }
+
+    if (refSnap.exists) {
+      return refSnap.data();
+    }
+
+    const now = new Date().toISOString();
+    const event = {
+      id: refundId,
+      expenseId: String(expenseId).trim(),
+      spaceId: String(spaceId).trim(),
+      refundType: refundType || 'partial_refund',
+      amountRefundedCents: amountRefundedCents || 0,
+      lossAmountCents: lossAmountCents || 0,
+      recipientUid: recipientUid || cleanUid,
+      destinationAccountId: destinationAccountId || null,
+      date: date || now.split('T')[0],
+      justification: String(justification).trim(),
+      createdAt: now,
+    };
+
+    tx.set(refundRef, event);
+
+    // Ajuste proporcional das obrigações
+    if (amountRefundedCents > 0 && expense.totalOriginalAmountCents > 0) {
+      const liabsSnap = await expenseRef.collection('liabilities').get();
+      for (const docSnap of liabsSnap.docs) {
+        const liab = docSnap.data();
+        const ratio = liab.assignedShareAmountCents / expense.totalOriginalAmountCents;
+        const reduction = Math.round(amountRefundedCents * ratio);
+        const newAdjusted = Math.max(0, liab.assignedShareAmountCents - reduction);
+        const paid = liab.paidAmountCents || 0;
+        const remaining = Math.max(0, newAdjusted - paid);
+        tx.update(docSnap.ref, {
+          adjustedShareAmountCents: newAdjusted,
+          remainingAmountCents: remaining,
+        });
+      }
+    }
+
+    return event;
+  });
+}
+
+// ==============================================================================
+// ENDPOINTS ONCALL FASE 6
+// ==============================================================================
+
+export const createSharedExpenseOfficial = onCall(
+  { region: 'us-central1' },
+  async (request) => {
+    return await executeServerSideCreateSharedExpense(
+      getAdminDb(),
+      request.auth?.uid,
+      request.data
+    );
+  }
+);
+
+export const declareExpensePaymentOfficial = onCall(
+  { region: 'us-central1' },
+  async (request) => {
+    return await executeServerSideDeclareExpensePayment(
+      getAdminDb(),
+      request.auth?.uid,
+      request.data
+    );
+  }
+);
+
+export const validateExpensePaymentOfficial = onCall(
+  { region: 'us-central1' },
+  async (request) => {
+    return await executeServerSideValidateExpensePayment(
+      getAdminDb(),
+      request.auth?.uid,
+      request.data
+    );
+  }
+);
+
+export const revokeExpensePaymentApprovalOfficial = onCall(
+  { region: 'us-central1' },
+  async (request) => {
+    return await executeServerSideRevokeExpensePaymentApproval(
+      getAdminDb(),
+      request.auth?.uid,
+      request.data
+    );
+  }
+);
+
+export const recordSharedRefundOfficial = onCall(
+  { region: 'us-central1' },
+  async (request) => {
+    return await executeServerSideRecordSharedRefund(
+      getAdminDb(),
+      request.auth?.uid,
+      request.data
+    );
+  }
+);
+
+
 

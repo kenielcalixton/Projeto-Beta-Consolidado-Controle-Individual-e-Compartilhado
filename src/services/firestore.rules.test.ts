@@ -836,4 +836,151 @@ test('FIRESTORE SECURITY RULES — Validação Real no Firestore Emulator (Fase 
     );
     await assertFails(getDoc(doc(bobDb, 'users', 'uid_alice', 'budgets', 'bgt_1')));
   });
+
+  await t.test('9. Fase 6 (Rateios e Reembolsos Compartilhados): isolamento, declaração pelo devedor e bloqueio de falsificação de aprovações', async () => {
+    const aliceDb = testEnv.authenticatedContext('uid_alice').firestore();
+    const bobDb = testEnv.authenticatedContext('uid_bob').firestore();
+    const eveDb = testEnv.authenticatedContext('uid_eve').firestore();
+
+    // Seed de espaço com Alice (responsável) e Bob (membro)
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      const adminDb = context.firestore();
+      await setDoc(doc(adminDb, 'spaces', 'space_f6'), {
+        id: 'space_f6',
+        name: 'Espaço Fase 6',
+        creatorUid: 'uid_alice',
+        ownerId: 'uid_alice',
+        memberUids: ['uid_alice', 'uid_bob'],
+        spaceStatus: 'active',
+        createdAt: '2026-11-01T10:00:00.000Z',
+      });
+      await setDoc(doc(adminDb, 'spaces', 'space_f6', 'members', 'uid_alice'), {
+        uid: 'uid_alice',
+        role: 'owner',
+        participationStatus: 'active',
+      });
+      await setDoc(doc(adminDb, 'spaces', 'space_f6', 'members', 'uid_bob'), {
+        uid: 'uid_bob',
+        role: 'member',
+        participationStatus: 'active',
+      });
+      await setDoc(doc(adminDb, 'spaces', 'space_f6', 'shared_expenses', 'exp_test_1'), {
+        id: 'exp_test_1',
+        spaceId: 'space_f6',
+        title: 'Despesa Compartilhada Teste',
+        totalOriginalAmountCents: 10000,
+        competenceMonth: '2026-11',
+        competenceDate: '2026-11-10',
+        createdByUid: 'uid_alice',
+        responsibleUid: 'uid_alice',
+        validationStatus: 'approved',
+        commitmentStatus: 'active',
+        paymentExecutionStatus: 'unpaid',
+      });
+    });
+
+    // 9.1. Usuário sem vínculo (Eve) é bloqueado de ler ou criar despesas compartilhadas
+    await assertFails(getDoc(doc(eveDb, 'spaces', 'space_f6', 'shared_expenses', 'exp_test_1')));
+    await assertFails(
+      setDoc(doc(eveDb, 'spaces', 'space_f6', 'shared_expenses', 'exp_eve_hack'), {
+        id: 'exp_eve_hack',
+        spaceId: 'space_f6',
+        title: 'Invasão Eve',
+        createdByUid: 'uid_eve',
+      })
+    );
+
+    // 9.2. Membro ativo (Bob) lê despesa
+    await assertSucceeds(getDoc(doc(bobDb, 'spaces', 'space_f6', 'shared_expenses', 'exp_test_1')));
+
+    // 9.3. Devedor ativo (Bob) declara pagamento de sua cota com sucesso
+    await assertSucceeds(
+      setDoc(
+        doc(
+          bobDb,
+          'spaces',
+          'space_f6',
+          'shared_expenses',
+          'exp_test_1',
+          'payment_declarations',
+          'decl_bob_valid'
+        ),
+        {
+          id: 'decl_bob_valid',
+          expenseId: 'exp_test_1',
+          spaceId: 'space_f6',
+          memberUid: 'uid_bob',
+          amountCents: 5000,
+          paymentDate: '2026-11-11',
+          paymentMethod: 'pix',
+          status: 'pending_validation',
+        }
+      )
+    );
+
+    // 9.4. Bob tenta forjar declaração atribuindo a cota a Alice (violação de identidade) -> FALHA
+    await assertFails(
+      setDoc(
+        doc(
+          bobDb,
+          'spaces',
+          'space_f6',
+          'shared_expenses',
+          'exp_test_1',
+          'payment_declarations',
+          'decl_bob_spoof'
+        ),
+        {
+          id: 'decl_bob_spoof',
+          expenseId: 'exp_test_1',
+          spaceId: 'space_f6',
+          memberUid: 'uid_alice', // Spoofing!
+          amountCents: 5000,
+          paymentDate: '2026-11-11',
+          status: 'pending_validation',
+        }
+      )
+    );
+
+    // 9.5. Escrita direta em payment_approvals pelo cliente é ESTRITAMENTE BLOQUEADA (Cloud Functions exclusive)
+    await assertFails(
+      setDoc(
+        doc(
+          aliceDb,
+          'spaces',
+          'space_f6',
+          'shared_expenses',
+          'exp_test_1',
+          'payment_approvals',
+          'appr_hack'
+        ),
+        {
+          id: 'appr_hack',
+          declarationId: 'decl_bob_valid',
+          amountCents: 5000,
+          approverUid: 'uid_alice',
+        }
+      )
+    );
+
+    // 9.6. Escrita direta em approval_revocations pelo cliente é ESTRITAMENTE BLOQUEADA (Cloud Functions exclusive)
+    await assertFails(
+      setDoc(
+        doc(
+          aliceDb,
+          'spaces',
+          'space_f6',
+          'shared_expenses',
+          'exp_test_1',
+          'approval_revocations',
+          'revoc_hack'
+        ),
+        {
+          id: 'revoc_hack',
+          approvalId: 'appr_hack',
+          reason: 'Burlar auditoria',
+        }
+      )
+    );
+  });
 });

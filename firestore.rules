@@ -417,6 +417,42 @@ service cloud.firestore {
           allow write: if isSpaceMember(spaceId) && isSpaceActive(spaceId) &&
             request.auth.uid == get(/databases/$(database)/documents/spaces/$(spaceId)/shared_expenses/$(expenseId)).data.responsibleUid;
         }
+
+        match /payment_declarations/{declarationId} {
+          // Leitura: membros do espaço ou histórico envolvido
+          allow read: if isSpaceMember(spaceId) || (
+            isSpaceHistoricalMember(spaceId) && (
+              resource.data.memberUid == request.auth.uid ||
+              resource.data.responsibleUid == request.auth.uid
+            )
+          );
+          // Declaração pode ser criada pelo próprio devedor ativo
+          allow create: if isSpaceMember(spaceId) && isSpaceActive(spaceId) &&
+            request.resource.data.memberUid == request.auth.uid;
+          allow update, delete: if false; // Atualizações exclusivas via Cloud Functions autoritativas
+        }
+
+        match /payment_approvals/{approvalId} {
+          // Leitura: membros do espaço ou histórico envolvido
+          allow read: if isSpaceMember(spaceId) || (
+            isSpaceHistoricalMember(spaceId) && (
+              resource.data.memberUid == request.auth.uid ||
+              resource.data.responsibleUid == request.auth.uid
+            )
+          );
+          allow write: if false; // Escrita exclusiva via Cloud Functions autoritativas (Admin SDK)
+        }
+
+        match /approval_revocations/{revocationId} {
+          // Leitura: membros do espaço ou histórico envolvido
+          allow read: if isSpaceMember(spaceId) || (
+            isSpaceHistoricalMember(spaceId) && (
+              resource.data.memberUid == request.auth.uid ||
+              resource.data.responsibleUid == request.auth.uid
+            )
+          );
+          allow write: if false; // Escrita exclusiva via Cloud Functions autoritativas (Admin SDK)
+        }
       }
 
       // 4.5 Liquidações Bilaterais de Dívidas

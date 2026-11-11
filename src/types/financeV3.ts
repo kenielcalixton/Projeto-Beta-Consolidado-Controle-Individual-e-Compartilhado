@@ -55,6 +55,7 @@ export type FinancialMovementOriginType =
   | 'settlement_inflow'
   | 'settlement_outflow'
   | 'supplier_refund'
+  | 'shared_reimbursement'
   | 'manual_adjustment';
 
 /**
@@ -842,6 +843,10 @@ export interface SharedExpense {
   createdByUid: string;
   /** Responsável financeiro e credor legítimo para validação */
   responsibleUid: string;
+  /** Quem efetivamente desembolsou os fundos ao fornecedor (padrão: responsibleUid) */
+  payerUid?: string;
+  /** UIDs dos participantes incluídos no rateio */
+  participantUids?: string[];
   validationStatus: SharedExpenseValidationStatus;
   validatedByUid?: string;
   validatedAt?: ISO8601String;
@@ -856,6 +861,14 @@ export interface SharedExpense {
 }
 
 export type ExpenseLiabilitySplitMethod = 'equal' | 'percentage' | 'custom_value';
+export type ExpenseLiabilityStatus =
+  | 'pending'
+  | 'payment_declared'
+  | 'in_validation'
+  | 'partially_paid'
+  | 'paid'
+  | 'rejected'
+  | 'cancelled';
 
 /**
  * Cota de responsabilidade de cada participante no rateio da despesa.
@@ -869,9 +882,83 @@ export interface ExpenseLiability {
   memberName: string;
   assignedShareAmountCents: CentsInteger;
   adjustedShareAmountCents: CentsInteger;
+  paidAmountCents?: CentsInteger;
+  remainingAmountCents?: CentsInteger;
+  status?: ExpenseLiabilityStatus;
   splitMethod: ExpenseLiabilitySplitMethod;
   splitRatio?: number;
   roundingRemainderRank?: number;
+}
+
+export type PaymentDeclarationStatus = 'pending_validation' | 'approved' | 'rejected' | 'cancelled';
+export type PaymentDeclarationMethod = 'pix' | 'bank_transfer' | 'cash' | 'credit_card' | 'other';
+
+/**
+ * Declaração formal de pagamento pelo devedor perante o credor da despesa.
+ * Caminho Firestore: spaces/{spaceId}/shared_expenses/{expenseId}/payment_declarations/{declarationId}
+ */
+export interface ExpensePaymentDeclaration {
+  id: string;
+  expenseId: string;
+  spaceId: string;
+  memberUid: string;
+  memberName: string;
+  responsibleUid: string;
+  amountCents: CentsInteger;
+  paymentDate: DateString;
+  paymentMethod: PaymentDeclarationMethod;
+  sourceAccountId?: string;
+  proofUrl?: string;
+  notes?: string;
+  status: PaymentDeclarationStatus;
+  rejectionReason?: string;
+  idempotencyKey: string;
+  createdAt: ISO8601String;
+  updatedAt: ISO8601String;
+}
+
+/**
+ * Evento imutável de aprovação de pagamento emitido exclusivamente pelo responsável financeiro.
+ * Caminho Firestore: spaces/{spaceId}/shared_expenses/{expenseId}/payment_approvals/{approvalId}
+ */
+export interface ExpensePaymentApproval {
+  id: string;
+  expenseId: string;
+  spaceId: string;
+  declarationId: string;
+  memberUid: string;
+  responsibleUid: string;
+  amountCents: CentsInteger;
+  destinationAccountId?: string;
+  financialMovementId?: string;
+  approvedAt: ISO8601String;
+  approverUid: string;
+  isRevoked: boolean;
+  revokedAt?: ISO8601String;
+  revocationId?: string;
+  idempotencyKey: string;
+  createdAt: ISO8601String;
+}
+
+/**
+ * Evento compensatório de revogação de aprovação pelo responsável financeiro.
+ * Caminho Firestore: spaces/{spaceId}/shared_expenses/{expenseId}/approval_revocations/{revocationId}
+ */
+export interface ExpenseApprovalRevocation {
+  id: string;
+  expenseId: string;
+  spaceId: string;
+  approvalId: string;
+  declarationId: string;
+  memberUid: string;
+  responsibleUid: string;
+  revokedAmountCents: CentsInteger;
+  compensatoryMovementId?: string;
+  reason: string;
+  revokedByUid: string;
+  revokedAt: ISO8601String;
+  idempotencyKey: string;
+  createdAt: ISO8601String;
 }
 
 export type ExpensePaymentFundingSource = 'personal_checking' | 'credit_card' | 'wallet' | 'custody_transfer';
@@ -984,6 +1071,7 @@ export type SupplierRefundType = 'full_refund' | 'partial_refund' | 'unrecoverab
 export interface SupplierRefundEvent {
   id: string;
   expenseId: string;
+  spaceId?: string;
   refundType: SupplierRefundType;
   amountRefundedCents: CentsInteger;
   lossAmountCents: CentsInteger;

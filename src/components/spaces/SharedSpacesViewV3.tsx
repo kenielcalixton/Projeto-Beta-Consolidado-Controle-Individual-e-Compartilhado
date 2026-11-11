@@ -42,6 +42,7 @@ import {
   getUserSpaceNotifications,
   markNotificationAsRead,
 } from '../../services/spaceNotificationService';
+import { SharedFinanceSectionV3 } from './SharedFinanceSectionV3';
 
 interface SharedSpacesViewV3Props {
   userId: string;
@@ -50,7 +51,15 @@ interface SharedSpacesViewV3Props {
   isDemo?: boolean;
 }
 
-type SpaceTab = 'members' | 'invites' | 'audit' | 'dissolution';
+type SpaceTab =
+  | 'members'
+  | 'expenses'
+  | 'liabilities'
+  | 'validations'
+  | 'refunds'
+  | 'invites'
+  | 'audit'
+  | 'dissolution';
 
 export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
   userId,
@@ -807,10 +816,58 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
             </div>
 
             {/* Abas Internas */}
-            <div className="flex items-center gap-2 border-b border-gray-100 mt-6 pt-2">
+            <div className="flex items-center gap-2 border-b border-gray-100 mt-6 pt-2 overflow-x-auto">
+              <button
+                onClick={() => setSelectedTab('expenses')}
+                className={`pb-3 px-3 text-xs font-bold transition-all border-b-2 flex items-center gap-1.5 whitespace-nowrap ${
+                  selectedTab === 'expenses'
+                    ? 'border-indigo-600 text-indigo-600'
+                    : 'border-transparent text-gray-500 hover:text-gray-700'
+                }`}
+              >
+                <i className="ph ph-receipt text-base" />
+                Despesas e Rateios
+              </button>
+
+              <button
+                onClick={() => setSelectedTab('liabilities')}
+                className={`pb-3 px-3 text-xs font-bold transition-all border-b-2 flex items-center gap-1.5 whitespace-nowrap ${
+                  selectedTab === 'liabilities'
+                    ? 'border-indigo-600 text-indigo-600'
+                    : 'border-transparent text-gray-500 hover:text-gray-700'
+                }`}
+              >
+                <i className="ph ph-hand-coins text-base" />
+                Minhas Obrigações
+              </button>
+
+              <button
+                onClick={() => setSelectedTab('validations')}
+                className={`pb-3 px-3 text-xs font-bold transition-all border-b-2 flex items-center gap-1.5 whitespace-nowrap ${
+                  selectedTab === 'validations'
+                    ? 'border-indigo-600 text-indigo-600'
+                    : 'border-transparent text-gray-500 hover:text-gray-700'
+                }`}
+              >
+                <i className="ph ph-check-square-offset text-base" />
+                Validações
+              </button>
+
+              <button
+                onClick={() => setSelectedTab('refunds')}
+                className={`pb-3 px-3 text-xs font-bold transition-all border-b-2 flex items-center gap-1.5 whitespace-nowrap ${
+                  selectedTab === 'refunds'
+                    ? 'border-indigo-600 text-indigo-600'
+                    : 'border-transparent text-gray-500 hover:text-gray-700'
+                }`}
+              >
+                <i className="ph ph-arrows-clockwise text-base" />
+                Reembolsos
+              </button>
+
               <button
                 onClick={() => setSelectedTab('members')}
-                className={`pb-3 px-3 text-xs font-bold transition-all border-b-2 flex items-center gap-1.5 ${
+                className={`pb-3 px-3 text-xs font-bold transition-all border-b-2 flex items-center gap-1.5 whitespace-nowrap ${
                   selectedTab === 'members'
                     ? 'border-indigo-600 text-indigo-600'
                     : 'border-transparent text-gray-500 hover:text-gray-700'
@@ -822,7 +879,7 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
 
               <button
                 onClick={() => setSelectedTab('invites')}
-                className={`pb-3 px-3 text-xs font-bold transition-all border-b-2 flex items-center gap-1.5 ${
+                className={`pb-3 px-3 text-xs font-bold transition-all border-b-2 flex items-center gap-1.5 whitespace-nowrap ${
                   selectedTab === 'invites'
                     ? 'border-indigo-600 text-indigo-600'
                     : 'border-transparent text-gray-500 hover:text-gray-700'
@@ -834,7 +891,7 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
 
               <button
                 onClick={() => setSelectedTab('audit')}
-                className={`pb-3 px-3 text-xs font-bold transition-all border-b-2 flex items-center gap-1.5 ${
+                className={`pb-3 px-3 text-xs font-bold transition-all border-b-2 flex items-center gap-1.5 whitespace-nowrap ${
                   selectedTab === 'audit'
                     ? 'border-indigo-600 text-indigo-600'
                     : 'border-transparent text-gray-500 hover:text-gray-700'
@@ -846,7 +903,7 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
 
               <button
                 onClick={() => setSelectedTab('dissolution')}
-                className={`pb-3 px-3 text-xs font-bold transition-all border-b-2 flex items-center gap-1.5 ${
+                className={`pb-3 px-3 text-xs font-bold transition-all border-b-2 flex items-center gap-1.5 whitespace-nowrap ${
                   selectedTab === 'dissolution'
                     ? 'border-indigo-600 text-indigo-600'
                     : 'border-transparent text-gray-500 hover:text-gray-700'
@@ -860,7 +917,23 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
 
           {/* CONTEÚDO DA ABA SELECIONADA */}
 
-          {/* ABA 1: PARTICIPANTES */}
+          {/* ABAS FINANCEIRAS DA FASE 6 */}
+          {(selectedTab === 'expenses' ||
+            selectedTab === 'liabilities' ||
+            selectedTab === 'validations' ||
+            selectedTab === 'refunds') && (
+            <SharedFinanceSectionV3
+              space={selectedSpace}
+              userId={userId}
+              userName={userName}
+              isDemo={isDemo}
+              activeTab={selectedTab}
+              onTabChange={(tab) => setSelectedTab(tab)}
+              onFeedback={(type, text) => setFeedbackMessage({ type, text })}
+            />
+          )}
+
+          {/* ABA: PARTICIPANTES */}
           {selectedTab === 'members' && (
             <div className="bg-white border border-gray-200 rounded-2xl p-6 shadow-sm space-y-4">
               <div className="flex items-center justify-between">
