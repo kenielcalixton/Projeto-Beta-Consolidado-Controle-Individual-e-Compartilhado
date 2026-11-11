@@ -1,8 +1,40 @@
+# Dependências
 node_modules/
+
+# Builds e bundles
 build/
 dist/
 coverage/
+
+# Sistema operacional
 .DS_Store
+Thumbs.db
+
+# Logs de execução e depuração
 *.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+firebase-debug.log*
+firestore-debug.log*
+ui-debug.log*
+
+# Variáveis de ambiente e segredos locais
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
 .env*
 !.env.example
+
+# Credenciais e chaves privadas
+*.pem
+*.key
+*.cert
+service-account*.json
+
+# Firebase e emuladores
+.firebase/
+.firebaserc
+

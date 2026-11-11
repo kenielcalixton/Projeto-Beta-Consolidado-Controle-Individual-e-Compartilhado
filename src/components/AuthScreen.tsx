@@ -1,17 +1,6 @@
 import React, { useState } from 'react';
-import {
-  browserLocalPersistence,
-  createUserWithEmailAndPassword,
-  sendPasswordResetEmail,
-  setPersistence,
-  signInWithEmailAndPassword,
-  signInWithPopup,
-  updateProfile,
-} from 'firebase/auth';
-import {
-  auth,
-  googleProvider,
-} from '../services/firebase';
+import { useAuth } from '../contexts/AuthContext';
+import { validateRegistration, validateEmail, validatePassword } from '../services/authService';
 
 interface AuthScreenProps {
   onEnterDemoMode?: (profile: { uid: string; name: string; email: string }) => void;
@@ -20,129 +9,121 @@ interface AuthScreenProps {
 type AuthMode = 'login' | 'register' | 'reset';
 
 export const AuthScreen: React.FC<AuthScreenProps> = ({ onEnterDemoMode }) => {
+  const {
+    login,
+    register,
+    resetPassword,
+    loginWithGoogle,
+    enterDemoMode: contextEnterDemoMode,
+    loading,
+    error: contextError,
+    clearError,
+  } = useAuth();
+
   const [mode, setMode] = useState<AuthMode>('login');
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [localError, setLocalError] = useState<string | null>(null);
   const [infoMsg, setInfoMsg] = useState<string | null>(null);
+
+  const activeError = localError || contextError;
+
+  const handleSwitchMode = (newMode: AuthMode) => {
+    setMode(newMode);
+    setLocalError(null);
+    setInfoMsg(null);
+    clearError();
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setErrorMsg(null);
+    setLocalError(null);
     setInfoMsg(null);
+    clearError();
 
     const normalizedEmail = email.trim().toLowerCase();
 
+    // 1. FLUXO DE RECUPERAÇÃO DE SENHA
     if (mode === 'reset') {
-      if (!normalizedEmail || !normalizedEmail.includes('@')) {
-        setErrorMsg('Informe um endereço de e-mail válido para recuperar sua senha.');
+      const emailVal = validateEmail(normalizedEmail);
+      if (!emailVal.isValid) {
+        setLocalError(emailVal.error || 'Informe um e-mail válido.');
         return;
       }
-      setLoading(true);
+
       try {
-        await sendPasswordResetEmail(auth, normalizedEmail);
+        await resetPassword(normalizedEmail);
         setInfoMsg(
-          `E-mail de redefinição de senha enviado para ${normalizedEmail}. Verifique sua caixa de entrada e spam.`
+          `E-mail de redefinição enviado para ${normalizedEmail}. Verifique sua caixa de entrada e a pasta de spam.`
         );
-      } catch (err: any) {
-        const code = String(err?.code || '');
-        if (code.includes('user-not-found')) {
-          setErrorMsg('Nenhuma conta encontrada com este endereço de e-mail.');
-        } else {
-          setErrorMsg(
-            err?.message || 'Não foi possível enviar o e-mail de redefinição.'
-          );
-        }
-      } finally {
-        setLoading(false);
+      } catch (err: unknown) {
+        // O erro do contexto já foi formatado em português
       }
       return;
     }
 
-    if (!normalizedEmail || !normalizedEmail.includes('@')) {
-      setErrorMsg('Por favor, insira um endereço de e-mail válido.');
-      return;
-    }
-
-    if (password.length < 6) {
-      setErrorMsg('A senha deve possuir no mínimo 6 caracteres.');
-      return;
-    }
-
+    // 2. FLUXO DE CADASTRO
     if (mode === 'register') {
-      if (!name.trim()) {
-        setErrorMsg('Por favor, informe seu nome completo para o cadastro.');
+      const regVal = validateRegistration(name, normalizedEmail, password, confirmPassword);
+      if (!regVal.isValid) {
+        setLocalError(regVal.error || 'Preencha os campos corretamente.');
         return;
       }
-      if (password !== confirmPassword) {
-        setErrorMsg('A confirmação de senha não confere com a senha digitada.');
-        return;
+
+      try {
+        await register(name.trim(), normalizedEmail, password);
+        // O onAuthStateChanged do AuthProvider sincronizará a sessão automaticamente
+      } catch (err: unknown) {
+        // Erro formatado no contexto
       }
+      return;
     }
 
-    setLoading(true);
-    try {
-      await setPersistence(auth, browserLocalPersistence);
+    // 3. FLUXO DE LOGIN
+    const emailVal = validateEmail(normalizedEmail);
+    if (!emailVal.isValid) {
+      setLocalError(emailVal.error || 'Informe um e-mail válido.');
+      return;
+    }
 
-      if (mode === 'register') {
-        const cleanName = name.trim().slice(0, 100);
-        sessionStorage.setItem('mpf_pending_signup_name', cleanName);
-        const cred = await createUserWithEmailAndPassword(
-          auth,
-          normalizedEmail,
-          password
-        );
-        await updateProfile(cred.user, { displayName: cleanName });
-      } else {
-        await signInWithEmailAndPassword(
-          auth,
-          normalizedEmail,
-          password
-        );
-      }
-    } catch (err: any) {
-      const code = String(err?.code || '');
-      if (
-        code.includes('invalid-credential') ||
-        code.includes('wrong-password') ||
-        code.includes('user-not-found')
-      ) {
-        setErrorMsg(
-          'E-mail ou senha incorretos. Verifique suas credenciais ou clique em "Criar Cadastro".'
-        );
-      } else if (code.includes('email-already-in-use')) {
-        setErrorMsg(
-          'Este e-mail já está cadastrado no Firebase. Alterne para a aba "Entrar na Conta".'
-        );
-      } else if (code.includes('too-many-requests')) {
-        setErrorMsg(
-          'Muitas tentativas seguidas. Aguarde alguns instantes ou redefina sua senha.'
-        );
-      } else {
-        setErrorMsg(
-          err?.message || 'Não foi possível autenticar no Firebase. Tente novamente.'
-        );
-      }
-    } finally {
-      setLoading(false);
+    const passVal = validatePassword(password);
+    if (!passVal.isValid) {
+      setLocalError(passVal.error || 'Informe sua senha.');
+      return;
+    }
+
+    try {
+      await login(normalizedEmail, password);
+    } catch (err: unknown) {
+      // Erro formatado no contexto
     }
   };
 
-  const handleGoogleLogin = async () => {
-    setErrorMsg(null);
-    setLoading(true);
+  const handleGoogleSignIn = async () => {
+    setLocalError(null);
+    setInfoMsg(null);
+    clearError();
+
     try {
-      await setPersistence(auth, browserLocalPersistence);
-      await signInWithPopup(auth, googleProvider);
-    } catch {
-      setErrorMsg(
-        'Janela de login do Google fechada ou bloqueada. Utilize o formulário de E-mail e Senha acima.'
-      );
-    } finally {
-      setLoading(false);
+      await loginWithGoogle();
+    } catch (err: unknown) {
+      // Erro formatado no contexto
+    }
+  };
+
+  const handleDemoAccess = () => {
+    const demoProfile = {
+      uid: 'demo_user_default',
+      name: 'Usuário Demonstração',
+      email: 'demo@meupainel.com',
+    };
+
+    if (onEnterDemoMode) {
+      onEnterDemoMode(demoProfile);
+    } else {
+      contextEnterDemoMode(demoProfile);
     }
   };
 
@@ -162,51 +143,51 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onEnterDemoMode }) => {
             </div>
 
             <h1 className="text-2xl md:text-3xl font-bold text-white leading-tight mb-4">
-              Controle financeiro inteligente com Livro-Razão colaborativo.
+              Controle financeiro inteligente com Livro-Razão auditável.
             </h1>
             <p className="text-slate-400 text-sm md:text-base leading-relaxed mb-8">
-              Gerencie contas bancárias, projete faturas de cartão de crédito por data de corte e audite despesas compartilhadas em grupo com transparência total.
+              Autenticação segura via Firebase Authentication com identidade canônica por UID, separação estrita de dados bancários privados e suporte a rateios colaborativos.
             </p>
 
             <div className="space-y-4">
+              <div className="flex items-start gap-3.5">
+                <div className="w-9 h-9 rounded-xl bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 flex items-center justify-center shrink-0 mt-0.5">
+                  <i className="ph-fill ph-shield-check text-lg"></i>
+                </div>
+                <div>
+                  <h2 className="text-sm font-semibold text-slate-100">
+                    Identidade Canônica & Segurança
+                  </h2>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    Sessão persistente baseada no UID do Firebase Auth, sem exposição de credenciais privadas.
+                  </p>
+                </div>
+              </div>
+
               <div className="flex items-start gap-3.5">
                 <div className="w-9 h-9 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 flex items-center justify-center shrink-0 mt-0.5">
                   <i className="ph-fill ph-arrows-split text-lg"></i>
                 </div>
                 <div>
                   <h2 className="text-sm font-semibold text-slate-100">
-                    Livro-Razão Estilo Splitwise
+                    Financeiro Individual & Espaços
                   </h2>
                   <p className="text-xs text-slate-400 mt-0.5">
-                    Cálculo automático de Responsabilidade vs. Valor já pago para equilibrar quem deve a quem.
+                    Utilize suas contas pessoais de forma totalmente independente ou colabore em espaços com governança de rateios.
                   </p>
                 </div>
               </div>
 
               <div className="flex items-start gap-3.5">
                 <div className="w-9 h-9 rounded-xl bg-purple-500/10 border border-purple-500/20 text-purple-400 flex items-center justify-center shrink-0 mt-0.5">
-                  <i className="ph-fill ph-credit-card text-lg"></i>
+                  <i className="ph-fill ph-lock-key text-lg"></i>
                 </div>
                 <div>
                   <h2 className="text-sm font-semibold text-slate-100">
-                    Motor de Faturas & Recorrência em Cascata
+                    Isolamento Físico de Metadados
                   </h2>
                   <p className="text-xs text-slate-400 mt-0.5">
-                    Projeção automática de compras conforme fechamento e vencimento, com edição em cascata.
-                  </p>
-                </div>
-              </div>
-
-              <div className="flex items-start gap-3.5">
-                <div className="w-9 h-9 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-400 flex items-center justify-center shrink-0 mt-0.5">
-                  <i className="ph-fill ph-scales text-lg"></i>
-                </div>
-                <div>
-                  <h2 className="text-sm font-semibold text-slate-100">
-                    Caixa de Entrada e Disputa de Rateios
-                  </h2>
-                  <p className="text-xs text-slate-400 mt-0.5">
-                    Aceite, recuse, conteste ou proponha novo valor antes de efetivar rateios compartilhados.
+                    Comprovantes e dados bancários restritos unicamente ao seu titular, sem vazamento entre participantes.
                   </p>
                 </div>
               </div>
@@ -214,9 +195,11 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onEnterDemoMode }) => {
           </div>
 
           <div className="mt-8 pt-6 border-t border-slate-700/60 flex items-center justify-between text-xs text-slate-400">
-            <span>Isolamento Firestore RBAC</span>
+            <span>Firebase Auth v13</span>
             <span aria-hidden="true">·</span>
-            <span>Sincronização em Tempo Real</span>
+            <span>Identidade Canônica UID</span>
+            <span aria-hidden="true">·</span>
+            <span>Arquitetura v3.1</span>
           </div>
         </div>
 
@@ -226,12 +209,8 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onEnterDemoMode }) => {
           <div className="flex items-center p-1 bg-slate-800 border border-slate-700/80 rounded-2xl mb-6">
             <button
               type="button"
-              onClick={() => {
-                setMode('login');
-                setErrorMsg(null);
-                setInfoMsg(null);
-              }}
-              className={`flex-1 py-2.5 px-4 rounded-xl text-xs font-semibold transition-all whitespace-nowrap ${
+              onClick={() => handleSwitchMode('login')}
+              className={`flex-1 py-2.5 px-4 rounded-xl text-xs font-semibold transition-all whitespace-nowrap cursor-pointer ${
                 mode === 'login'
                   ? 'bg-indigo-600 text-white shadow-sm'
                   : 'text-slate-400 hover:text-slate-200'
@@ -241,12 +220,8 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onEnterDemoMode }) => {
             </button>
             <button
               type="button"
-              onClick={() => {
-                setMode('register');
-                setErrorMsg(null);
-                setInfoMsg(null);
-              }}
-              className={`flex-1 py-2.5 px-4 rounded-xl text-xs font-semibold transition-all whitespace-nowrap ${
+              onClick={() => handleSwitchMode('register')}
+              className={`flex-1 py-2.5 px-4 rounded-xl text-xs font-semibold transition-all whitespace-nowrap cursor-pointer ${
                 mode === 'register'
                   ? 'bg-indigo-600 text-white shadow-sm'
                   : 'text-slate-400 hover:text-slate-200'
@@ -261,32 +236,32 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onEnterDemoMode }) => {
               {mode === 'login'
                 ? 'Bem-vindo de volta'
                 : mode === 'register'
-                ? 'Crie sua conta colaborativa'
+                ? 'Crie sua conta no sistema'
                 : 'Recuperação de Senha'}
             </h2>
             <p className="text-xs text-slate-400 mt-1">
               {mode === 'login'
                 ? 'Acesse suas contas, cartões e espaços compartilhados.'
                 : mode === 'register'
-                ? 'Preencha seus dados para iniciar seu controle financeiro.'
-                : 'Informe seu e-mail cadastrado para receber as instruções de redefinição.'}
+                ? 'Preencha seus dados para iniciar seu controle financeiro seguro.'
+                : 'Informe seu e-mail cadastrado para receber o link de redefinição.'}
             </p>
           </div>
 
-          {errorMsg && (
+          {activeError && (
             <div
               role="alert"
-              className="mb-4 p-3.5 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs flex items-start gap-2.5"
+              className="mb-4 p-3.5 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs flex items-start gap-2.5 animate-in fade-in duration-150"
             >
               <i className="ph-fill ph-warning-circle text-base shrink-0 mt-0.5"></i>
-              <span>{errorMsg}</span>
+              <span>{activeError}</span>
             </div>
           )}
 
           {infoMsg && (
             <div
               role="status"
-              className="mb-4 p-3.5 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs flex items-start gap-2.5"
+              className="mb-4 p-3.5 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs flex items-start gap-2.5 animate-in fade-in duration-150"
             >
               <i className="ph-fill ph-check-circle text-base shrink-0 mt-0.5"></i>
               <span>{infoMsg}</span>
@@ -311,7 +286,8 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onEnterDemoMode }) => {
                     onChange={(e) => setName(e.target.value)}
                     placeholder="Ex: Keniel Calixto"
                     maxLength={100}
-                    className="w-full pl-10 pr-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
+                    disabled={loading}
+                    className="w-full pl-10 pr-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 disabled:opacity-60"
                   />
                 </div>
               </div>
@@ -333,7 +309,8 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onEnterDemoMode }) => {
                   onChange={(e) => setEmail(e.target.value)}
                   placeholder="seu.email@exemplo.com"
                   maxLength={160}
-                  className="w-full pl-10 pr-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
+                  disabled={loading}
+                  className="w-full pl-10 pr-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 disabled:opacity-60"
                 />
               </div>
             </div>
@@ -350,12 +327,8 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onEnterDemoMode }) => {
                   {mode === 'login' && (
                     <button
                       type="button"
-                      onClick={() => {
-                        setMode('reset');
-                        setErrorMsg(null);
-                        setInfoMsg(null);
-                      }}
-                      className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors"
+                      onClick={() => handleSwitchMode('reset')}
+                      className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors cursor-pointer"
                     >
                       Esqueci a senha
                     </button>
@@ -369,7 +342,8 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onEnterDemoMode }) => {
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     placeholder="Mínimo 6 caracteres"
-                    className="w-full pl-10 pr-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
+                    disabled={loading}
+                    className="w-full pl-10 pr-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 disabled:opacity-60"
                   />
                 </div>
               </div>
@@ -391,7 +365,8 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onEnterDemoMode }) => {
                     value={confirmPassword}
                     onChange={(e) => setConfirmPassword(e.target.value)}
                     placeholder="Repita a senha escolhida"
-                    className="w-full pl-10 pr-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
+                    disabled={loading}
+                    className="w-full pl-10 pr-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 disabled:opacity-60"
                   />
                 </div>
               </div>
@@ -425,12 +400,8 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onEnterDemoMode }) => {
             {mode === 'reset' && (
               <button
                 type="button"
-                onClick={() => {
-                  setMode('login');
-                  setErrorMsg(null);
-                  setInfoMsg(null);
-                }}
-                className="w-full py-2 text-xs font-medium text-slate-400 hover:text-white transition-colors"
+                onClick={() => handleSwitchMode('login')}
+                className="w-full py-2 text-xs font-medium text-slate-400 hover:text-white transition-colors cursor-pointer"
               >
                 Voltar para o Login
               </button>
@@ -445,7 +416,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onEnterDemoMode }) => {
 
           <button
             type="button"
-            onClick={handleGoogleLogin}
+            onClick={handleGoogleSignIn}
             disabled={loading}
             className="w-full py-2.5 px-4 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-xl text-xs font-semibold text-slate-200 transition-colors flex items-center justify-center gap-2 cursor-pointer whitespace-nowrap"
           >
@@ -453,25 +424,17 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onEnterDemoMode }) => {
             <span>Entrar com Google</span>
           </button>
 
-          {onEnterDemoMode && (
-            <button
-              type="button"
-              onClick={() =>
-                onEnterDemoMode({
-                  uid: 'demo_user_default',
-                  name: 'Usuário Demonstração',
-                  email: 'demo@meupainel.com',
-                })
-              }
-              className="mt-3 w-full py-2.5 px-4 bg-slate-900/60 hover:bg-slate-800 border border-slate-700 hover:border-slate-600 rounded-xl text-xs font-medium text-slate-300 transition-colors flex items-center justify-center gap-2 cursor-pointer"
-            >
-              <i className="ph-bold ph-lightning text-amber-400"></i>
-              <span>Acessar Modo Demonstração Rápido</span>
-            </button>
-          )}
+          <button
+            type="button"
+            onClick={handleDemoAccess}
+            disabled={loading}
+            className="mt-3 w-full py-2.5 px-4 bg-slate-900/60 hover:bg-slate-800 border border-slate-700 hover:border-slate-600 rounded-xl text-xs font-medium text-slate-300 transition-colors flex items-center justify-center gap-2 cursor-pointer"
+          >
+            <i className="ph-bold ph-lightning text-amber-400"></i>
+            <span>Acessar Modo Demonstração Rápido</span>
+          </button>
         </div>
       </div>
     </div>
   );
 };
-

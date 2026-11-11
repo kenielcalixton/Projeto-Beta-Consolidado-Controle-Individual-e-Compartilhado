@@ -1,5 +1,5 @@
-import React, { useEffect, useState } from 'react';
-import { onAuthStateChanged, signOut } from 'firebase/auth';
+import React, { useEffect, useMemo, useState } from 'react';
+import { AuthProvider, useAuth } from './contexts/AuthContext';
 import {
   collection,
   deleteDoc,
@@ -43,8 +43,11 @@ import {
 import { AuthScreen } from './components/AuthScreen';
 import { DashboardView } from './components/DashboardView';
 import { AccountsCardsView } from './components/AccountsCardsView';
+import { AccountsLedgerViewV3 } from './components/accounts/AccountsLedgerViewV3';
+import { PersonalFinanceViewV3 } from './components/finance/PersonalFinanceViewV3';
 import { TransactionsView } from './components/TransactionsView';
 import { SpacesLedgerView } from './components/SpacesLedgerView';
+import { SharedSpacesViewV3 } from './components/spaces/SharedSpacesViewV3';
 import { PendingDisputesView } from './components/PendingDisputesView';
 import { UniversalTransactionModal } from './components/UniversalTransactionModal';
 import { AdminDashboardView } from './components/AdminDashboardView';
@@ -115,14 +118,19 @@ export const saveLocalMpfData = <T,>(key: string, data: T): void => {
   }
 };
 
-export default function App() {
-  const [authReady, setAuthReady] = useState(false);
-  const [currentUser, setCurrentUser] = useState<{
-    uid: string;
-    name: string;
-    email: string;
-    isDemo: boolean;
-  } | null>(null);
+function AppInner() {
+  const { user, isAuthenticated, authReady, logout, enterDemoMode } = useAuth();
+  const [profileDisplayName, setProfileDisplayName] = useState<string | null>(null);
+
+  const currentUser = useMemo(() => {
+    if (!user) return null;
+    return {
+      uid: user.uid,
+      name: profileDisplayName || user.displayName || 'Usuário',
+      email: user.email,
+      isDemo: !!user.isDemo,
+    };
+  }, [user, profileDisplayName]);
 
   // Navegação e App Shell (com persistência de mês para não resetar no reload)
   const [activeTab, setActiveTab] = useState<NavTab>('dashboard');
@@ -134,6 +142,9 @@ export default function App() {
     return '2026-11';
   });
   const [dashboardScope, setDashboardScope] = useState('overview');
+  const [accountsSubView, setAccountsSubView] = useState<'v3_ledger' | 'legacy'>('v3_ledger');
+  const [transactionsSubView, setTransactionsSubView] = useState<'v3_individual' | 'legacy'>('v3_individual');
+  const [spacesSubView, setSpacesSubView] = useState<'v3_spaces' | 'legacy'>('v3_spaces');
 
   // Sincroniza mês selecionado no localStorage para manter a visualização após recarregar a página
   useEffect(() => {
@@ -337,7 +348,6 @@ export default function App() {
         email: 'kenielcalixtonkenny@gmail.com',
       });
       setActiveTab('admin');
-      setAuthReady(true);
       return;
     }
 
@@ -348,65 +358,40 @@ export default function App() {
         email: 'kenielcalixtonkenny@gmail.com',
       };
       enterDemoSession(profile);
-      setAuthReady(true);
+      return;
+    }
+  }, []);
+
+  // Sincroniza dados locais em cache para o usuário autenticado atual
+  useEffect(() => {
+    if (!user) {
+      setAccounts([]);
+      setCategories([]);
+      setSpaces([]);
+      setTransactions([]);
       return;
     }
 
-    // Verifica se existia sessão de demonstração salva para restaurar instantaneamente após reload
-    const savedDemoRaw = localStorage.getItem('mpf_active_demo_profile');
-    let hasRestoredDemo = false;
-    if (savedDemoRaw) {
-      try {
-        const demoProfile = JSON.parse(savedDemoRaw);
-        if (demoProfile?.uid) {
-          enterDemoSession(demoProfile);
-          hasRestoredDemo = true;
-        }
-      } catch {}
-    }
+    const uid = user.uid;
+    const userIsAdmin = isAdminUid(uid);
+    setActiveTab((prev) => (userIsAdmin && prev === 'dashboard' ? 'admin' : prev));
 
-    const unsub = onAuthStateChanged(auth, (user) => {
-      if (user) {
-        const pendingName = sessionStorage.getItem('mpf_pending_signup_name');
-        const userIsAdmin = isAdminUid(user.uid);
-        const resolvedEmail = (user.email || 'usuario@email.com').toLowerCase();
-        setCurrentUser({
-          uid: user.uid,
-          name:
-            user.displayName ||
-            pendingName ||
-            user.email?.split('@')[0] ||
-            'Usuário',
-          email: resolvedEmail,
-          isDemo: false,
-        });
-        setActiveTab(userIsAdmin ? 'admin' : 'dashboard');
-
-        // Carrega imediatamente os dados locais específicos do usuário para evitar perda ou tela em branco no reload
-        const cachedTxs = loadLocalMpfData<Transaction[]>(`mpf_txs_${user.uid}`, []);
-        if (cachedTxs.length > 0) syncTransactionsState(cachedTxs, user.uid);
-        const cachedAccs = loadLocalMpfData<Account[]>(`mpf_accs_${user.uid}`, []);
-        if (cachedAccs.length > 0) syncAccountsState(cachedAccs, user.uid);
-        const cachedCats = loadLocalMpfData<Category[]>(`mpf_cats_${user.uid}`, []);
-        if (cachedCats.length > 0) syncCategoriesState(cachedCats, user.uid);
-        const cachedSpaces = loadLocalMpfData<Space[]>(`mpf_spaces_${user.uid}`, []);
-        if (cachedSpaces.length > 0) syncSpacesState(cachedSpaces, user.uid);
-      } else if (!hasRestoredDemo) {
-        setCurrentUser(null);
-        setActiveTab('dashboard');
-      }
-      setAuthReady(true);
-    });
-
-    return () => unsub();
-  }, []);
+    const cachedTxs = loadLocalMpfData<Transaction[]>(`mpf_txs_${uid}`, []);
+    if (cachedTxs.length > 0) syncTransactionsState(cachedTxs, uid);
+    const cachedAccs = loadLocalMpfData<Account[]>(`mpf_accs_${uid}`, []);
+    if (cachedAccs.length > 0) syncAccountsState(cachedAccs, uid);
+    const cachedCats = loadLocalMpfData<Category[]>(`mpf_cats_${uid}`, []);
+    if (cachedCats.length > 0) syncCategoriesState(cachedCats, uid);
+    const cachedSpaces = loadLocalMpfData<Space[]>(`mpf_spaces_${uid}`, []);
+    if (cachedSpaces.length > 0) syncSpacesState(cachedSpaces, uid);
+  }, [user?.uid]);
 
   const enterDemoSession = (profile: {
     uid: string;
     name: string;
     email: string;
   }) => {
-    saveLocalMpfData('mpf_active_demo_profile', profile);
+    enterDemoMode(profile);
     const cachedTxs = loadLocalMpfData<Transaction[]>(`mpf_txs_${profile.uid}`, []);
     const cachedAccs = loadLocalMpfData<Account[]>(`mpf_accs_${profile.uid}`, []);
     const cachedCats = loadLocalMpfData<Category[]>(`mpf_cats_${profile.uid}`, []);
@@ -417,10 +402,6 @@ export default function App() {
     syncCategoriesState(cachedCats.length > 0 ? cachedCats : seed.categories, profile.uid);
     syncSpacesState(cachedSpaces.length > 0 ? cachedSpaces : seed.spaces, profile.uid);
     syncTransactionsState(cachedTxs.length > 0 ? cachedTxs : seed.transactions, profile.uid);
-    setCurrentUser({
-      ...profile,
-      isDemo: true,
-    });
   };
 
   // Listeners onSnapshot em tempo real para usuários autenticados no Firebase
@@ -492,11 +473,7 @@ export default function App() {
         }
         const data = snap.data();
         if (data?.name) {
-          setCurrentUser((prev) =>
-            prev && prev.name !== String(data.name)
-              ? { ...prev, name: String(data.name) }
-              : prev
-          );
+          setProfileDisplayName(String(data.name));
         }
       },
       (err) => handleFirestoreError(err, OperationType.GET, `users/${uid}`)
@@ -911,7 +888,7 @@ export default function App() {
     if (!currentUser) return;
     const trimmed = newName.trim();
     if (!trimmed) return;
-    setCurrentUser((prev) => (prev ? { ...prev, name: trimmed } : null));
+    setProfileDisplayName(trimmed);
     if (!currentUser.isDemo && auth.currentUser) {
       try {
         await updateDoc(doc(db, 'users', currentUser.uid), {
@@ -2032,22 +2009,25 @@ export default function App() {
   };
 
   const handleLogout = async () => {
-    localStorage.removeItem('mpf_active_demo_profile');
-    if (currentUser && !currentUser.isDemo) {
-      await signOut(auth);
-    }
-    setCurrentUser(null);
+    // Limpeza mandatória de dados privados da memória ao deslogar
+    setAccounts([]);
+    setCategories([]);
+    setSpaces([]);
+    setTransactions([]);
+    await logout();
   };
 
   if (!authReady) {
     return (
-      <div className="min-h-screen bg-slate-900 flex items-center justify-center text-slate-400 text-sm">
-        Carregando Meu Painel Financeiro...
+      <div className="min-h-screen bg-slate-900 flex flex-col items-center justify-center text-slate-400 gap-3">
+        <div className="w-10 h-10 border-3 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
+        <span className="text-sm font-medium text-slate-300">Carregando Meu Painel Financeiro...</span>
+        <span className="text-xs text-slate-500">Validando credenciais e identidade segura</span>
       </div>
     );
   }
 
-  if (!currentUser) {
+  if (!currentUser || !isAuthenticated) {
     return <AuthScreen onEnterDemoMode={enterDemoSession} />;
   }
 
@@ -2270,6 +2250,22 @@ export default function App() {
                                 Demonstração
                               </span>
                             )}
+                          </div>
+                          <div className="mt-2 flex items-center justify-between text-[10px] text-slate-400 bg-slate-950/60 px-2 py-1 rounded-lg border border-slate-800">
+                            <span className="font-mono truncate" title={currentUser.uid}>
+                              UID: {currentUser.uid.slice(0, 12)}...
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                navigator.clipboard.writeText(currentUser.uid);
+                                showToast('UID copiado com sucesso!');
+                              }}
+                              className="text-slate-400 hover:text-indigo-400 cursor-pointer ml-1 p-0.5"
+                              title="Copiar UID canônico para a área de transferência"
+                            >
+                              <i className="ph ph-copy"></i>
+                            </button>
                           </div>
                         </div>
 
@@ -2495,78 +2491,216 @@ export default function App() {
           )}
 
           {activeTab === 'accounts' && (
-            <AccountsCardsView
-              accounts={accounts}
-              transactions={transactions}
-              selectedMonth={selectedMonth}
-              onCreateAccount={handleCreateAccount}
-              onUpdateAccount={handleUpdateAccount}
-              onDeleteAccount={handleDeleteAccount}
-              onPayInvoice={handlePayInvoice}
-              onOpenNewTransactionForAccount={(accId) => {
-                setEditingTx(null);
-                setPresetAccountId(accId);
-                setPresetSpaceId(undefined);
-                setIsTxModalOpen(true);
-              }}
-              onSelectTransaction={(tx) => setDetailTx(tx)}
-            />
+            <div className="space-y-5">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white p-3 rounded-2xl border border-slate-100 shadow-xs">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider pl-1">
+                    Visualização:
+                  </span>
+                  <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl">
+                    <button
+                      onClick={() => setAccountsSubView('v3_ledger')}
+                      className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all ${
+                        accountsSubView === 'v3_ledger'
+                          ? 'bg-blue-600 text-white shadow-xs'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      Livro-Razão v3.1 (Canônico)
+                    </button>
+                    <button
+                      onClick={() => setAccountsSubView('legacy')}
+                      className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all ${
+                        accountsSubView === 'legacy'
+                          ? 'bg-blue-600 text-white shadow-xs'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      Cartões & Faturas (Legado)
+                    </button>
+                  </div>
+                </div>
+
+                <div className="text-[11px] text-slate-400 pr-2">
+                  {accountsSubView === 'v3_ledger'
+                    ? 'Motor Contábil v3.1 ativo com histórico append-only e isolamento canônico'
+                    : 'Módulo legado de cartões de crédito e faturas'}
+                </div>
+              </div>
+
+              {accountsSubView === 'v3_ledger' ? (
+                <AccountsLedgerViewV3
+                  userId={currentUser?.uid || 'usr_anonymous'}
+                  isDemo={!!currentUser?.isDemo}
+                />
+              ) : (
+                <AccountsCardsView
+                  accounts={accounts}
+                  transactions={transactions}
+                  selectedMonth={selectedMonth}
+                  onCreateAccount={handleCreateAccount}
+                  onUpdateAccount={handleUpdateAccount}
+                  onDeleteAccount={handleDeleteAccount}
+                  onPayInvoice={handlePayInvoice}
+                  onOpenNewTransactionForAccount={(accId) => {
+                    setEditingTx(null);
+                    setPresetAccountId(accId);
+                    setPresetSpaceId(undefined);
+                    setIsTxModalOpen(true);
+                  }}
+                  onSelectTransaction={(tx) => setDetailTx(tx)}
+                />
+              )}
+            </div>
           )}
 
           {activeTab === 'transactions' && (
-            <TransactionsView
-              transactions={transactions}
-              selectedMonth={selectedMonth}
-              onOpenNewModal={() => {
-                setEditingTx(null);
-                setPresetAccountId(undefined);
-                setPresetSpaceId(undefined);
-                setIsTxModalOpen(true);
-              }}
-              onEditTransaction={(tx) => {
-                setEditingTx(tx);
-                setIsTxModalOpen(true);
-              }}
-              onSelectTransaction={(tx) => setDetailTx(tx)}
-              onUpdateStatusCascade={handleUpdateStatusCascade}
-              onRequestSettleTransaction={(tx) => setSettlingTxModal({ tx })}
-              onDeleteCascade={handleDeleteCascade}
-            />
+            <div className="space-y-5">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white p-3 rounded-2xl border border-slate-100 shadow-xs">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider pl-1">
+                    Visualização:
+                  </span>
+                  <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl">
+                    <button
+                      onClick={() => setTransactionsSubView('v3_individual')}
+                      className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all ${
+                        transactionsSubView === 'v3_individual'
+                          ? 'bg-blue-600 text-white shadow-xs'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      Financeiro Individual v3.1 (Canônico)
+                    </button>
+                    <button
+                      onClick={() => setTransactionsSubView('legacy')}
+                      className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all ${
+                        transactionsSubView === 'legacy'
+                          ? 'bg-blue-600 text-white shadow-xs'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      Lançamentos Legados
+                    </button>
+                  </div>
+                </div>
+
+                <div className="text-[11px] text-slate-400 pr-2">
+                  {transactionsSubView === 'v3_individual'
+                    ? 'Receitas, despesas, faturas, transferências, orçamentos e reembolsos individuais v3.1'
+                    : 'Visualização de lançamentos do modelo financeiro legado'}
+                </div>
+              </div>
+
+              {transactionsSubView === 'v3_individual' ? (
+                <PersonalFinanceViewV3
+                  userId={currentUser?.uid || 'usr_anonymous'}
+                  isDemo={!!currentUser?.isDemo}
+                />
+              ) : (
+                <TransactionsView
+                  transactions={transactions}
+                  selectedMonth={selectedMonth}
+                  onOpenNewModal={() => {
+                    setEditingTx(null);
+                    setPresetAccountId(undefined);
+                    setPresetSpaceId(undefined);
+                    setIsTxModalOpen(true);
+                  }}
+                  onEditTransaction={(tx) => {
+                    setEditingTx(tx);
+                    setIsTxModalOpen(true);
+                  }}
+                  onSelectTransaction={(tx) => setDetailTx(tx)}
+                  onUpdateStatusCascade={handleUpdateStatusCascade}
+                  onRequestSettleTransaction={(tx) => setSettlingTxModal({ tx })}
+                  onDeleteCascade={handleDeleteCascade}
+                />
+              )}
+            </div>
           )}
 
           {activeTab === 'spaces' && (
-            <SpacesLedgerView
-              spaces={spaces}
-              transactions={transactions}
-              selectedMonth={selectedMonth}
-              onChangeMonth={setSelectedMonth}
-              userEmail={currentUser.email}
-              userName={currentUser.name}
-              activeLedgerSpace={activeLedgerSpace}
-              onSetActiveLedgerSpace={setActiveLedgerSpace}
-              onCreateSpace={handleCreateSpace}
-              onUpdateSpace={handleUpdateSpace}
-              onDeleteSpace={handleDeleteSpace}
-              onInviteToSpace={handleInviteToSpace}
-              onSettleTransfer={handleSettleTransfer}
-              onConfirmSpaceIncome={handleConfirmSpaceIncome}
-              onSettleSpaceExpense={handleSettleSpaceExpense}
-              onOpenNewTransactionInSpace={(spId, pType) => {
-                setEditingTx(null);
-                setPresetAccountId(undefined);
-                setPresetSpaceId(spId);
-                setPresetTxType(pType);
-                setIsTxModalOpen(true);
-              }}
-              onSelectTransaction={(tx) => setDetailTx(tx)}
-              onNotifyToast={showToast}
-              onNavigateToAcquisitions={(spaceId) => {
-                setInspectAcqWorkspaceId(spaceId);
-                setActiveTab('acquisitions');
-              }}
-              initialCreateSpacePreset={createSpacePreset}
-              onClearInitialCreatePreset={() => setCreateSpacePreset(null)}
-            />
+            <div className="space-y-4">
+              {/* Seletor de Sub-Visão: Espaços Compartilhados v3.1 vs Espaços Legados */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white p-3 rounded-xl border border-slate-200 shadow-2xs">
+                <div className="flex items-center gap-2">
+                  <div className="text-xs font-semibold text-slate-500 uppercase tracking-wider pl-1">
+                    Módulo de Espaços:
+                  </div>
+                  <div className="inline-flex bg-slate-100 p-1 rounded-lg">
+                    <button
+                      onClick={() => setSpacesSubView('v3_spaces')}
+                      className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all ${
+                        spacesSubView === 'v3_spaces'
+                          ? 'bg-blue-600 text-white shadow-xs'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      Espaços Compartilhados v3.1 (Canônico)
+                    </button>
+                    <button
+                      onClick={() => setSpacesSubView('legacy')}
+                      className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all ${
+                        spacesSubView === 'legacy'
+                          ? 'bg-blue-600 text-white shadow-xs'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      Espaços Legados
+                    </button>
+                  </div>
+                </div>
+
+                <div className="text-[11px] text-slate-400 pr-2">
+                  {spacesSubView === 'v3_spaces'
+                    ? 'Governança soberana, convites SHA-256, autoridade de criador e dissolução 30 dias v3.1'
+                    : 'Visualização de espaços e rateios do modelo legado'}
+                </div>
+              </div>
+
+              {spacesSubView === 'v3_spaces' ? (
+                <SharedSpacesViewV3
+                  userId={currentUser?.uid || 'usr_anonymous'}
+                  userName={currentUser?.name || 'Usuário'}
+                  userEmail={currentUser?.email || ''}
+                  isDemo={!!currentUser?.isDemo}
+                />
+              ) : (
+                <SpacesLedgerView
+                  spaces={spaces}
+                  transactions={transactions}
+                  selectedMonth={selectedMonth}
+                  onChangeMonth={setSelectedMonth}
+                  userEmail={currentUser.email}
+                  userName={currentUser.name}
+                  activeLedgerSpace={activeLedgerSpace}
+                  onSetActiveLedgerSpace={setActiveLedgerSpace}
+                  onCreateSpace={handleCreateSpace}
+                  onUpdateSpace={handleUpdateSpace}
+                  onDeleteSpace={handleDeleteSpace}
+                  onInviteToSpace={handleInviteToSpace}
+                  onSettleTransfer={handleSettleTransfer}
+                  onConfirmSpaceIncome={handleConfirmSpaceIncome}
+                  onSettleSpaceExpense={handleSettleSpaceExpense}
+                  onOpenNewTransactionInSpace={(spId, pType) => {
+                    setEditingTx(null);
+                    setPresetAccountId(undefined);
+                    setPresetSpaceId(spId);
+                    setPresetTxType(pType);
+                    setIsTxModalOpen(true);
+                  }}
+                  onSelectTransaction={(tx) => setDetailTx(tx)}
+                  onNotifyToast={showToast}
+                  onNavigateToAcquisitions={(spaceId) => {
+                    setInspectAcqWorkspaceId(spaceId);
+                    setActiveTab('acquisitions');
+                  }}
+                  initialCreateSpacePreset={createSpacePreset}
+                  onClearInitialCreatePreset={() => setCreateSpacePreset(null)}
+                />
+              )}
+            </div>
           )}
 
           {activeTab === 'acquisitions' && (
@@ -2767,3 +2901,12 @@ export default function App() {
     </div>
   );
 }
+
+export default function App() {
+  return (
+    <AuthProvider>
+      <AppInner />
+    </AuthProvider>
+  );
+}
+

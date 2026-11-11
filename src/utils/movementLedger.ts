@@ -1,0 +1,321 @@
+import {
+  CentsInteger,
+  DateString,
+  FinancialMovement,
+  FinancialMovementConfirmationStatus,
+  FinancialMovementDirection,
+  FinancialMovementOriginType,
+} from '../types/financeV3';
+import { sha256Hex } from './hashUtils';
+
+/**
+ * ==============================================================================
+ * MOTOR MATEMÁTICO DO LIVRO DE MOVIMENTAÇÕES (FINANCIAL MOVEMENT LEDGER)
+ * ==============================================================================
+ * Fonte canônica e determinística de cálculo contábil da arquitetura v3.1.
+ * Todas as operações operam estritamente sobre centavos inteiros (CentsInteger).
+ */
+
+/**
+ * Valida se um montante monetário é um centavo inteiro válido e positivo.
+ */
+export function validatePositiveCents(amountCents: unknown): amountCents is CentsInteger {
+  return (
+    typeof amountCents === 'number' &&
+    Number.isSafeInteger(amountCents) &&
+    amountCents > 0
+  );
+}
+
+/**
+ * Converte qualquer valor em Reais (string ou number) para centavos inteiros,
+ * evitando imprecisões de ponto flutuante IEEE 754.
+ * Ex: "1250,90" -> 125090 | 12.5 -> 1250 | "10" -> 1000
+ */
+export function parseBRLToCents(val: string | number): CentsInteger {
+  if (typeof val === 'number') {
+    if (Number.isSafeInteger(val)) return val;
+    return Math.round(val * 100);
+  }
+
+  const clean = val
+    .trim()
+    .replace(/^R\$\s?/, '')
+    .replace(/\s+/g, '')
+    .replace(/\./g, '')
+    .replace(',', '.');
+
+  const parsed = parseFloat(clean);
+  if (isNaN(parsed) || !isFinite(parsed)) {
+    throw new Error(`Valor monetário inválido: "${val}"`);
+  }
+
+  const cents = Math.round(parsed * 100);
+  if (!Number.isSafeInteger(cents)) {
+    throw new Error(`Montante excede o limite seguro de inteiros: "${val}"`);
+  }
+
+  return cents;
+}
+
+/**
+ * Formata centavos inteiros para representação em moeda corrente BRL.
+ * Ex: 125090 -> "R$ 1.250,90" | -5000 -> "-R$ 50,00"
+ */
+export function formatCentsToBRL(cents: CentsInteger): string {
+  if (!Number.isSafeInteger(cents)) {
+    cents = Math.round(cents || 0);
+  }
+  const isNegative = cents < 0;
+  const absCents = Math.abs(cents);
+  const reais = Math.floor(absCents / 100);
+  const remainder = absCents % 100;
+  const formattedReais = reais.toLocaleString('pt-BR');
+  const formattedCentavos = remainder.toString().padStart(2, '0');
+  const prefix = isNegative ? '-R$ ' : 'R$ ';
+  return `${prefix}${formattedReais},${formattedCentavos}`;
+}
+
+/**
+ * Reconcilia e recalcula o saldo oficial de uma conta a partir da totalidade dos seus movimentos históricos.
+ * Regra v3.1 (Seção 6.1 e 7.2):
+ * Saldo = Soma(Entradas) - Soma(Saídas)
+ * Movimentos compensatórios de estorno anulam os movimentos originais diretamente pela álgebra (+V - V = 0).
+ */
+export function reconcileAccountBalance(movements: FinancialMovement[]): CentsInteger {
+  let balance = 0;
+  for (const mov of movements) {
+    if (!validatePositiveCents(mov.amountCents)) {
+      throw new Error(
+        `Movimentação "${mov.id}" possui valor inválido em centavos: ${mov.amountCents}`
+      );
+    }
+    if (mov.direction === 'inflow') {
+      balance += mov.amountCents;
+    } else if (mov.direction === 'outflow') {
+      balance -= mov.amountCents;
+    } else {
+      throw new Error(`Direção desconhecida no movimento "${mov.id}": ${mov.direction}`);
+    }
+  }
+
+  if (!Number.isSafeInteger(balance)) {
+    throw new Error('O saldo reconciliado excedeu o limite seguro de representação numérica.');
+  }
+
+  return balance;
+}
+
+export interface BuildMovementParams {
+  id?: string;
+  accountId: string;
+  userId: string;
+  direction: FinancialMovementDirection;
+  amountCents: CentsInteger;
+  effectiveDate: DateString;
+  originType: FinancialMovementOriginType;
+  originId: string;
+  description: string;
+  notes?: string;
+  authorUid: string;
+  idempotencyKey?: string;
+  reversalOfMovementId?: string;
+  confirmationStatus?: FinancialMovementConfirmationStatus;
+}
+
+/**
+ * Gera um ID de documento determinístico e seguro para o Firestore a partir da chave de idempotência
+ * e do escopo da conta, utilizando SHA-256 para evitar colisões entre caracteres especiais ou contas distintas.
+ */
+export function generateMovementDocId(accountIdOrKey: string, idempotencyKey?: string): string {
+  let accountId = '';
+  let key = '';
+
+  if (idempotencyKey !== undefined) {
+    accountId = (accountIdOrKey || '').trim();
+    key = (idempotencyKey || '').trim();
+  } else {
+    key = (accountIdOrKey || '').trim();
+  }
+
+  const cleanSlug = key.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 24);
+  const hashInput = accountId ? `${accountId}:${key}` : key;
+  const hash = sha256Hex(hashInput).slice(0, 16);
+
+  return `mov_${cleanSlug ? `${cleanSlug}_` : ''}${hash}`;
+}
+
+/**
+ * Gera o ID de documento determinístico para o movimento compensatório de um estorno.
+ * Garante que somente 1 documento de estorno pode existir fisicamente por movimento original.
+ */
+export function generateReversalDocId(originalMovementId: string): string {
+  const clean = originalMovementId.trim().replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 32);
+  const hash = sha256Hex(originalMovementId).slice(0, 12);
+  return `rev_${clean}_${hash}`;
+}
+
+/**
+ * Valida se um movimento existente com a mesma chave/ID é compatível com o candidato a ser gravado.
+ * Se a mesma chave de idempotência for reutilizada com parâmetros financeiros diferentes (valor, direção, etc.),
+ * lança um erro explícito para evitar corrupção silenciosa ou inconsistências contábeis.
+ */
+export function validateMovementPayloadMatch(
+  existing: FinancialMovement,
+  candidate: FinancialMovement
+): void {
+  const mismatches: string[] = [];
+
+  if (existing.accountId !== candidate.accountId) {
+    mismatches.push(`accountId (${existing.accountId} vs ${candidate.accountId})`);
+  }
+  if (existing.userId !== candidate.userId) {
+    mismatches.push(`userId (${existing.userId} vs ${candidate.userId})`);
+  }
+  if (existing.direction !== candidate.direction) {
+    mismatches.push(`direction (${existing.direction} vs ${candidate.direction})`);
+  }
+  if (existing.amountCents !== candidate.amountCents) {
+    mismatches.push(`amountCents (${existing.amountCents} vs ${candidate.amountCents})`);
+  }
+  if (existing.originType !== candidate.originType) {
+    mismatches.push(`originType (${existing.originType} vs ${candidate.originType})`);
+  }
+  if (existing.originId !== candidate.originId) {
+    mismatches.push(`originId (${existing.originId} vs ${candidate.originId})`);
+  }
+
+  if (mismatches.length > 0) {
+    throw new Error(
+      `Conflito de idempotência: A chave "${candidate.idempotencyKey || candidate.id}" já foi utilizada para outra operação com parâmetros divergentes: ${mismatches.join(', ')}.`
+    );
+  }
+}
+
+/**
+ * Constrói e valida uma movimentação canônica antes da persistência no livro-razão.
+ * Se o ID não for explicitamente fornecido, deriva deterministicamente da chave de idempotência,
+ * garantindo unicidade atômica na subcoleção do Firestore.
+ * Impede que IDs arbitrários burlem o determinismo.
+ */
+export function buildFinancialMovement(params: BuildMovementParams): FinancialMovement {
+  if (!validatePositiveCents(params.amountCents)) {
+    throw new Error('O valor do movimento deve ser um inteiro estritamente positivo em centavos.');
+  }
+  if (!params.accountId || !params.accountId.trim()) {
+    throw new Error('Identificador da conta bancária (accountId) é obrigatório.');
+  }
+  if (!params.userId || !params.userId.trim()) {
+    throw new Error('Identificador do titular da conta (userId) é obrigatório.');
+  }
+  if (!params.authorUid || !params.authorUid.trim()) {
+    throw new Error('Identificador do autor da operação (authorUid) é obrigatório.');
+  }
+  if (params.direction !== 'inflow' && params.direction !== 'outflow') {
+    throw new Error(`Direção do movimento inválida: "${params.direction}". Deve ser 'inflow' ou 'outflow'.`);
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(params.effectiveDate)) {
+    throw new Error(`Data efetiva inválida: "${params.effectiveDate}". Deve seguir formato YYYY-MM-DD.`);
+  }
+
+  const cleanDescription = (params.description || '').trim();
+  if (!cleanDescription) {
+    throw new Error('Descrição do movimento é obrigatória.');
+  }
+
+  const registeredAt = new Date().toISOString();
+
+  // Chave canônica determinística para garantia de idempotência
+  const idempotencyKey =
+    params.idempotencyKey ||
+    `idem_${params.originType}_${params.originId}_${params.direction}_${params.amountCents}`;
+
+  // ID determinístico vinculado à chave de idempotência e ao escopo da conta
+  const expectedDocId = generateMovementDocId(params.accountId, idempotencyKey);
+
+  // Validação estrita do ID: impede burla do determinismo
+  let id = expectedDocId;
+  if (params.id) {
+    if (params.id.startsWith('rev_')) {
+      id = params.id;
+    } else if (params.id !== expectedDocId) {
+      throw new Error(
+        `Identificador de documento inválido: O ID "${params.id}" fornecido não coincide com o ID determinístico derivado da chave de idempotência ("${expectedDocId}"). Não é permitido burlar o ID determinístico.`
+      );
+    } else {
+      id = params.id;
+    }
+  }
+
+  return {
+    id,
+    accountId: params.accountId.trim(),
+    userId: params.userId.trim(),
+    direction: params.direction,
+    amountCents: params.amountCents,
+    effectiveDate: params.effectiveDate,
+    registeredAt,
+    originType: params.originType,
+    originId: params.originId.trim(),
+    confirmationStatus: params.confirmationStatus || 'cleared',
+    idempotencyKey,
+    reversalOfMovementId: params.reversalOfMovementId,
+    description: cleanDescription,
+    notes: params.notes?.trim() || undefined,
+    authorUid: params.authorUid.trim(),
+  };
+}
+
+export interface BuildReversalParams {
+  originalMovement: FinancialMovement;
+  authorUid: string;
+  reversalDate?: DateString;
+  reason?: string;
+}
+
+/**
+ * Constrói o movimento compensatório para estorno estrito (append-only).
+ * Regras:
+ * - ID determinístico: 'rev_' + originalMovement.id (unicidade de documento absoluta).
+ * - Direção oposta à do original.
+ * - Mesmo montante em centavos.
+ * - reversalOfMovementId apontando para o original.
+ * - Impede estornar um movimento que já é um estorno compensatório.
+ */
+export function buildCompensatoryMovement(params: BuildReversalParams): FinancialMovement {
+  const orig = params.originalMovement;
+
+  if (orig.reversalOfMovementId) {
+    throw new Error(
+      `Operação inválida: O movimento "${orig.id}" já é um estorno compensatório e não pode ser re-estornado.`
+    );
+  }
+
+  const oppositeDirection: FinancialMovementDirection =
+    orig.direction === 'inflow' ? 'outflow' : 'inflow';
+
+  const todayDate =
+    params.reversalDate || new Date().toISOString().split('T')[0];
+
+  const reasonSuffix = params.reason ? ` - Motivo: ${params.reason.trim()}` : '';
+  const description = `Estorno contábil de: ${orig.description}${reasonSuffix}`;
+  const reversalDocId = generateReversalDocId(orig.id);
+  const reversalIdempotencyKey = `reversal_${orig.id}`;
+
+  return buildFinancialMovement({
+    id: reversalDocId,
+    accountId: orig.accountId,
+    userId: orig.userId,
+    direction: oppositeDirection,
+    amountCents: orig.amountCents,
+    effectiveDate: todayDate,
+    originType: 'manual_adjustment',
+    originId: reversalDocId,
+    description,
+    notes: `Movimento compensatório referenciando #${orig.id}.${params.reason ? ` Justificativa: ${params.reason}` : ''}`,
+    authorUid: params.authorUid,
+    reversalOfMovementId: orig.id,
+    idempotencyKey: reversalIdempotencyKey,
+    confirmationStatus: 'cleared',
+  });
+}

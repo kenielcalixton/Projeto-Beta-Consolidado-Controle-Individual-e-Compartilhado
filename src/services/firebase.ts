@@ -3,6 +3,8 @@ import { getAuth, GoogleAuthProvider } from 'firebase/auth';
 import { doc, getDocFromServer, getFirestore } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
 
+import { getActiveFirebaseConfig } from '../config/environment';
+
 /**
  * ============================================================================
  * CONFIGURAÇÃO UNIFICADA DO FIREBASE (PROJETO: teste-beta-fin-e-list)
@@ -10,14 +12,8 @@ import { getStorage } from 'firebase/storage';
  */
 export const MASTER_ADMIN_UID = 'GOgPDiSr6UP3VGR0zRcdFlgDseY2';
 
-export const firebaseConfig = {
-  apiKey: 'AIzaSyCtekht1J4c3P1TMEtS8zsQubKb25c4J5w',
-  authDomain: 'teste-beta-fin-e-list.firebaseapp.com',
-  projectId: 'teste-beta-fin-e-list',
-  storageBucket: 'teste-beta-fin-e-list.firebasestorage.app',
-  messagingSenderId: '547954093283',
-  appId: '1:547954093283:web:2e8910869f6b0d7eb169d6',
-};
+export const firebaseConfig = getActiveFirebaseConfig();
+
 
 export const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
 export const db = getFirestore(app);
@@ -147,4 +143,7 @@ async function testConnection() {
   }
 }
 
-testConnection();
+// Dispara teste de conectividade apenas em ambiente de navegador (evita travar o runner de testes em Node.js)
+if (typeof window !== 'undefined') {
+  testConnection();
+}
