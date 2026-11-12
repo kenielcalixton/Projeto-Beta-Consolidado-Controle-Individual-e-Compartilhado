@@ -92,6 +92,89 @@ function getDemoSpaceName(spaceId: string): string {
  * Inicia formalmente o processo de solicitação de dissolução definitiva do espaço.
  * REGRA: Exclusiva do criador do espaço (creatorUid).
  */
+async function countSpaceRecords(spaceId: string, isDemo: boolean): Promise<{
+  expensesCount: number;
+  paymentsCount: number;
+  listsCount: number;
+  itemsCount: number;
+  custodyTransfersCount: number;
+}> {
+  if (isDemo) {
+    const rawExpenses = universalStorage.getItem('mpf_v3_demo_shared_expenses');
+    const expenses = rawExpenses ? JSON.parse(rawExpenses) : [];
+    const spaceExpenses = expenses.filter((e: any) => e.spaceId === spaceId);
+    const expensesCount = spaceExpenses.length;
+    const expenseIds = new Set(spaceExpenses.map((e: any) => e.id));
+
+    const rawPayments = universalStorage.getItem('mpf_v3_demo_payment_declarations');
+    const payments = rawPayments ? JSON.parse(rawPayments) : [];
+    const paymentsCount = payments.filter((p: any) => expenseIds.has(p.expenseId) || p.spaceId === spaceId).length;
+
+    const rawLists = universalStorage.getItem('demo_acq_lists_v3');
+    const lists = rawLists ? JSON.parse(rawLists) : [];
+    const spaceLists = lists.filter((l: any) => l.spaceId === spaceId);
+    const listsCount = spaceLists.length;
+    const listIds = new Set(spaceLists.map((l: any) => l.id));
+
+    const rawItems = universalStorage.getItem('demo_acq_items_v3');
+    const items = rawItems ? JSON.parse(rawItems) : [];
+    const itemsCount = items.filter((i: any) => listIds.has(i.listId) || i.spaceId === spaceId).length;
+
+    const rawTransfers = universalStorage.getItem('mpf_v3_demo_custody_transfers');
+    const transfers = rawTransfers ? JSON.parse(rawTransfers) : [];
+    const custodyTransfersCount = transfers.filter((t: any) => t.spaceId === spaceId).length;
+
+    return {
+      expensesCount,
+      paymentsCount,
+      listsCount,
+      itemsCount,
+      custodyTransfersCount,
+    };
+  }
+
+  try {
+    const { collection, getDocs, query, where } = await import('firebase/firestore');
+    const expSnap = await getDocs(collection(db, 'spaces', spaceId, 'shared_expenses'));
+    const expensesCount = expSnap.size;
+    let paymentsCount = 0;
+    for (const expDoc of expSnap.docs) {
+      const paySnap = await getDocs(collection(db, 'spaces', spaceId, 'shared_expenses', expDoc.id, 'payments'));
+      paymentsCount += paySnap.size;
+    }
+
+    const listQuery = query(collection(db, 'acquisition_lists'), where('spaceId', '==', spaceId));
+    const listSnap = await getDocs(listQuery);
+    const listsCount = listSnap.size;
+    let itemsCount = 0;
+    for (const listDoc of listSnap.docs) {
+      const itemSnap = await getDocs(collection(db, 'acquisition_lists', listDoc.id, 'items'));
+      itemsCount += itemSnap.size;
+    }
+
+    const xferQuery = query(collection(db, 'transfers'), where('spaceId', '==', spaceId));
+    const xferSnap = await getDocs(xferQuery);
+    const custodyTransfersCount = xferSnap.size;
+
+    return {
+      expensesCount,
+      paymentsCount,
+      listsCount,
+      itemsCount,
+      custodyTransfersCount,
+    };
+  } catch (err) {
+    console.warn('[countSpaceRecords] Falha ao consultar contadores reais:', err);
+    return {
+      expensesCount: 0,
+      paymentsCount: 0,
+      listsCount: 0,
+      itemsCount: 0,
+      custodyTransfersCount: 0,
+    };
+  }
+}
+
 export async function initiateSpaceDissolution(
   spaceId: string,
   requesterUid: string,
@@ -128,6 +211,8 @@ export async function initiateSpaceDissolution(
     };
   }
 
+  const totalRecordsAudit = await countSpaceRecords(spaceId, isDemo);
+
   const dissolutionRequest: SpaceDissolutionRequest = {
     id: 'request',
     spaceId,
@@ -135,13 +220,7 @@ export async function initiateSpaceDissolution(
     initiatedAt,
     deadlineDate,
     requestStatus: 'pending_author_responses',
-    totalRecordsAudit: {
-      expensesCount: 0,
-      paymentsCount: 0,
-      listsCount: 0,
-      itemsCount: 0,
-      custodyTransfersCount: 0,
-    },
+    totalRecordsAudit,
     authorDestinations,
   };
 

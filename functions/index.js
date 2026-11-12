@@ -59,6 +59,7 @@ export const ALLOWED_GOVERNANCE_EVENTS = new Set([
   'restitution_created',
   'restitution_declared',
   'restitution_receipt_confirmed',
+  'restitution_receipt_reversed',
   'custody_transfer_created',
   'custody_receipt_confirmed',
   'custody_consumed',
@@ -67,6 +68,7 @@ export const ALLOWED_GOVERNANCE_EVENTS = new Set([
   'acquisition_purchased',
   'acquisition_stock_moved',
   'acquisition_deposit_recorded',
+  'acquisition_purchase_reversed',
 ]);
 
 /**
@@ -3211,6 +3213,14 @@ export function serverGenerateRestitutionReceiptDocId(restitutionId, key) {
   return `restit_rec_${cleanSlug ? `${cleanSlug}_` : ''}${hash.slice(0, 32)}`;
 }
 
+export function serverGenerateRestitutionReversalDocId(restitutionId, key) {
+  const cleanRestit = String(restitutionId || '').trim();
+  const cleanKey = String(key || '').trim();
+  const cleanSlug = cleanKey.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 24);
+  const hash = crypto.createHash('sha256').update(`restit_rev_${cleanRestit}:${cleanKey}`).digest('hex');
+  return `restit_rev_${cleanSlug ? `${cleanSlug}_` : ''}${hash.slice(0, 32)}`;
+}
+
 export async function executeServerSideCreateSharedExpense(db, callerUid, payload) {
   if (!callerUid) {
     throw new HttpsError('unauthenticated', 'Autenticação obrigatória.');
@@ -4701,6 +4711,180 @@ export const confirmRestitutionReceiptOfficial = onCall(
   }
 );
 
+export async function executeServerSideReverseRestitutionReceipt(db, callerUid, payload) {
+  if (!callerUid) throw new HttpsError('unauthenticated', 'Autenticação obrigatória.');
+  const cleanUid = callerUid.trim();
+  const {
+    spaceId,
+    expenseId,
+    restitutionId,
+    receiptId,
+    reversalReason,
+    idempotencyKey,
+  } = payload || {};
+
+  if (!spaceId || !expenseId || !restitutionId || !receiptId) {
+    throw new HttpsError('invalid-argument', 'Parâmetros inválidos para estorno de recebimento de restituição.');
+  }
+
+  const cleanSpaceId = String(spaceId).trim();
+  const cleanExpenseId = String(expenseId).trim();
+  const cleanRestitId = String(restitutionId).trim();
+  const cleanReceiptId = String(receiptId).trim();
+  const finalKey = (idempotencyKey || `rev_rst_${cleanReceiptId}`).trim();
+  const reversalId = serverGenerateRestitutionReversalDocId(cleanRestitId, finalKey);
+
+  const spaceRef = db.collection('spaces').doc(cleanSpaceId);
+  const expenseRef = spaceRef.collection('shared_expenses').doc(cleanExpenseId);
+  const restitRef = expenseRef.collection('restitutions').doc(cleanRestitId);
+  const receiptRef = restitRef.collection('receipts').doc(cleanReceiptId);
+  const reversalRef = restitRef.collection('reversals').doc(reversalId);
+
+  return await db.runTransaction(async (tx) => {
+    const [spaceSnap, restitSnap, receiptSnap, reversalSnap] = await Promise.all([
+      tx.get(spaceRef),
+      tx.get(restitRef),
+      tx.get(receiptRef),
+      tx.get(reversalRef),
+    ]);
+
+    if (!spaceSnap.exists) throw new HttpsError('not-found', 'Espaço não encontrado.');
+    if (!restitSnap.exists) throw new HttpsError('not-found', 'Obrigação de restituição não encontrada.');
+    if (!receiptSnap.exists) throw new HttpsError('not-found', 'Recibo de restituição não encontrado.');
+
+    const restitution = restitSnap.data();
+    const receipt = receiptSnap.data();
+
+    // Permissão: Credor legítimo ou criador/responsável do espaço
+    const isCreditor = restitution.creditorUid === cleanUid;
+    const spaceData = spaceSnap.data();
+    const isSpaceAdmin = spaceData.creatorUid === cleanUid || spaceData.ownerId === cleanUid;
+    if (!isCreditor && !isSpaceAdmin) {
+      throw new HttpsError('permission-denied', 'Somente o credor da restituição ou o administrador do espaço podem estornar o recebimento.');
+    }
+
+    if (reversalSnap.exists) {
+      return { reversal: reversalSnap.data(), receipt, restitution, isIdempotentReplay: true };
+    }
+
+    const existingReversalsSnap = await tx.get(restitRef.collection('reversals').where('receiptId', '==', cleanReceiptId));
+    if (!existingReversalsSnap.empty) {
+      const existingRev = existingReversalsSnap.docs[0].data();
+      return { reversal: existingRev, receipt, restitution, isIdempotentReplay: true };
+    }
+
+    const accRef = db.collection('accounts').doc(receipt.destinationAccountId);
+    const accSnap = await tx.get(accRef);
+    if (!accSnap.exists) {
+      throw new HttpsError('not-found', 'Conta bancária original do recebimento não encontrada.');
+    }
+    const accData = accSnap.data();
+
+    const now = new Date().toISOString();
+    const compMovId = serverGenerateMovementDocId(finalKey);
+    const compMovRef = accRef.collection('movements').doc(compMovId);
+
+    const compensatoryMovement = {
+      id: compMovId,
+      accountId: receipt.destinationAccountId,
+      userId: receipt.creditorUid,
+      direction: 'outflow',
+      amountCents: receipt.amountCents,
+      effectiveDate: now.split('T')[0],
+      registeredAt: now,
+      originType: 'shared_settlement',
+      originId: reversalId,
+      reversalOfMovementId: receipt.financialMovementId || null,
+      confirmationStatus: 'cleared',
+      idempotencyKey: `${finalKey}_comp`,
+      description: `Estorno de recebimento de restituição (${cleanReceiptId})`,
+      notes: reversalReason ? String(reversalReason).trim() : 'Estorno oficial de recebimento de restituição.',
+      authorUid: cleanUid,
+    };
+    tx.set(compMovRef, compensatoryMovement);
+    tx.update(accRef, { projectedBalanceCents: (accData.projectedBalanceCents || 0) - receipt.amountCents });
+
+    const reversalRecord = {
+      id: reversalId,
+      receiptId: cleanReceiptId,
+      restitutionId: cleanRestitId,
+      spaceId: cleanSpaceId,
+      expenseId: cleanExpenseId,
+      amountCents: receipt.amountCents,
+      reversalReason: reversalReason ? String(reversalReason).trim() : 'Estorno de recebimento de restituição',
+      compensatoryMovementId: compMovId,
+      reversedByUid: cleanUid,
+      idempotencyKey: finalKey,
+      createdAt: now,
+    };
+    tx.set(reversalRef, reversalRecord);
+
+    const newRestituted = Math.max(0, (restitution.restitutedAmountCents || 0) - receipt.amountCents);
+    const newRemaining = Math.min(restitution.amountToRestoreCents, (restitution.remainingAmountCents || 0) + receipt.amountCents);
+    const newStatus = newRestituted === 0 ? 'pending' : 'partial';
+
+    const updatedRestitution = {
+      ...restitution,
+      restitutedAmountCents: newRestituted,
+      remainingAmountCents: newRemaining,
+      status: newStatus,
+      updatedAt: now,
+    };
+    tx.set(restitRef, updatedRestitution);
+
+    const auditId = `audit_rst_rev_${reversalId}`;
+    tx.set(spaceRef.collection('audit').doc(auditId), {
+      id: auditId,
+      spaceId: cleanSpaceId,
+      eventType: 'restitution_receipt_reversed',
+      performedByUid: cleanUid,
+      performedByName: 'Credor / Administrador',
+      targetUid: restitution.debtorUid,
+      details: {
+        restitutionId: cleanRestitId,
+        receiptId: cleanReceiptId,
+        reversalId,
+        amountCents: receipt.amountCents,
+        newRemainingAmountCents: newRemaining,
+        status: newStatus,
+      },
+      timestamp: now,
+    });
+
+    const notifId = `notif_rst_rev_${reversalId}`;
+    tx.set(db.collection('users').doc(restitution.debtorUid).collection('notifications').doc(notifId), {
+      id: notifId,
+      userId: restitution.debtorUid,
+      spaceId: cleanSpaceId,
+      spaceName: spaceData.name || 'Espaço Compartilhado',
+      type: 'restitution_receipt_reversed',
+      title: 'Estorno de restituição confirmado',
+      message: `O recebimento de R$ ${(receipt.amountCents / 100).toFixed(2)} foi estornado. O saldo pendente da restituição foi recalculado para R$ ${(newRemaining / 100).toFixed(2)}.`,
+      read: false,
+      originEventId: reversalId,
+      createdAt: now,
+    }, { merge: true });
+
+    return {
+      reversal: reversalRecord,
+      restitution: updatedRestitution,
+      compensatoryMovement,
+      isIdempotentReplay: false,
+    };
+  });
+}
+
+export const reverseRestitutionReceiptOfficial = onCall(
+  { region: 'us-central1' },
+  async (request) => {
+    return await executeServerSideReverseRestitutionReceipt(
+      getAdminDb(),
+      request.auth?.uid,
+      request.data
+    );
+  }
+);
+
 // ==============================================================================
 // FASE 7: TRANSFERÊNCIAS E CUSTÓDIA ENTRE PARTICIPANTES
 // ==============================================================================
@@ -5597,6 +5781,375 @@ export const returnCustodyFundsOfficial = onCall(
   }
 );
 
+/**
+ * 2-Step Custody Return: Etapa 1 - Declaração pelo Custodiante
+ */
+export async function executeServerSideDeclareCustodyReturn(db, callerUid, payload) {
+  if (!callerUid || typeof callerUid !== 'string' || !callerUid.trim()) {
+    throw new HttpsError('unauthenticated', 'Autenticação obrigatória para declaração de devolução de custódia.');
+  }
+
+  const cleanCaller = callerUid.trim();
+  const transferId = (payload.transferId || '').trim();
+  const cleanSourceAcc = (payload.sourceAccountId || '').trim();
+  const amountCents = Number(payload.amountCents);
+  const justification = payload.justification ? String(payload.justification).trim() : null;
+  const idemKey = (payload.idempotencyKey || '').trim();
+
+  if (!transferId) throw new HttpsError('invalid-argument', 'ID da transferência é obrigatório.');
+  if (!cleanSourceAcc) throw new HttpsError('invalid-argument', 'Conta bancária de saída do custodiante é obrigatória.');
+  if (!Number.isSafeInteger(amountCents) || amountCents <= 0) {
+    throw new HttpsError('invalid-argument', 'O valor de devolução deve ser um inteiro positivo em centavos.');
+  }
+  if (!idemKey) throw new HttpsError('invalid-argument', 'Chave de idempotência é obrigatória.');
+
+  const returnId = serverGenerateCustodyReturnDocId(transferId, idemKey);
+
+  return await db.runTransaction(async (tx) => {
+    const transferRef = db.collection('transfers').doc(transferId);
+    const transferSnap = await tx.get(transferRef);
+    if (!transferSnap.exists) throw new HttpsError('not-found', 'Transferência sob custódia não encontrada.');
+    const transfer = transferSnap.data();
+
+    if (transfer.custodianUid !== cleanCaller) {
+      throw new HttpsError('permission-denied', 'Somente o custodiante legítimo pode declarar a devolução de custódia.');
+    }
+
+    const returnRef = transferRef.collection('returns').doc(returnId);
+    const returnSnap = await tx.get(returnRef);
+    if (returnSnap.exists) {
+      return { transfer, returnRecord: returnSnap.data(), isIdempotentReplay: true };
+    }
+
+    if (amountCents > transfer.availableBalanceCents) {
+      throw new HttpsError(
+        'invalid-argument',
+        `O valor de devolução (${amountCents} centavos) excede o saldo disponível sob custódia (${transfer.availableBalanceCents} centavos).`
+      );
+    }
+
+    const srcAccRef = db.collection('accounts').doc(cleanSourceAcc);
+    const srcAccSnap = await tx.get(srcAccRef);
+    if (!srcAccSnap.exists || srcAccSnap.data().userId !== cleanCaller) {
+      throw new HttpsError('permission-denied', 'Conta de saída não encontrada ou não pertence ao custodiante.');
+    }
+    const srcAcc = srcAccSnap.data();
+    if (isAccountArchivedServer(srcAcc)) {
+      throw new HttpsError('failed-precondition', 'A conta de saída do custodiante está arquivada.');
+    }
+    if (isCreditAccountServer(srcAcc)) {
+      throw new HttpsError('invalid-argument', 'Devoluções de custódia não podem sair de conta de cartão de crédito.');
+    }
+
+    const now = new Date().toISOString();
+    const newAvailable = transfer.availableBalanceCents - amountCents;
+    const newReserved = (transfer.reservedForReturnCents || 0) + amountCents;
+
+    const updatedTransfer = {
+      ...transfer,
+      availableBalanceCents: newAvailable,
+      reservedForReturnCents: newReserved,
+      custodyStatus: 'return_pending_confirmation',
+      updatedAt: now,
+    };
+    tx.update(transferRef, {
+      availableBalanceCents: newAvailable,
+      reservedForReturnCents: newReserved,
+      custodyStatus: 'return_pending_confirmation',
+      updatedAt: now,
+    });
+
+    const returnRecord = {
+      id: returnId,
+      transferId,
+      spaceId: transfer.spaceId || null,
+      amountCents,
+      status: 'pending_confirmation',
+      returnedByUid: cleanCaller,
+      receivedByUid: transfer.senderUid,
+      sourceAccountId: cleanSourceAcc,
+      destinationAccountId: null,
+      sourceMovementId: null,
+      destinationMovementId: null,
+      justification: justification || null,
+      idempotencyKey: idemKey,
+      createdAt: now,
+    };
+    tx.set(returnRef, returnRecord);
+
+    const eventId = serverGenerateCustodyEventDocId(transferId, 'return_declared', idemKey);
+    tx.set(transferRef.collection('events').doc(eventId), {
+      id: eventId,
+      transferId,
+      eventType: 'return_declared',
+      amountCents,
+      affectedAccountId: cleanSourceAcc,
+      financialMovementId: null,
+      performedByUid: cleanCaller,
+      justification: justification || null,
+      clientTransactionUuid: returnId,
+      idempotencyKey: idemKey,
+      timestamp: now,
+    });
+
+    if (transfer.spaceId) {
+      const auditId = `audit_cust_ret_decl_${returnId}`;
+      tx.set(db.collection('spaces').doc(transfer.spaceId).collection('audit').doc(auditId), {
+        id: auditId,
+        spaceId: transfer.spaceId,
+        eventType: 'custody_return_requested',
+        performedByUid: cleanCaller,
+        performedByName: 'Custodiante',
+        targetUid: transfer.senderUid,
+        details: { transferId, returnId, amountCents, remainingAvailableCents: newAvailable },
+        timestamp: now,
+      });
+
+      const notifId = `notif_cust_ret_decl_${returnId}`;
+      tx.set(db.collection('users').doc(transfer.senderUid).collection('notifications').doc(notifId), {
+        id: notifId,
+        userId: transfer.senderUid,
+        spaceId: transfer.spaceId,
+        spaceName: 'Espaço Compartilhado',
+        type: 'custody_return_requested',
+        title: 'Devolução de custódia declarada',
+        message: `O custodiante declarou a devolução de R$ ${(amountCents / 100).toFixed(2)}. Indique sua conta de destino para confirmar o recebimento.`,
+        read: false,
+        originEventId: returnId,
+        createdAt: now,
+      }, { merge: true });
+    }
+
+    return {
+      transfer: updatedTransfer,
+      returnRecord,
+      isIdempotentReplay: false,
+    };
+  });
+}
+
+/**
+ * 2-Step Custody Return: Etapa 2 - Confirmação de Recebimento pelo Remetente
+ */
+export async function executeServerSideConfirmCustodyReturnReceipt(db, callerUid, payload) {
+  if (!callerUid || typeof callerUid !== 'string' || !callerUid.trim()) {
+    throw new HttpsError('unauthenticated', 'Autenticação obrigatória para confirmação de recebimento de devolução.');
+  }
+
+  const cleanCaller = callerUid.trim();
+  const transferId = (payload.transferId || '').trim();
+  const returnId = (payload.returnId || '').trim();
+  const cleanDestAcc = (payload.destinationAccountId || '').trim();
+  const notes = payload.notes ? String(payload.notes).trim() : null;
+  const idemKey = (payload.idempotencyKey || `rec_ret_${returnId}`).trim();
+
+  if (!transferId) throw new HttpsError('invalid-argument', 'transferId é obrigatório.');
+  if (!returnId) throw new HttpsError('invalid-argument', 'returnId é obrigatório.');
+  if (!cleanDestAcc) throw new HttpsError('invalid-argument', 'destinationAccountId é obrigatório.');
+
+  return await db.runTransaction(async (tx) => {
+    const transferRef = db.collection('transfers').doc(transferId);
+    const returnRef = transferRef.collection('returns').doc(returnId);
+    const [transferSnap, returnSnap] = await Promise.all([tx.get(transferRef), tx.get(returnRef)]);
+
+    if (!transferSnap.exists) throw new HttpsError('not-found', 'Transferência sob custódia não encontrada.');
+    if (!returnSnap.exists) throw new HttpsError('not-found', 'Registro de devolução não encontrado.');
+
+    const transfer = transferSnap.data();
+    const returnRecord = returnSnap.data();
+
+    if (transfer.senderUid !== cleanCaller) {
+      throw new HttpsError('permission-denied', 'Somente o remetente original dos fundos pode confirmar o recebimento da devolução.');
+    }
+
+    if (returnRecord.status === 'confirmed') {
+      return { transfer, returnRecord, isIdempotentReplay: true };
+    }
+
+    if (returnRecord.status !== 'pending_confirmation') {
+      throw new HttpsError('failed-precondition', `A devolução se encontra no status "${returnRecord.status}" e não pode ser confirmada.`);
+    }
+
+    const dstAccRef = db.collection('accounts').doc(cleanDestAcc);
+    const dstAccSnap = await tx.get(dstAccRef);
+    if (!dstAccSnap.exists || dstAccSnap.data().userId !== cleanCaller) {
+      throw new HttpsError('permission-denied', 'Conta de destino não encontrada ou não pertence ao remetente original.');
+    }
+    const dstAcc = dstAccSnap.data();
+    if (isAccountArchivedServer(dstAcc)) {
+      throw new HttpsError('failed-precondition', 'A conta de destino do remetente está arquivada.');
+    }
+    if (isCreditAccountServer(dstAcc)) {
+      throw new HttpsError('invalid-argument', 'Devoluções de custódia não podem ser recebidas diretamente em conta de cartão.');
+    }
+
+    const srcAccRef = db.collection('accounts').doc(returnRecord.sourceAccountId);
+    const srcAccSnap = await tx.get(srcAccRef);
+    if (!srcAccSnap.exists) throw new HttpsError('not-found', 'Conta de saída do custodiante não encontrada.');
+    const srcAcc = srcAccSnap.data();
+
+    const now = new Date().toISOString();
+    const effectiveDate = now.slice(0, 10);
+    const amountCents = returnRecord.amountCents;
+
+    // 1. Movimento de saída do custodiante
+    const outMovId = serverGenerateMovementDocId(returnRecord.sourceAccountId, `${idemKey}_ret_out`);
+    const outMovRef = srcAccRef.collection('movements').doc(outMovId);
+    const sourceMovement = serverBuildFinancialMovement({
+      id: outMovId,
+      accountId: returnRecord.sourceAccountId,
+      userId: transfer.custodianUid,
+      direction: 'outflow',
+      amountCents,
+      effectiveDate,
+      originType: 'custody_return_out',
+      originId: returnId,
+      description: `Devolução de custódia para ${cleanCaller}`,
+      notes: notes || returnRecord.justification || `Devolução de custódia #${transferId}`,
+      authorUid: cleanCaller,
+      idempotencyKey: `${idemKey}_ret_out`,
+    });
+    tx.set(outMovRef, sourceMovement);
+    tx.update(srcAccRef, {
+      projectedBalanceCents: (srcAcc.projectedBalanceCents || 0) - amountCents,
+      updatedAt: now,
+    });
+
+    // 2. Movimento de entrada no remetente
+    const inMovId = serverGenerateMovementDocId(cleanDestAcc, `${idemKey}_ret_in`);
+    const inMovRef = dstAccRef.collection('movements').doc(inMovId);
+    const destinationMovement = serverBuildFinancialMovement({
+      id: inMovId,
+      accountId: cleanDestAcc,
+      userId: cleanCaller,
+      direction: 'inflow',
+      amountCents,
+      effectiveDate,
+      originType: 'custody_return_in',
+      originId: returnId,
+      description: `Devolução de custódia de ${transfer.custodianUid}`,
+      notes: notes || returnRecord.justification || `Ressarcimento de saldo não utilizado da custódia #${transferId}`,
+      authorUid: cleanCaller,
+      idempotencyKey: `${idemKey}_ret_in`,
+    });
+    tx.set(inMovRef, destinationMovement);
+    tx.update(dstAccRef, {
+      projectedBalanceCents: (dstAcc.projectedBalanceCents || 0) + amountCents,
+      updatedAt: now,
+    });
+
+    // 3. Atualiza saldos da custódia
+    const newReserved = Math.max(0, (transfer.reservedForReturnCents || amountCents) - amountCents);
+    const newReturned = (transfer.returnedAmountCents || 0) + amountCents;
+
+    let newStatus = 'partial_return_confirmed';
+    if (transfer.availableBalanceCents === 0 && newReserved === 0) {
+      newStatus = (transfer.usedAmountCents || 0) > 0 ? 'settled_by_mixed' : 'settled_by_return';
+    }
+
+    const updatedTransfer = {
+      ...transfer,
+      reservedForReturnCents: newReserved,
+      returnedAmountCents: newReturned,
+      custodyStatus: newStatus,
+      updatedAt: now,
+    };
+    tx.update(transferRef, {
+      reservedForReturnCents: newReserved,
+      returnedAmountCents: newReturned,
+      custodyStatus: newStatus,
+      updatedAt: now,
+    });
+
+    // 4. Atualiza registro canônico de devolução
+    const updatedReturnRecord = {
+      ...returnRecord,
+      status: 'confirmed',
+      destinationAccountId: cleanDestAcc,
+      sourceMovementId: outMovId,
+      destinationMovementId: inMovId,
+      confirmedAt: now,
+      updatedAt: now,
+    };
+    tx.set(returnRef, updatedReturnRecord);
+
+    // 5. Registra evento de auditoria
+    const eventId = serverGenerateCustodyEventDocId(transferId, 'return_confirmed', idemKey);
+    tx.set(transferRef.collection('events').doc(eventId), {
+      id: eventId,
+      transferId,
+      eventType: 'return_confirmed',
+      amountCents,
+      affectedAccountId: cleanDestAcc,
+      financialMovementId: inMovId,
+      performedByUid: cleanCaller,
+      justification: notes || null,
+      clientTransactionUuid: returnId,
+      idempotencyKey: idemKey,
+      timestamp: now,
+    });
+
+    // 6. Notificação e auditoria no espaço
+    if (transfer.spaceId) {
+      const auditId = `audit_cust_ret_conf_${returnId}`;
+      tx.set(db.collection('spaces').doc(transfer.spaceId).collection('audit').doc(auditId), {
+        id: auditId,
+        spaceId: transfer.spaceId,
+        eventType: 'custody_return_confirmed',
+        performedByUid: cleanCaller,
+        performedByName: 'Remetente dos Recursos',
+        targetUid: transfer.custodianUid,
+        details: { transferId, returnId, amountCents, remainingAvailableCents: transfer.availableBalanceCents },
+        timestamp: now,
+      });
+
+      const notifId = `notif_cust_ret_conf_${returnId}`;
+      tx.set(db.collection('users').doc(transfer.custodianUid).collection('notifications').doc(notifId), {
+        id: notifId,
+        userId: transfer.custodianUid,
+        spaceId: transfer.spaceId,
+        spaceName: 'Espaço Compartilhado',
+        type: 'custody_return_confirmed',
+        title: 'Recebimento de devolução confirmado',
+        message: `O remetente confirmou o recebimento de R$ ${(amountCents / 100).toFixed(2)}.`,
+        read: false,
+        originEventId: returnId,
+        createdAt: now,
+      }, { merge: true });
+    }
+
+    return {
+      transfer: updatedTransfer,
+      returnRecord: updatedReturnRecord,
+      sourceMovement,
+      destinationMovement,
+      isIdempotentReplay: false,
+    };
+  });
+}
+
+export const declareCustodyReturnOfficial = onCall(
+  { region: 'us-central1' },
+  async (request) => {
+    return await executeServerSideDeclareCustodyReturn(
+      getAdminDb(),
+      request.auth?.uid,
+      request.data
+    );
+  }
+);
+
+export const confirmCustodyReturnReceiptOfficial = onCall(
+  { region: 'us-central1' },
+  async (request) => {
+    return await executeServerSideConfirmCustodyReturnReceipt(
+      getAdminDb(),
+      request.auth?.uid,
+      request.data
+    );
+  }
+);
+
 // ==============================================================================
 // FASE 8: LISTAS DE AQUISIÇÃO E COPROPRIEDADE DE BENS (ARQUITETURA V3.1)
 // ==============================================================================
@@ -5607,6 +6160,14 @@ export function serverGenerateAcquisitionPurchaseDocId(itemId, idempotencyKey) {
   const cleanSlug = cleanKey.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 24);
   const hash = sha256HexServer(`acq_purch:${cleanItem}:${cleanKey}`);
   return `pur_${cleanSlug ? `${cleanSlug}_` : ''}${hash.slice(0, 32)}`;
+}
+
+export function serverGenerateAcquisitionPurchaseReversalDocId(purchaseId, idempotencyKey) {
+  const cleanPurchase = (purchaseId || '').trim();
+  const cleanKey = (idempotencyKey || '').trim();
+  const cleanSlug = cleanKey.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 24);
+  const hash = sha256HexServer(`acq_purch_rev:${cleanPurchase}:${cleanKey}`);
+  return `prev_${cleanSlug ? `${cleanSlug}_` : ''}${hash.slice(0, 32)}`;
 }
 
 export function serverGenerateStockMovementDocId(itemId, idempotencyKey) {
@@ -6135,6 +6696,197 @@ export const recordAcquisitionDepositOfficial = onCall(
   }
 );
 
+/**
+ * Reversão canônica de compra de aquisição com integridade contábil e reversão de estoque.
+ */
+export async function executeServerSideReverseAcquisitionPurchase(db, callerUid, payload) {
+  if (!callerUid || typeof callerUid !== 'string' || !callerUid.trim()) {
+    throw new HttpsError('unauthenticated', 'Autenticação obrigatória.');
+  }
+
+  const cleanCaller = callerUid.trim();
+  const listId = (payload.listId || '').trim();
+  const itemId = (payload.itemId || '').trim();
+  const purchaseId = (payload.purchaseId || '').trim();
+  const reversalReason = payload.reversalReason ? String(payload.reversalReason).trim() : null;
+  const idemKey = (payload.idempotencyKey || `rev_pur_${purchaseId}`).trim();
+
+  if (!listId) throw new HttpsError('invalid-argument', 'listId é obrigatório.');
+  if (!itemId) throw new HttpsError('invalid-argument', 'itemId é obrigatório.');
+  if (!purchaseId) throw new HttpsError('invalid-argument', 'purchaseId é obrigatório.');
+
+  const reversalId = serverGenerateAcquisitionPurchaseReversalDocId(purchaseId, idemKey);
+
+  return await db.runTransaction(async (tx) => {
+    const listRef = db.collection('acquisition_lists').doc(listId);
+    const listSnap = await tx.get(listRef);
+    if (!listSnap.exists) throw new HttpsError('not-found', 'Lista não encontrada.');
+    const listData = listSnap.data();
+
+    if (listData.scopeType === 'individual') {
+      if (listData.ownerUid !== cleanCaller) {
+        throw new HttpsError('permission-denied', 'Apenas o proprietário pode estornar compras na lista individual.');
+      }
+    } else {
+      if (!listData.spaceId) {
+        throw new HttpsError('failed-precondition', 'Lista compartilhada sem spaceId associado.');
+      }
+      const spaceSnap = await tx.get(db.collection('spaces').doc(listData.spaceId));
+      if (!spaceSnap.exists) {
+        throw new HttpsError('not-found', 'Espaço da lista compartilhada não encontrado.');
+      }
+      const spaceData = spaceSnap.data();
+      if (!spaceData.memberUids?.includes(cleanCaller)) {
+        throw new HttpsError('permission-denied', 'Apenas membros do espaço podem estornar compras na lista.');
+      }
+    }
+
+    const itemRef = listRef.collection('items').doc(itemId);
+    const itemSnap = await tx.get(itemRef);
+    if (!itemSnap.exists) throw new HttpsError('not-found', 'Item não encontrado.');
+    const itemData = itemSnap.data();
+
+    const purchaseRef = itemRef.collection('purchases').doc(purchaseId);
+    const purchaseSnap = await tx.get(purchaseRef);
+    if (!purchaseSnap.exists) throw new HttpsError('not-found', 'Registro de compra não encontrado.');
+    const purchase = purchaseSnap.data();
+
+    const reversalRef = itemRef.collection('purchase_reversals').doc(reversalId);
+    const reversalSnap = await tx.get(reversalRef);
+    if (reversalSnap.exists) {
+      return { reversal: reversalSnap.data(), purchase, item: itemData, isIdempotentReplay: true };
+    }
+
+    const existingReversals = await tx.get(itemRef.collection('purchase_reversals').where('purchaseId', '==', purchaseId));
+    if (!existingReversals.empty) {
+      return { reversal: existingReversals.docs[0].data(), purchase, item: itemData, isIdempotentReplay: true };
+    }
+
+    const now = new Date().toISOString();
+
+    // 1. Reversão de estoque se recorrente
+    let newStock = itemData.currentStock || 0;
+    let newStage = itemData.stage;
+    let finalPaidAmountCents = itemData.finalPaidAmountCents;
+
+    if (itemData.listType === 'recorrente') {
+      const prevStock = itemData.currentStock || 0;
+      newStock = Math.max(0, prevStock - purchase.quantity);
+      const smovId = serverGenerateStockMovementDocId(itemId, `${idemKey}_smov_rev`);
+      tx.set(itemRef.collection('stock_movements').doc(smovId), {
+        id: smovId,
+        itemId,
+        movementType: 'reversal_outflow',
+        quantityDelta: -purchase.quantity,
+        previousStock: prevStock,
+        newStock,
+        authorUid: cleanCaller,
+        justification: reversalReason || `Estorno da compra #${purchaseId}`,
+        createdAt: now,
+      });
+    } else if (itemData.listType === 'objetivo' || itemData.listType === 'desejo') {
+      newStage = 'cotado';
+      finalPaidAmountCents = null;
+    }
+
+    const updatedItem = {
+      ...itemData,
+      stage: newStage,
+      currentStock: newStock,
+      finalPaidAmountCents,
+      updatedAt: now,
+    };
+    tx.update(itemRef, {
+      stage: newStage,
+      currentStock: newStock,
+      finalPaidAmountCents,
+      updatedAt: now,
+    });
+
+    // 2. Reversão de desembolsos
+    if (Array.isArray(purchase.disbursements)) {
+      for (const d of purchase.disbursements) {
+        if (d.sourceAccountId) {
+          const accRef = db.collection('accounts').doc(d.sourceAccountId);
+          const accSnap = await tx.get(accRef);
+          if (accSnap.exists) {
+            const accData = accSnap.data();
+            const compMovId = serverGenerateMovementDocId(d.sourceAccountId, `${idemKey}_rev_d_${d.funderUid}`);
+            const compMov = serverBuildFinancialMovement({
+              id: compMovId,
+              accountId: d.sourceAccountId,
+              userId: d.funderUid,
+              direction: 'inflow',
+              amountCents: d.disbursedAmountCents,
+              effectiveDate: now.slice(0, 10),
+              originType: 'acquisition_checkout',
+              originId: reversalId,
+              reversalOfMovementId: purchaseId,
+              description: `Estorno de compra de aquisição (${itemData.name || 'Item'})`,
+              notes: reversalReason || 'Estorno contábil compensatório de desembolso.',
+              authorUid: cleanCaller,
+              idempotencyKey: `${idemKey}_rev_d_${d.funderUid}`,
+            });
+            tx.set(accRef.collection('movements').doc(compMovId), compMov);
+            tx.update(accRef, {
+              projectedBalanceCents: (accData.projectedBalanceCents || 0) + d.disbursedAmountCents,
+              updatedAt: now,
+            });
+          }
+        }
+      }
+    }
+
+    // 3. Registro do estorno
+    const reversalRecord = {
+      id: reversalId,
+      purchaseId,
+      itemId,
+      listId,
+      spaceId: listData.spaceId || null,
+      totalReversedAmountCents: purchase.totalPaidCents,
+      reversalReason: reversalReason || 'Estorno de compra de aquisição',
+      reversedByUid: cleanCaller,
+      idempotencyKey: idemKey,
+      createdAt: now,
+    };
+    tx.set(reversalRef, reversalRecord);
+
+    // 4. Auditoria se compartilhada
+    if (listData.scopeType === 'shared' && listData.spaceId) {
+      const auditId = `audit_acq_pur_rev_${reversalId}`;
+      tx.set(db.collection('spaces').doc(listData.spaceId).collection('audit').doc(auditId), {
+        id: auditId,
+        spaceId: listData.spaceId,
+        eventType: 'acquisition_purchase_reversed',
+        performedByUid: cleanCaller,
+        performedByName: 'Participante',
+        targetUid: null,
+        details: { listId, itemId, purchaseId, reversalId, amountCents: purchase.totalPaidCents },
+        timestamp: now,
+      });
+    }
+
+    return {
+      reversal: reversalRecord,
+      purchase,
+      item: updatedItem,
+      isIdempotentReplay: false,
+    };
+  });
+}
+
+export const reverseAcquisitionPurchaseOfficial = onCall(
+  { region: 'us-central1' },
+  async (request) => {
+    return await executeServerSideReverseAcquisitionPurchase(
+      getAdminDb(),
+      request.auth?.uid,
+      request.data
+    );
+  }
+);
+
 // ==============================================================================
 // FASE 9: RECORRÊNCIAS E PARCELAMENTOS DESACOPLADOS (ARQUITETURA V3.1)
 // ==============================================================================
@@ -6335,6 +7087,35 @@ export async function executeServerSideCreateInstallmentContract(db, callerUid, 
   const baseInstallment = Math.floor(totalContractAmountCents / totalInstallmentsCount);
   const remainder = totalContractAmountCents - (baseInstallment * totalInstallmentsCount);
 
+  // Pré-computa competências e parcelas
+  const [startYearStr, startMonthStr] = startCompetenceMonth.split('-');
+  let curYear = parseInt(startYearStr, 10);
+  let curMonth = parseInt(startMonthStr, 10);
+  const occurrencesData = [];
+
+  for (let i = 1; i <= totalInstallmentsCount; i++) {
+    const monthPadded = String(curMonth).padStart(2, '0');
+    const compMonth = `${curYear}-${monthPadded}`;
+    const dayPadded = String(dueDay).padStart(2, '0');
+    const dueDate = `${compMonth}-${dayPadded}`;
+    const occId = String(i).padStart(2, '0');
+    const principalAmountCents = i === 1 ? baseInstallment + remainder : baseInstallment;
+
+    occurrencesData.push({
+      occId,
+      installmentNumber: i,
+      compMonth,
+      dueDate,
+      principalAmountCents,
+    });
+
+    curMonth++;
+    if (curMonth > 12) {
+      curMonth = 1;
+      curYear++;
+    }
+  }
+
   return await db.runTransaction(async (tx) => {
     if (scope === 'shared') {
       if (!spaceId) throw new HttpsError('invalid-argument', 'spaceId é obrigatório para parcelamento compartilhado.');
@@ -6348,6 +7129,29 @@ export async function executeServerSideCreateInstallmentContract(db, callerUid, 
     const contractSnap = await tx.get(contractRef);
     if (contractSnap.exists) {
       return { contract: contractSnap.data(), isIdempotentReplay: true };
+    }
+
+    let cardAccountData = null;
+    let invoiceSnaps = [];
+    const isCredit = fundingSource === 'credit_card' && Boolean(sourceCardAccountId);
+
+    if (isCredit) {
+      const cardAccRef = db.collection('accounts').doc(sourceCardAccountId);
+      const cardAccSnap = await tx.get(cardAccRef);
+      if (!cardAccSnap.exists) {
+        throw new HttpsError('not-found', 'Conta de cartão de crédito não encontrada.');
+      }
+      cardAccountData = cardAccSnap.data();
+      if (cardAccountData.type !== 'credit') {
+        throw new HttpsError('invalid-argument', 'A conta indicada não é uma conta de cartão de crédito.');
+      }
+
+      // Lê antecipadamente todas as faturas necessárias
+      const invReadPromises = occurrencesData.map((occ) => {
+        const invRef = cardAccRef.collection('invoices').doc(occ.compMonth);
+        return tx.get(invRef);
+      });
+      invoiceSnaps = await Promise.all(invReadPromises);
     }
 
     const now = new Date().toISOString();
@@ -6367,38 +7171,77 @@ export async function executeServerSideCreateInstallmentContract(db, callerUid, 
     };
     tx.set(contractRef, contractDoc);
 
-    // Gera todas as ocorrências
-    const [startYearStr, startMonthStr] = startCompetenceMonth.split('-');
-    let curYear = parseInt(startYearStr, 10);
-    let curMonth = parseInt(startMonthStr, 10);
-
-    for (let i = 1; i <= totalInstallmentsCount; i++) {
-      const monthPadded = String(curMonth).padStart(2, '0');
-      const compMonth = `${curYear}-${monthPadded}`;
-      const dayPadded = String(dueDay).padStart(2, '0');
-      const dueDate = `${compMonth}-${dayPadded}`;
-      const occId = String(i).padStart(2, '0');
-
-      const principalAmountCents = i === 1 ? baseInstallment + remainder : baseInstallment;
+    // Grava ocorrências e projeta nas faturas
+    for (let idx = 0; idx < occurrencesData.length; idx++) {
+      const occ = occurrencesData[idx];
       const occurrenceDoc = {
-        id: occId,
+        id: occ.occId,
         contractId,
-        installmentNumber: i,
-        competenceMonth: compMonth,
-        principalAmountCents,
+        installmentNumber: occ.installmentNumber,
+        competenceMonth: occ.compMonth,
+        principalAmountCents: occ.principalAmountCents,
         interestAmountCents: 0,
-        totalInstallmentAmountCents: principalAmountCents,
+        totalInstallmentAmountCents: occ.principalAmountCents,
         status: 'scheduled',
-        dueDate,
+        dueDate: occ.dueDate,
       };
 
-      const occRef = contractRef.collection('occurrences').doc(occId);
+      const occRef = contractRef.collection('occurrences').doc(occ.occId);
       tx.set(occRef, occurrenceDoc);
 
-      curMonth++;
-      if (curMonth > 12) {
-        curMonth = 1;
-        curYear++;
+      if (isCredit) {
+        const invRef = db.collection('accounts').doc(sourceCardAccountId).collection('invoices').doc(occ.compMonth);
+        const invSnap = invoiceSnaps[idx];
+
+        const chargeId = `chg_${contractId}_${occ.occId}`;
+        const chargeDoc = {
+          id: chargeId,
+          transactionId: contractId,
+          accountId: sourceCardAccountId,
+          userId: cleanCaller,
+          invoiceMonth: occ.compMonth,
+          description: `${title} (${occ.installmentNumber}/${totalInstallmentsCount})`,
+          amountCents: occ.principalAmountCents,
+          purchaseDate: occ.dueDate,
+          categoryId: 'installment',
+          categoryName: 'Parcelamento',
+          status: 'active',
+          createdAt: now,
+          updatedAt: now,
+        };
+        tx.set(invRef.collection('charges').doc(chargeId), chargeDoc);
+
+        if (invSnap && invSnap.exists) {
+          const invData = invSnap.data();
+          const newPurchases = (invData.totalPurchasesAmountCents || 0) + occ.principalAmountCents;
+          const newDue = (invData.totalDueAmountCents || 0) + occ.principalAmountCents;
+          const newRemaining = (invData.remainingBalanceCents || 0) + occ.principalAmountCents;
+          tx.update(invRef, {
+            totalPurchasesAmountCents: newPurchases,
+            totalDueAmountCents: newDue,
+            remainingBalanceCents: newRemaining,
+            updatedAt: now,
+          });
+        } else {
+          const closingDay = cardAccountData.closingDay || 20;
+          const closingDate = `${occ.compMonth}-${String(closingDay).padStart(2, '0')}`;
+          tx.set(invRef, {
+            id: occ.compMonth,
+            accountId: sourceCardAccountId,
+            userId: cleanCaller,
+            invoiceMonth: occ.compMonth,
+            closingDate,
+            dueDate: occ.dueDate,
+            totalPurchasesAmountCents: occ.principalAmountCents,
+            carriedOverBalanceCents: 0,
+            interestAndFeesCents: 0,
+            totalDueAmountCents: occ.principalAmountCents,
+            totalPaidAmountCents: 0,
+            remainingBalanceCents: occ.principalAmountCents,
+            invoiceStatus: 'open',
+            updatedAt: now,
+          });
+        }
       }
     }
 
@@ -6409,6 +7252,7 @@ export async function executeServerSideCreateInstallmentContract(db, callerUid, 
 /**
  * Cancelamento antecipado de contrato de parcelamento:
  * Cancela apenas parcelas scheduled. Parcelas billed ou paid são preservadas intactas.
+ * Atualiza encargos projetados de faturas de cartão.
  */
 export async function executeServerSideCancelInstallmentContract(db, callerUid, payload) {
   if (!callerUid || typeof callerUid !== 'string' || !callerUid.trim()) {
@@ -6432,21 +7276,59 @@ export async function executeServerSideCancelInstallmentContract(db, callerUid, 
     }
 
     const occurrencesSnap = await tx.get(contractRef.collection('occurrences'));
+    const isCredit = contract.fundingSource === 'credit_card' && Boolean(contract.sourceCardAccountId);
+    const scheduledOccs = [];
+    occurrencesSnap.forEach((d) => {
+      const occ = d.data();
+      if (occ.status === 'scheduled') {
+        scheduledOccs.push(occ);
+      }
+    });
 
+    // Se cartão de crédito, lê todas as faturas das parcelas scheduled
+    let invoiceSnaps = [];
+    if (isCredit && scheduledOccs.length > 0) {
+      const invReadPromises = scheduledOccs.map((occ) => {
+        const invRef = db.collection('accounts').doc(contract.sourceCardAccountId).collection('invoices').doc(occ.competenceMonth);
+        return tx.get(invRef);
+      });
+      invoiceSnaps = await Promise.all(invReadPromises);
+    }
+
+    const now = new Date().toISOString();
     tx.update(contractRef, {
       status: 'cancelled_early',
       cancellationReason,
-      updatedAt: new Date().toISOString(),
+      updatedAt: now,
     });
 
     let cancelledCount = 0;
-    occurrencesSnap.forEach((docSnap) => {
-      const occ = docSnap.data();
-      if (occ.status === 'scheduled') {
-        tx.update(docSnap.ref, { status: 'cancelled' });
-        cancelledCount++;
+    for (let idx = 0; idx < scheduledOccs.length; idx++) {
+      const occ = scheduledOccs[idx];
+      const occRef = contractRef.collection('occurrences').doc(occ.id);
+      tx.update(occRef, { status: 'cancelled' });
+      cancelledCount++;
+
+      if (isCredit) {
+        const invRef = db.collection('accounts').doc(contract.sourceCardAccountId).collection('invoices').doc(occ.competenceMonth);
+        const chargeRef = invRef.collection('charges').doc(`chg_${contractId}_${occ.id}`);
+        tx.update(chargeRef, { status: 'cancelled', updatedAt: now });
+
+        const invSnap = invoiceSnaps[idx];
+        if (invSnap && invSnap.exists) {
+          const invData = invSnap.data();
+          const newPurchases = Math.max(0, (invData.totalPurchasesAmountCents || 0) - occ.principalAmountCents);
+          const newDue = Math.max(0, (invData.totalDueAmountCents || 0) - occ.principalAmountCents);
+          const newRemaining = Math.max(0, (invData.remainingBalanceCents || 0) - occ.principalAmountCents);
+          tx.update(invRef, {
+            totalPurchasesAmountCents: newPurchases,
+            totalDueAmountCents: newDue,
+            remainingBalanceCents: newRemaining,
+            updatedAt: now,
+          });
+        }
       }
-    });
+    }
 
     return {
       contract: { ...contract, status: 'cancelled_early', cancellationReason },

@@ -15,6 +15,7 @@ import {
 } from './recurrenceService';
 import { universalStorage } from '../utils/universalStorage';
 import { InstallmentOccurrence } from '../types/financeV3';
+import { loadDemoInvoices } from './creditCardService';
 
 describe('RecurrenceService (Fase 9 - Recorrências e Parcelamentos Desacoplados)', () => {
   beforeEach(() => {
@@ -257,6 +258,67 @@ describe('RecurrenceService (Fase 9 - Recorrências e Parcelamentos Desacoplados
       assert.equal(occurrencesAfter[0].status, 'paid'); // Intacta
       assert.equal(occurrencesAfter[1].status, 'billed'); // Intacta
       assert.equal(occurrencesAfter[2].status, 'cancelled'); // Cancelada
+    });
+
+    it('projeta parcelas em faturas futuras quando fundingSource é credit_card e estorna montante ao cancelar', async () => {
+      const cardAccountId = 'card_visa_platinum_999';
+      const res = await createInstallmentContract(
+        {
+          scope: 'personal',
+          userId: 'user_card_holder',
+          title: 'Geladeira Inox Parcelada',
+          totalContractAmountCents: 120000,
+          totalInstallmentsCount: 3,
+          startCompetenceMonth: '2026-06',
+          dueDay: 10,
+          fundingSource: 'credit_card',
+          sourceCardAccountId: cardAccountId,
+          idempotencyKey: 'idem_inst_card_proj',
+        },
+        true
+      );
+
+      assert.equal(res.contract.fundingSource, 'credit_card');
+      assert.equal(res.contract.sourceCardAccountId, cardAccountId);
+
+      // Inspeciona faturas projetadas no armazenamento demo
+      const invoices = loadDemoInvoices();
+      assert.equal(invoices.length, 3);
+
+      const invJune = invoices.find((i: any) => i.invoiceMonth === '2026-06');
+      const invJuly = invoices.find((i: any) => i.invoiceMonth === '2026-07');
+      const invAug = invoices.find((i: any) => i.invoiceMonth === '2026-08');
+
+      assert.ok(invJune);
+      assert.equal(invJune.totalPurchasesAmountCents, 40000);
+      assert.ok(invJuly);
+      assert.equal(invJuly.totalPurchasesAmountCents, 40000);
+      assert.ok(invAug);
+      assert.equal(invAug.totalPurchasesAmountCents, 40000);
+
+      // Cancela o contrato antes de qualquer faturamento
+      const cancelRes = await cancelInstallmentContract(
+        {
+          contractId: res.contract.id,
+          cancellationReason: 'Compra estornada na operadora',
+        },
+        true
+      );
+      assert.equal(cancelRes.cancelledCount, 3);
+
+      // Verifica que o montante foi liberado das faturas futuras
+      const invoicesAfter = loadDemoInvoices();
+
+      const invJuneAfter = invoicesAfter.find((i: any) => i.invoiceMonth === '2026-06');
+      const invJulyAfter = invoicesAfter.find((i: any) => i.invoiceMonth === '2026-07');
+      const invAugAfter = invoicesAfter.find((i: any) => i.invoiceMonth === '2026-08');
+
+      assert.ok(invJuneAfter);
+      assert.equal(invJuneAfter.totalPurchasesAmountCents, 0);
+      assert.ok(invJulyAfter);
+      assert.equal(invJulyAfter.totalPurchasesAmountCents, 0);
+      assert.ok(invAugAfter);
+      assert.equal(invAugAfter.totalPurchasesAmountCents, 0);
     });
   });
 });

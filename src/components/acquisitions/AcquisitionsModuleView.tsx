@@ -42,6 +42,13 @@ import {
   saveWorkspaceToFirestore,
   upsertUserDocument,
 } from '../../services/acquisitionsFirebase';
+import {
+  recordAcquisitionPurchase,
+  reverseAcquisitionPurchase,
+  recordStockMovement,
+  recordAcquisitionQuote,
+  recordAcquisitionDeposit,
+} from '../../services/acquisitionsService';
 import { DashboardOverviewView } from './DashboardOverviewView';
 import { HubDashboardView } from './HubDashboardView';
 import { WorkspaceBoardView } from './WorkspaceBoardView';
@@ -719,7 +726,7 @@ export const AcquisitionsModuleView: React.FC<AcquisitionsModuleViewProps> = ({
     saveItemToFirestore(updated);
   };
 
-  const handleConfirmCartCheckout = (
+  const handleConfirmCartCheckout = async (
     item: AcquisitionItem,
     productInput: {
       brand: string;
@@ -731,6 +738,34 @@ export const AcquisitionsModuleView: React.FC<AcquisitionsModuleViewProps> = ({
     advanceToConfirmed: boolean
   ) => {
     if (advanceToConfirmed) {
+      const unitPriceCents = Math.round(productInput.unitPrice * 100);
+      const totalPaidCents = unitPriceCents * (productInput.quantity || 1);
+      try {
+        await recordAcquisitionPurchase(
+          sharedUser.uid,
+          {
+            listId: item.listId,
+            itemId: item.id,
+            storeName: productInput.storeName || 'Loja',
+            brand: productInput.brand,
+            quantity: productInput.quantity || 1,
+            unitPriceCents,
+            totalPaidCents,
+            receiptUrl: productInput.receiptUrl,
+            disbursements: [
+              {
+                funderUid: sharedUser.uid,
+                funderName: sharedUser.name || 'Titular',
+                disbursedAmountCents: totalPaidCents,
+                fundingSource: 'checking',
+              },
+            ],
+          },
+          sharedUser.isDemo
+        );
+      } catch (err) {
+        console.warn('[Acquisitions] Erro ao registrar compra no serviço canônico:', err);
+      }
       const { updatedItem, newProduct } = confirmCartCheckout(item, productInput);
       setItems((prev) => prev.map((i) => (i.id === item.id ? updatedItem : i)));
       recordProductInSubcollection(updatedItem, newProduct);
@@ -752,20 +787,51 @@ export const AcquisitionsModuleView: React.FC<AcquisitionsModuleViewProps> = ({
     }
   };
 
-  const handleAddGoalDeposit = (
+  const handleAddGoalDeposit = async (
     item: AcquisitionItem,
     amount: number,
     note: string
   ) => {
+    try {
+      await recordAcquisitionDeposit(
+        sharedUser.uid,
+        {
+          listId: item.listId,
+          itemId: item.id,
+          amountCents: Math.round(amount * 100),
+          depositDate: new Date().toISOString().slice(0, 10),
+          notes: note,
+        },
+        sharedUser.isDemo
+      );
+    } catch (err) {
+      console.warn('[Acquisitions] Erro ao registrar aporte no serviço canônico:', err);
+    }
     const updated = addGoalDeposit(item, amount, currentUser.email, note);
     setItems((prev) => prev.map((i) => (i.id === item.id ? updated : i)));
     saveItemToFirestore(updated);
   };
 
-  const handleAddGoalQuote = (
+  const handleAddGoalQuote = async (
     item: AcquisitionItem,
     quoteInput: Omit<GoalQuote, 'id' | 'recordedAt'>
   ) => {
+    try {
+      await recordAcquisitionQuote(
+        sharedUser.uid,
+        {
+          listId: item.listId,
+          itemId: item.id,
+          storeName: quoteInput.storeName,
+          priceCents: Math.round(quoteInput.price * 100),
+          url: quoteInput.url,
+          validUntil: (quoteInput as any).validUntil,
+        },
+        sharedUser.isDemo
+      );
+    } catch (err) {
+      console.warn('[Acquisitions] Erro ao registrar cotação no serviço canônico:', err);
+    }
     const newQuote: GoalQuote = {
       ...quoteInput,
       id: `quote_${Date.now()}`,
@@ -836,17 +902,50 @@ export const AcquisitionsModuleView: React.FC<AcquisitionsModuleViewProps> = ({
     saveItemToFirestore(updatedWishItem);
   };
 
-  const handleAdjustItemStock = (
+  const handleAdjustItemStock = async (
     item: AcquisitionItem,
     delta: number,
     autoMoveToBuyOnCritical: boolean
   ) => {
+    try {
+      if (delta !== 0) {
+        await recordStockMovement(
+          sharedUser.uid,
+          {
+            listId: item.listId,
+            itemId: item.id,
+            movementType: delta > 0 ? 'purchase_inflow' : 'consumption_outflow',
+            quantityDelta: delta,
+            justification: 'Ajuste manual de estoque',
+          },
+          sharedUser.isDemo
+        );
+      }
+    } catch (err) {
+      console.warn('[Acquisitions] Erro ao registrar movimentação de estoque:', err);
+    }
     const updated = adjustItemStock(item, delta, autoMoveToBuyOnCritical);
     setItems((prev) => prev.map((i) => (i.id === item.id ? updated : i)));
     saveItemToFirestore(updated);
   };
 
-  const handleReturnConfirmedToStock = (item: AcquisitionItem) => {
+  const handleReturnConfirmedToStock = async (item: AcquisitionItem) => {
+    try {
+      const lastProduct = item.productsHistory?.[0];
+      const purchaseId = lastProduct?.id || `pur_${item.id}`;
+      await reverseAcquisitionPurchase(
+        sharedUser.uid,
+        {
+          listId: item.listId,
+          itemId: item.id,
+          purchaseId,
+          reversalReason: 'Retorno de item confirmado para estoque pelo usuário',
+        },
+        sharedUser.isDemo
+      );
+    } catch (err) {
+      console.warn('[Acquisitions] Erro ao registrar estorno de compra no serviço canônico:', err);
+    }
     const updated = returnConfirmedToStock(item);
     setItems((prev) => prev.map((i) => (i.id === item.id ? updated : i)));
     saveItemToFirestore(updated);

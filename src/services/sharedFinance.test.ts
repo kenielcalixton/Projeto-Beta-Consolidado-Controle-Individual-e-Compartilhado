@@ -7,6 +7,8 @@ import {
 import {
   approveExpensePayment,
   confirmRestitutionReceipt,
+  reverseRestitutionReceipt,
+  getRestitutionReversals,
   createSharedExpense,
   declareExpensePayment,
   declareRestitutionPayment,
@@ -1247,5 +1249,155 @@ test('FASE 6 — Rateios e Reembolsos Compartilhados (Arquitetura v3.1)', async 
       true
     );
     assert.equal(replayRec2.receipt.id, rec2.receipt.id);
+  });
+
+  // ----------------------------------------------------------------------------
+  // 21. ESTORNO DE RECEBIMENTO DE RESTITUIÇÃO (ETAPA 2 DA AUDITORIA)
+  // ----------------------------------------------------------------------------
+  await t.test('21. Estorno de recebimento de restituição: gera reversão compensatória, restaura saldo devedor e preserva recibo imutável', async () => {
+    resetSharedDemoStorage();
+    const spaceId = 'space_reversal_test';
+
+    // 1. Criar despesa, aprovar pagamento e revogar para gerar restituição formal
+    const { expense } = await createSharedExpense(
+      spaceId,
+      {
+        spaceId,
+        title: 'Jantar para Reversão',
+        totalOriginalAmountCents: 10000,
+        competenceMonth: '2026-11',
+        competenceDate: '2026-11-14',
+        categoryId: 'cat_food',
+        categoryName: 'Alimentação',
+        createdByUid: 'alice_resp',
+        responsibleUid: 'alice_resp',
+        payerUid: 'dan_debtor',
+        splitMethod: 'equal',
+        participants: [{ uid: 'charlie_creditor', name: 'Charlie' }],
+        idempotencyKey: 'idem_exp_rev_test',
+      },
+      true
+    );
+
+    const decl = await declareExpensePayment(
+      {
+        spaceId,
+        expenseId: expense.id,
+        memberUid: 'charlie_creditor',
+        memberName: 'Charlie',
+        amountCents: 10000,
+        paymentMethod: 'pix',
+        paymentDate: '2026-11-14',
+        idempotencyKey: 'idem_decl_rev_test',
+      },
+      true
+    );
+
+    const danAcc = await createAccount('dan_debtor', { name: 'Conta Dan', type: 'checking' }, true);
+
+    const { approval } = await approveExpensePayment(
+      {
+        spaceId,
+        expenseId: expense.id,
+        declarationId: decl.id,
+        approverUid: 'alice_resp',
+        destinationAccountId: danAcc.id,
+        idempotencyKey: 'idem_appr_rev_test',
+      },
+      true
+    );
+
+    const { restitution } = await revokeExpensePaymentApproval(
+      {
+        spaceId,
+        expenseId: expense.id,
+        approvalId: approval.id,
+        revokerUid: 'alice_resp',
+        reason: 'Revogação para teste de estorno',
+        idempotencyKey: 'idem_revoc_rst_rev_test',
+      },
+      true
+    );
+    assert.ok(restitution);
+
+    // Cria conta de Charlie com saldo zero
+    const createdCharlieAcc = await createAccount('charlie_creditor', { name: 'Conta Charlie', type: 'checking' }, true);
+
+    // 2. Confirma recebimento de 5000 centavos
+    const confRes = await confirmRestitutionReceipt(
+      {
+        spaceId,
+        expenseId: expense.id,
+        restitutionId: restitution.id,
+        creditorUid: 'charlie_creditor',
+        amountCents: 5000,
+        destinationAccountId: createdCharlieAcc.id,
+        notes: 'Recebido via Pix',
+        idempotencyKey: 'idem_rec_to_reverse',
+      },
+      true
+    );
+    assert.equal(confRes.restitution.status, 'partial');
+    assert.equal(confRes.restitution.restitutedAmountCents, 5000);
+    assert.equal(confRes.restitution.remainingAmountCents, 5000);
+
+    // Saldo de Charlie agora é 5000
+    const accs = await getUserAccounts('charlie_creditor', false, true);
+    const charlieAcc = accs.find((a) => a.id === createdCharlieAcc.id)!;
+    assert.equal(charlieAcc.projectedBalanceCents, 5000);
+
+    // 3. Estorna o recebimento
+    const revRes = await reverseRestitutionReceipt(
+      'charlie_creditor',
+      {
+        spaceId,
+        expenseId: expense.id,
+        restitutionId: restitution.id,
+        receiptId: confRes.receipt.id,
+        reversalReason: 'Pix contestado / erro bancário',
+        idempotencyKey: 'idem_rst_rev_test',
+      },
+      true
+    );
+
+    assert.equal(revRes.reversal.receiptId, confRes.receipt.id);
+    assert.equal(revRes.reversal.amountCents, 5000);
+    assert.equal(revRes.reversal.reversalReason, 'Pix contestado / erro bancário');
+
+    // Saldo da restituição foi restaurado
+    assert.equal(revRes.restitution.restitutedAmountCents, 0);
+    assert.equal(revRes.restitution.remainingAmountCents, 10000);
+    assert.equal(revRes.restitution.status, 'pending');
+
+    // Movimento contábil compensatório: outflow na conta de Charlie
+    assert.ok(revRes.movement);
+    assert.equal(revRes.movement?.direction, 'outflow');
+    assert.equal(revRes.movement?.amountCents, 5000);
+    assert.equal(revRes.movement?.originType, 'shared_settlement');
+
+    // Saldo de Charlie voltou para 0
+    const accsAfter = await getUserAccounts('charlie_creditor', false, true);
+    const charlieAccAfter = accsAfter.find((a) => a.id === createdCharlieAcc.id)!;
+    assert.equal(charlieAccAfter.projectedBalanceCents, 0);
+
+    // Consulta de reversões
+    const reversals = await getRestitutionReversals(spaceId, expense.id, restitution.id, true);
+    assert.equal(reversals.length, 1);
+    assert.equal(reversals[0].id, revRes.reversal.id);
+
+    // Replay idempotente não duplica
+    const replayRev = await reverseRestitutionReceipt(
+      'charlie_creditor',
+      {
+        spaceId,
+        expenseId: expense.id,
+        restitutionId: restitution.id,
+        receiptId: confRes.receipt.id,
+        reversalReason: 'Pix contestado / erro bancário',
+        idempotencyKey: 'idem_rst_rev_test',
+      },
+      true
+    );
+    assert.equal(replayRev.reversal.id, revRes.reversal.id);
   });
 });

@@ -400,6 +400,14 @@ export function generateRestitutionReceiptDocId(restitutionId: string, idempoten
   return `restit_rec_${cleanSlug ? `${cleanSlug}_` : ''}${hash.slice(0, 32)}`;
 }
 
+export function generateRestitutionReversalDocId(restitutionId: string, idempotencyKey: string): string {
+  const cleanRestit = (restitutionId || '').trim();
+  const cleanKey = (idempotencyKey || '').trim();
+  const cleanSlug = cleanKey.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 24);
+  const hash = sha256Hex(`restit_rev_${cleanRestit}:${cleanKey}`);
+  return `restit_rev_${cleanSlug ? `${cleanSlug}_` : ''}${hash.slice(0, 32)}`;
+}
+
 export function generateCustodyTransferDocId(senderUid: string, idempotencyKey: string): string {
   const cleanUid = (senderUid || '').trim();
   const cleanKey = (idempotencyKey || '').trim();

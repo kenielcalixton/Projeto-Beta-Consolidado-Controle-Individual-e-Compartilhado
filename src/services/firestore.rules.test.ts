@@ -1276,5 +1276,181 @@ test('FIRESTORE SECURITY RULES — Validação Real no Firestore Emulator (Fase 
       deleteDoc(doc(aliceDb, 'accounts', 'acc_alice_f6', 'movements', 'mov_official_1'))
     );
   });
+
+  await t.test('10. Bloqueio estrito de escritas não autorizadas em obrigações (F6), listas/itens/compras/estoque (F8) e ocorrências/instâncias (F9)', async () => {
+    const aliceDb = testEnv.authenticatedContext('uid_alice').firestore();
+    const bobDb = testEnv.authenticatedContext('uid_bob').firestore();
+    const eveDb = testEnv.authenticatedContext('uid_eve').firestore();
+
+    // 10.1. F6: Bloqueio de escrita direta em liabilities e payments pelo cliente
+    await assertFails(
+      updateDoc(
+        doc(bobDb, 'spaces', 'space_f6', 'shared_expenses', 'exp_test_1', 'liabilities', 'uid_bob'),
+        {
+          remainingAmountCents: 0,
+          status: 'paid',
+        }
+      )
+    );
+    await assertFails(
+      setDoc(
+        doc(bobDb, 'spaces', 'space_f6', 'shared_expenses', 'exp_test_1', 'liabilities', 'uid_bob_hack'),
+        {
+          id: 'uid_bob_hack',
+          remainingAmountCents: 0,
+        }
+      )
+    );
+    await assertFails(
+      setDoc(
+        doc(bobDb, 'spaces', 'space_f6', 'shared_expenses', 'exp_test_1', 'payments', 'pay_hack_1'),
+        {
+          id: 'pay_hack_1',
+          amountCents: 5000,
+          executedByUid: 'uid_bob',
+        }
+      )
+    );
+
+    // 10.2. F8: Isolamento de listas individuais e bloqueio de criação direta de compras e estoque
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      const adminDb = context.firestore();
+      await setDoc(doc(adminDb, 'acquisition_lists', 'list_alice_private'), {
+        id: 'list_alice_private',
+        name: 'Lista Privada Alice',
+        scopeType: 'individual',
+        ownerUid: 'uid_alice',
+        type: 'desejo',
+      });
+      await setDoc(
+        doc(adminDb, 'acquisition_lists', 'list_alice_private', 'items', 'item_secret'),
+        {
+          id: 'item_secret',
+          name: 'Item Secreto',
+          listId: 'list_alice_private',
+          scopeType: 'individual',
+          ownerUid: 'uid_alice',
+        }
+      );
+    });
+
+    // Bob ou Eve não podem ler itens de lista individual de Alice
+    await assertFails(
+      getDoc(doc(bobDb, 'acquisition_lists', 'list_alice_private', 'items', 'item_secret'))
+    );
+    await assertFails(
+      getDoc(doc(eveDb, 'acquisition_lists', 'list_alice_private', 'items', 'item_secret'))
+    );
+
+    // Alice pode ler seu próprio item
+    await assertSucceeds(
+      getDoc(doc(aliceDb, 'acquisition_lists', 'list_alice_private', 'items', 'item_secret'))
+    );
+
+    // Ninguém (nem Alice) pode criar compras ou movimentos de estoque diretamente pelo cliente
+    await assertFails(
+      setDoc(
+        doc(
+          aliceDb,
+          'acquisition_lists',
+          'list_alice_private',
+          'items',
+          'item_secret',
+          'purchases',
+          'pch_hack'
+        ),
+        {
+          id: 'pch_hack',
+          totalPaidCents: 1000,
+          authorUid: 'uid_alice',
+        }
+      )
+    );
+    await assertFails(
+      setDoc(
+        doc(
+          aliceDb,
+          'acquisition_lists',
+          'list_alice_private',
+          'items',
+          'item_secret',
+          'stock_movements',
+          'stk_hack'
+        ),
+        {
+          id: 'stk_hack',
+          quantityDelta: 10,
+          authorUid: 'uid_alice',
+        }
+      )
+    );
+
+    // 10.3. F9: Isolamento e bloqueio de escritas em instâncias e parcelas
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      const adminDb = context.firestore();
+      await setDoc(doc(adminDb, 'recurrence_rules', 'rec_alice_1'), {
+        id: 'rec_alice_1',
+        scope: 'personal',
+        userId: 'uid_alice',
+        title: 'Streaming Alice',
+      });
+      await setDoc(
+        doc(adminDb, 'recurrence_rules', 'rec_alice_1', 'instances', '2026-11'),
+        {
+          id: '2026-11',
+          ruleId: 'rec_alice_1',
+          actualAmountCents: 4990,
+        }
+      );
+      await setDoc(doc(adminDb, 'installment_contracts', 'inst_alice_1'), {
+        id: 'inst_alice_1',
+        scope: 'personal',
+        userId: 'uid_alice',
+        title: 'Notebook Alice',
+      });
+      await setDoc(
+        doc(adminDb, 'installment_contracts', 'inst_alice_1', 'occurrences', '01'),
+        {
+          id: '01',
+          contractId: 'inst_alice_1',
+          installmentNumber: 1,
+          principalAmountCents: 10000,
+          status: 'scheduled',
+        }
+      );
+    });
+
+    // Bob não pode ler as instâncias nem as parcelas do contrato pessoal de Alice
+    await assertFails(
+      getDoc(doc(bobDb, 'recurrence_rules', 'rec_alice_1', 'instances', '2026-11'))
+    );
+    await assertFails(
+      getDoc(doc(bobDb, 'installment_contracts', 'inst_alice_1', 'occurrences', '01'))
+    );
+
+    // Alice pode ler suas próprias instâncias e ocorrências
+    await assertSucceeds(
+      getDoc(doc(aliceDb, 'recurrence_rules', 'rec_alice_1', 'instances', '2026-11'))
+    );
+    await assertSucceeds(
+      getDoc(doc(aliceDb, 'installment_contracts', 'inst_alice_1', 'occurrences', '01'))
+    );
+
+    // Cliente é bloqueado de escrever diretamente em instances e occurrences
+    await assertFails(
+      updateDoc(doc(aliceDb, 'recurrence_rules', 'rec_alice_1', 'instances', '2026-11'), {
+        actualAmountCents: 0,
+      })
+    );
+    await assertFails(
+      updateDoc(
+        doc(aliceDb, 'installment_contracts', 'inst_alice_1', 'occurrences', '01'),
+        {
+          principalAmountCents: 0,
+          status: 'paid',
+        }
+      )
+    );
+  });
 });
 

@@ -40,6 +40,30 @@ service cloud.firestore {
         get(/databases/$(database)/documents/accounts/$(accountId)).data.userId == request.auth.uid;
     }
 
+    function canAccessAcquisitionList(listId) {
+      let listDoc = get(/databases/$(database)/documents/acquisition_lists/$(listId)).data;
+      return (listDoc.scopeType == 'individual' && listDoc.ownerUid == request.auth.uid) ||
+             (listDoc.scopeType == 'shared' && isSpaceMember(listDoc.spaceId));
+    }
+
+    function canWriteAcquisitionList(listId) {
+      let listDoc = get(/databases/$(database)/documents/acquisition_lists/$(listId)).data;
+      return (listDoc.scopeType == 'individual' && listDoc.ownerUid == request.auth.uid) ||
+             (listDoc.scopeType == 'shared' && isSpaceMember(listDoc.spaceId) && isSpaceActive(listDoc.spaceId));
+    }
+
+    function canAccessRecurrenceRule(ruleId) {
+      let r = get(/databases/$(database)/documents/recurrence_rules/$(ruleId)).data;
+      return (r.scope == 'personal' && r.userId == request.auth.uid) ||
+             (r.scope == 'shared' && isSpaceMember(r.spaceId));
+    }
+
+    function canAccessInstallmentContract(contractId) {
+      let c = get(/databases/$(database)/documents/installment_contracts/$(contractId)).data;
+      return (c.scope == 'personal' && c.userId == request.auth.uid) ||
+             (c.scope == 'shared' && isSpaceMember(c.spaceId));
+    }
+
     // 1. Contas Pessoais e Livro de Movimentações
     match /accounts/{accountId} {
       allow read: if isAuthenticated() && resource.data.userId == request.auth.uid;
@@ -377,7 +401,7 @@ service cloud.firestore {
               get(/databases/$(database)/documents/spaces/$(spaceId)/shared_expenses/$(expenseId)).data.responsibleUid == request.auth.uid
             )
           );
-          allow write: if isSpaceMember(spaceId) && isSpaceActive(spaceId);
+          allow write: if false; // Obrigações financeiras manipuladas exclusivamente por Cloud Functions com Admin SDK
         }
 
         match /payments/{paymentId} {
@@ -388,10 +412,7 @@ service cloud.firestore {
               get(/databases/$(database)/documents/spaces/$(spaceId)/shared_expenses/$(expenseId)).data.responsibleUid == request.auth.uid
             )
           );
-          allow create: if isSpaceMember(spaceId) && isSpaceActive(spaceId) &&
-            request.resource.data.executedByUid == request.auth.uid;
-          allow update: if isSpaceMember(spaceId) && isSpaceActive(spaceId) &&
-            request.auth.uid == get(/databases/$(database)/documents/spaces/$(spaceId)/shared_expenses/$(expenseId)).data.responsibleUid;
+          allow write: if false; // Pagamentos processados exclusivamente via Cloud Functions com Admin SDK
         }
 
         match /bilateral_debts/{debtId} {
@@ -402,7 +423,7 @@ service cloud.firestore {
               resource.data.creditorUid == request.auth.uid
             )
           );
-          allow write: if isSpaceMember(spaceId) && isSpaceActive(spaceId);
+          allow write: if false; // Dívidas bilaterais calculadas exclusivamente via Cloud Functions
         }
 
         match /refunds/{refundId} {
@@ -414,8 +435,7 @@ service cloud.firestore {
               get(/databases/$(database)/documents/spaces/$(spaceId)/shared_expenses/$(expenseId)).data.responsibleUid == request.auth.uid
             )
           );
-          allow write: if isSpaceMember(spaceId) && isSpaceActive(spaceId) &&
-            request.auth.uid == get(/databases/$(database)/documents/spaces/$(spaceId)/shared_expenses/$(expenseId)).data.responsibleUid;
+          allow write: if false; // Reembolsos registrados exclusivamente via Cloud Functions com Admin SDK
         }
 
         match /payment_declarations/{declarationId} {
@@ -597,41 +617,44 @@ service cloud.firestore {
     // 6. Listas de Aquisição e Copropriedade
     match /acquisition_lists/{listId} {
       allow read: if isAuthenticated() && (
-        (resource.data.scopeType == 'individual' && resource.data.ownerUid == request.auth.uid) ||
-        (resource.data.scopeType == 'shared' && isSpaceMember(resource.data.spaceId))
+        (resource.data.get('scopeType', '') == 'individual' && resource.data.get('ownerUid', '') == request.auth.uid) ||
+        (resource.data.get('scopeType', '') == 'shared' && isSpaceMember(resource.data.get('spaceId', '')))
       );
       allow create: if isAuthenticated() && (
-        (request.resource.data.scopeType == 'individual' && request.resource.data.ownerUid == request.auth.uid) ||
-        (request.resource.data.scopeType == 'shared' && isSpaceMember(request.resource.data.spaceId) && isSpaceActive(request.resource.data.spaceId))
+        (request.resource.data.get('scopeType', '') == 'individual' && request.resource.data.get('ownerUid', '') == request.auth.uid) ||
+        (request.resource.data.get('scopeType', '') == 'shared' && isSpaceMember(request.resource.data.get('spaceId', '')) && isSpaceActive(request.resource.data.get('spaceId', '')))
       );
       allow update: if isAuthenticated() && (
-        (resource.data.scopeType == 'individual' && resource.data.ownerUid == request.auth.uid) ||
-        (resource.data.scopeType == 'shared' && isSpaceMember(resource.data.spaceId) && isSpaceActive(resource.data.spaceId))
+        (resource.data.get('scopeType', '') == 'individual' && resource.data.get('ownerUid', '') == request.auth.uid) ||
+        (resource.data.get('scopeType', '') == 'shared' && isSpaceMember(resource.data.get('spaceId', '')) && isSpaceActive(resource.data.get('spaceId', '')))
       );
       allow delete: if false;
 
       match /items/{itemId} {
-        allow read: if isAuthenticated();
-        allow write: if isAuthenticated();
+        allow read: if isAuthenticated() && canAccessAcquisitionList(listId);
+        allow create: if isAuthenticated() && canWriteAcquisitionList(listId) &&
+          request.resource.data.createdByUid == request.auth.uid;
+        allow update: if isAuthenticated() && canWriteAcquisitionList(listId);
+        allow delete: if isAuthenticated() && canWriteAcquisitionList(listId);
 
         match /purchases/{purchaseId} {
-          allow read: if isAuthenticated();
-          allow create: if isAuthenticated() && request.resource.data.authorUid == request.auth.uid;
-          allow update, delete: if false; // Compras efetivadas e percentuais de copropriedade são imutáveis
+          allow read: if isAuthenticated() && canAccessAcquisitionList(listId);
+          allow write: if false; // Compras criadas e estornadas exclusivamente via Cloud Functions com Admin SDK
         }
 
         match /quotes/{quoteId} {
-          allow read, write: if isAuthenticated();
+          allow read: if isAuthenticated() && canAccessAcquisitionList(listId);
+          allow write: if false; // Cotações processadas via Cloud Functions com Admin SDK
         }
 
         match /deposits/{depositId} {
-          allow read: if isAuthenticated();
-          allow create: if isAuthenticated() && request.resource.data.contributorUid == request.auth.uid;
+          allow read: if isAuthenticated() && canAccessAcquisitionList(listId);
+          allow write: if false; // Depósitos processados via Cloud Functions com Admin SDK
         }
 
         match /stock_movements/{movementId} {
-          allow read: if isAuthenticated();
-          allow create: if isAuthenticated() && request.resource.data.authorUid == request.auth.uid;
+          allow read: if isAuthenticated() && canAccessAcquisitionList(listId);
+          allow write: if false; // Movimentações de estoque geradas exclusivamente via Cloud Functions com Admin SDK
         }
       }
     }
@@ -653,7 +676,8 @@ service cloud.firestore {
       allow delete: if false;
 
       match /instances/{competenceMonth} {
-        allow read, write: if isAuthenticated();
+        allow read: if isAuthenticated() && canAccessRecurrenceRule(ruleId);
+        allow write: if false; // Instâncias geradas exclusivamente via Cloud Functions com Admin SDK
       }
     }
 
@@ -673,7 +697,8 @@ service cloud.firestore {
       allow delete: if false;
 
       match /occurrences/{installmentNumber} {
-        allow read, write: if isAuthenticated();
+        allow read: if isAuthenticated() && canAccessInstallmentContract(contractId);
+        allow write: if false; // Ocorrências geradas e atualizadas exclusivamente via Cloud Functions com Admin SDK
       }
     }
 

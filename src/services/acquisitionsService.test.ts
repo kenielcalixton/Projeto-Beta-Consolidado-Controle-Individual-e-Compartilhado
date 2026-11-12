@@ -16,6 +16,8 @@ import {
   getAcquisitionQuotes,
   recordAcquisitionDeposit,
   getAcquisitionDeposits,
+  reverseAcquisitionPurchase,
+  getAcquisitionPurchaseReversals,
 } from './acquisitionsService';
 import { universalStorage } from '../utils/universalStorage';
 
@@ -446,5 +448,104 @@ describe('FASE 8 — Listas de Aquisição e Copropriedade de Bens (Arquitetura 
 
     const smovs = await getStockMovements(list.id, item.id, true);
     assert.equal(smovs.length, 1, 'Movimentação de estoque deve ser única');
+  });
+
+  it('8. Estorno compensatório de compra de aquisição: decrementa estoque compensatoriamente, gera subcoleção reversals e assegura idempotência', async () => {
+    const list = await createAcquisitionList(
+      ALICE_UID,
+      {
+        name: 'Despensa para Estorno',
+        scopeType: 'individual',
+        type: 'recorrente',
+      },
+      true
+    );
+
+    const item = await createAcquisitionItem(
+      ALICE_UID,
+      list.id,
+      {
+        name: 'Detergente Neutro',
+        groupId: 'grp_limpeza',
+        categoryId: 'cat_cozinha',
+        currentStock: 1,
+      },
+      true
+    );
+
+    // Compra de 2 unidades
+    const purRes = await recordAcquisitionPurchase(
+      ALICE_UID,
+      {
+        listId: list.id,
+        itemId: item.id,
+        storeName: 'Mercado do Bairro',
+        quantity: 2,
+        unitPriceCents: 250,
+        itemsNetCents: 500,
+        totalPaidCents: 500,
+        disbursements: [
+          {
+            funderUid: ALICE_UID,
+            funderName: 'Alice',
+            disbursedAmountCents: 500,
+            fundingSource: 'checking',
+          },
+        ],
+        idempotencyKey: 'idem_pur_detergente_500',
+      },
+      true
+    );
+
+    assert.equal(purRes.item.currentStock, 3); // 1 + 2 = 3
+
+    // Estorno da compra
+    const revRes = await reverseAcquisitionPurchase(
+      ALICE_UID,
+      {
+        listId: list.id,
+        itemId: item.id,
+        purchaseId: purRes.purchase.id,
+        reversalReason: 'Produto com vazamento devolvido ao fornecedor',
+        idempotencyKey: 'idem_rev_detergente_1',
+      },
+      true
+    );
+
+    assert.equal(revRes.isIdempotentReplay, false);
+    assert.equal(revRes.reversal.purchaseId, purRes.purchase.id);
+    assert.equal(revRes.reversal.totalReversedAmountCents, 500);
+    assert.equal(revRes.item.currentStock, 1, 'Estoque deve ser revertido compensatoriamente para 1');
+
+    const smovs = await getStockMovements(list.id, item.id, true);
+    assert.equal(smovs.length, 2);
+    const revSmov = smovs.find((s) => s.movementType === 'reversal_outflow');
+    assert.ok(revSmov);
+    assert.equal(revSmov?.quantityDelta, -2);
+
+    // Subcoleção reversals consultada
+    const revList = await getAcquisitionPurchaseReversals(list.id, item.id, true);
+    assert.equal(revList.length, 1);
+    assert.equal(revList[0].id, revRes.reversal.id);
+
+    // Replay idempotente do estorno
+    const replayRev = await reverseAcquisitionPurchase(
+      ALICE_UID,
+      {
+        listId: list.id,
+        itemId: item.id,
+        purchaseId: purRes.purchase.id,
+        reversalReason: 'Produto com vazamento devolvido ao fornecedor',
+        idempotencyKey: 'idem_rev_detergente_1',
+      },
+      true
+    );
+
+    assert.equal(replayRev.isIdempotentReplay, true);
+    assert.equal(replayRev.reversal.id, revRes.reversal.id);
+
+    // Estoque não é decrementado novamente
+    const finalItem = await getAcquisitionItemById(list.id, item.id, true);
+    assert.equal(finalItem?.currentStock, 1);
   });
 });

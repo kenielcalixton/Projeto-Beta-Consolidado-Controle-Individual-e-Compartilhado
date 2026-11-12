@@ -38,6 +38,7 @@ import {
 import { validatePositiveCents } from '../utils/movementLedger';
 import { universalStorage } from '../utils/universalStorage';
 import { withDemoLock } from './ledgerService';
+import { loadDemoInvoices, saveDemoInvoices } from './creditCardService';
 
 // ------------------------------------------------------------------------------
 // CHAVES DE ARMAZENAMENTO DEMO
@@ -462,6 +463,39 @@ export async function createInstallmentContract(
 
         occurrences.push(occurrenceDoc);
 
+        // Se fundingSource for cartão de crédito em demo, projeta nas faturas
+        if (params.fundingSource === 'credit_card' && params.sourceCardAccountId) {
+          const invoices = loadDemoInvoices();
+          let inv = invoices.find(
+            (i) => i.accountId === params.sourceCardAccountId && i.invoiceMonth === compMonth
+          );
+          if (inv) {
+            inv.totalPurchasesAmountCents += principalAmountCents;
+            inv.totalDueAmountCents += principalAmountCents;
+            inv.remainingBalanceCents += principalAmountCents;
+            inv.updatedAt = now;
+          } else {
+            inv = {
+              id: compMonth,
+              accountId: params.sourceCardAccountId,
+              userId: params.userId,
+              invoiceMonth: compMonth,
+              closingDate: `${compMonth}-20`,
+              dueDate,
+              totalPurchasesAmountCents: principalAmountCents,
+              carriedOverBalanceCents: 0,
+              interestAndFeesCents: 0,
+              totalDueAmountCents: principalAmountCents,
+              totalPaidAmountCents: 0,
+              remainingBalanceCents: principalAmountCents,
+              invoiceStatus: 'open',
+              updatedAt: now,
+            };
+            invoices.push(inv);
+          }
+          saveDemoInvoices(invoices);
+        }
+
         curMonth++;
         if (curMonth > 12) {
           curMonth = 1;
@@ -508,16 +542,34 @@ export async function cancelInstallmentContract(
       saveDemoInstallmentContracts(contracts);
 
       const occurrences = loadDemoInstallmentOccurrences();
-
+      const invoices = loadDemoInvoices();
       let cancelledCount = 0;
+
       for (let i = 0; i < occurrences.length; i++) {
         if (
           occurrences[i].contractId === params.contractId &&
           occurrences[i].status === 'scheduled'
         ) {
-          occurrences[i] = { ...occurrences[i], status: 'cancelled' };
+          const occ = occurrences[i];
+          occurrences[i] = { ...occ, status: 'cancelled' };
           cancelledCount++;
+
+          if (contract.fundingSource === 'credit_card' && contract.sourceCardAccountId) {
+            const inv = invoices.find(
+              (inv) => inv.accountId === contract.sourceCardAccountId && inv.invoiceMonth === occ.competenceMonth
+            );
+            if (inv) {
+              inv.totalPurchasesAmountCents = Math.max(0, inv.totalPurchasesAmountCents - occ.principalAmountCents);
+              inv.totalDueAmountCents = Math.max(0, inv.totalDueAmountCents - occ.principalAmountCents);
+              inv.remainingBalanceCents = Math.max(0, inv.remainingBalanceCents - occ.principalAmountCents);
+              inv.updatedAt = new Date().toISOString();
+            }
+          }
         }
+      }
+
+      if (contract.fundingSource === 'credit_card' && contract.sourceCardAccountId) {
+        saveDemoInvoices(invoices);
       }
 
       saveDemoInstallmentOccurrences(occurrences);

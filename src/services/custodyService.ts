@@ -714,6 +714,297 @@ export async function returnCustodyFunds(
   });
 }
 
+export interface DeclareCustodyReturnInput {
+  transferId: string;
+  sourceAccountId: string;
+  amountCents: CentsInteger;
+  justification?: string;
+  idempotencyKey?: string;
+}
+
+export interface DeclareCustodyReturnResult {
+  transfer: CustodyTransfer;
+  returnRecord: CustodyReturn;
+  isIdempotentReplay: boolean;
+}
+
+export async function declareCustodyReturn(
+  custodianUid: string,
+  input: DeclareCustodyReturnInput,
+  isDemo = false
+): Promise<DeclareCustodyReturnResult> {
+  if (!validatePositiveCents(input.amountCents)) {
+    throw new Error('O valor de devolução deve ser um inteiro positivo em centavos.');
+  }
+
+  const idempotencyKey =
+    input.idempotencyKey?.trim() ||
+    `idem_custdecl_${input.transferId}_${input.amountCents}_${Date.now()}`;
+
+  if (!isDemo) {
+    const callable = httpsCallable<
+      DeclareCustodyReturnInput & { idempotencyKey: string },
+      DeclareCustodyReturnResult
+    >(functions, 'declareCustodyReturnOfficial');
+
+    const res = await callable({
+      ...input,
+      idempotencyKey,
+    });
+    return res.data;
+  }
+
+  return withDemoLock(async () => {
+    const transfers = loadDemoCustodyTransfers();
+    const idx = transfers.findIndex((t) => t.id === input.transferId);
+    if (idx === -1) throw new Error('Transferência sob custódia não encontrada.');
+    const transfer = transfers[idx];
+
+    if (transfer.custodianUid !== custodianUid) {
+      throw new Error('Somente o custodiante legítimo pode declarar a devolução de custódia.');
+    }
+
+    const returnId = generateCustodyReturnDocId(transfer.id, idempotencyKey);
+    const returns = loadDemoCustodyReturns();
+    const existing = returns.find((r) => r.id === returnId);
+    if (existing) {
+      return { transfer, returnRecord: existing, isIdempotentReplay: true };
+    }
+
+    if (input.amountCents > transfer.availableBalanceCents) {
+      throw new Error('O valor de devolução excede o saldo disponível sob custódia.');
+    }
+
+    const now = new Date().toISOString();
+    const newAvailable = transfer.availableBalanceCents - input.amountCents;
+    const newReserved = (transfer.reservedForReturnCents || 0) + input.amountCents;
+
+    const updated: CustodyTransfer = {
+      ...transfer,
+      availableBalanceCents: newAvailable,
+      reservedForReturnCents: newReserved,
+      custodyStatus: 'return_pending_confirmation',
+      updatedAt: now,
+    };
+    transfers[idx] = updated;
+    saveDemoCustodyTransfers(transfers);
+
+    const returnRecord: CustodyReturn = {
+      id: returnId,
+      transferId: transfer.id,
+      spaceId: transfer.spaceId,
+      amountCents: input.amountCents,
+      status: 'pending_confirmation',
+      returnedByUid: custodianUid,
+      receivedByUid: transfer.senderUid,
+      sourceAccountId: input.sourceAccountId,
+      destinationAccountId: null,
+      sourceMovementId: null,
+      destinationMovementId: null,
+      justification: input.justification,
+      idempotencyKey,
+      createdAt: now,
+    };
+    returns.push(returnRecord);
+    saveDemoCustodyReturns(returns);
+
+    const eventId = generateCustodyEventDocId(transfer.id, 'return_declared', idempotencyKey);
+    const events = loadDemoCustodyEvents();
+    events.push({
+      id: eventId,
+      transferId: transfer.id,
+      eventType: 'return_declared',
+      amountCents: input.amountCents,
+      affectedAccountId: input.sourceAccountId,
+      financialMovementId: null,
+      performedByUid: custodianUid,
+      justification: input.justification,
+      clientTransactionUuid: returnId,
+      idempotencyKey,
+      timestamp: now,
+    });
+    saveDemoCustodyEvents(events);
+
+    return {
+      transfer: updated,
+      returnRecord,
+      isIdempotentReplay: false,
+    };
+  });
+}
+
+export interface ConfirmCustodyReturnReceiptInput {
+  transferId: string;
+  returnId: string;
+  destinationAccountId: string;
+  notes?: string;
+  idempotencyKey?: string;
+}
+
+export interface ConfirmCustodyReturnReceiptResult {
+  transfer: CustodyTransfer;
+  returnRecord: CustodyReturn;
+  sourceMovement?: FinancialMovement;
+  destinationMovement?: FinancialMovement;
+  isIdempotentReplay: boolean;
+}
+
+export async function confirmCustodyReturnReceipt(
+  senderUid: string,
+  input: ConfirmCustodyReturnReceiptInput,
+  isDemo = false
+): Promise<ConfirmCustodyReturnReceiptResult> {
+  if (!input.transferId || !input.returnId || !input.destinationAccountId) {
+    throw new Error('Parâmetros obrigatórios ausentes para confirmação de recebimento de devolução.');
+  }
+
+  const idempotencyKey =
+    input.idempotencyKey?.trim() ||
+    `idem_custrec_${input.returnId}_${Date.now()}`;
+
+  if (!isDemo) {
+    const callable = httpsCallable<
+      ConfirmCustodyReturnReceiptInput & { idempotencyKey: string },
+      ConfirmCustodyReturnReceiptResult
+    >(functions, 'confirmCustodyReturnReceiptOfficial');
+
+    const res = await callable({
+      ...input,
+      idempotencyKey,
+    });
+    return res.data;
+  }
+
+  return withDemoLock(async () => {
+    const transfers = loadDemoCustodyTransfers();
+    const tIdx = transfers.findIndex((t) => t.id === input.transferId);
+    if (tIdx === -1) throw new Error('Transferência sob custódia não encontrada.');
+    const transfer = transfers[tIdx];
+
+    if (transfer.senderUid !== senderUid) {
+      throw new Error('Somente o remetente original dos fundos pode confirmar o recebimento.');
+    }
+
+    const returns = loadDemoCustodyReturns();
+    const rIdx = returns.findIndex((r) => r.id === input.returnId);
+    if (rIdx === -1) throw new Error('Registro de devolução não encontrado.');
+    const returnRecord = returns[rIdx];
+
+    if (returnRecord.status === 'confirmed') {
+      return { transfer, returnRecord, isIdempotentReplay: true };
+    }
+
+    const now = new Date().toISOString();
+    const effectiveDate = now.slice(0, 10);
+
+    const outMov = await recordMovement(
+      {
+        accountId: returnRecord.sourceAccountId,
+        userId: transfer.custodianUid,
+        direction: 'outflow',
+        amountCents: returnRecord.amountCents,
+        effectiveDate,
+        originType: 'custody_return_out',
+        originId: returnRecord.id,
+        description: `Devolução de custódia para ${senderUid}`,
+        notes: input.notes || returnRecord.justification || `Devolução de custódia #${transfer.id}`,
+        authorUid: senderUid,
+        idempotencyKey: `${idempotencyKey}_ret_out`,
+      },
+      true
+    );
+
+    const inMov = await recordMovement(
+      {
+        accountId: input.destinationAccountId,
+        userId: senderUid,
+        direction: 'inflow',
+        amountCents: returnRecord.amountCents,
+        effectiveDate,
+        originType: 'custody_return_in',
+        originId: returnRecord.id,
+        description: `Devolução de custódia de ${transfer.custodianUid}`,
+        notes: input.notes || returnRecord.justification || `Ressarcimento de saldo sob custódia #${transfer.id}`,
+        authorUid: senderUid,
+        idempotencyKey: `${idempotencyKey}_ret_in`,
+      },
+      true
+    );
+
+    const newReserved = Math.max(0, (transfer.reservedForReturnCents || returnRecord.amountCents) - returnRecord.amountCents);
+    const newReturned = (transfer.returnedAmountCents || 0) + returnRecord.amountCents;
+
+    let newStatus: CustodyTransferStatus = 'partial_return_confirmed';
+    if (transfer.availableBalanceCents === 0 && newReserved === 0) {
+      newStatus = (transfer.usedAmountCents || 0) > 0 ? 'settled_by_mixed' : 'settled_by_return';
+    }
+
+    const updated: CustodyTransfer = {
+      ...transfer,
+      reservedForReturnCents: newReserved,
+      returnedAmountCents: newReturned,
+      custodyStatus: newStatus,
+      updatedAt: now,
+    };
+    transfers[tIdx] = updated;
+    saveDemoCustodyTransfers(transfers);
+
+    const updatedReturn: CustodyReturn = {
+      ...returnRecord,
+      status: 'confirmed',
+      destinationAccountId: input.destinationAccountId,
+      sourceMovementId: outMov.id,
+      destinationMovementId: inMov.id,
+      confirmedAt: now,
+      updatedAt: now,
+    };
+    returns[rIdx] = updatedReturn;
+    saveDemoCustodyReturns(returns);
+
+    const eventId = generateCustodyEventDocId(transfer.id, 'return_confirmed', idempotencyKey);
+    const events = loadDemoCustodyEvents();
+    events.push({
+      id: eventId,
+      transferId: transfer.id,
+      eventType: 'return_confirmed',
+      amountCents: returnRecord.amountCents,
+      affectedAccountId: input.destinationAccountId,
+      financialMovementId: inMov.id,
+      performedByUid: senderUid,
+      justification: input.notes || null,
+      clientTransactionUuid: returnRecord.id,
+      idempotencyKey,
+      timestamp: now,
+    });
+    saveDemoCustodyEvents(events);
+
+    return {
+      transfer: updated,
+      returnRecord: updatedReturn,
+      sourceMovement: outMov,
+      destinationMovement: inMov,
+      isIdempotentReplay: false,
+    };
+  });
+}
+
+export async function getCustodyReturns(
+  transferId: string,
+  isDemo = false
+): Promise<CustodyReturn[]> {
+  if (isDemo) {
+    const list = loadDemoCustodyReturns();
+    return list.filter((r) => r.transferId === transferId);
+  }
+
+  const snap = await getDocs(
+    collection(db, 'transfers', transferId, 'returns')
+  );
+  const result: CustodyReturn[] = [];
+  snap.forEach((d) => result.push({ ...(d.data() as CustodyReturn), id: d.id }));
+  return result;
+}
+
 /**
  * Consulta transferências sob custódia de um espaço compartilhado
  */

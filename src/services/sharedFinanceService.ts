@@ -21,6 +21,7 @@ import {
   ExpenseRestitutionDeclaration,
   ExpenseRestitutionObligation,
   ExpenseRestitutionReceipt,
+  ExpenseRestitutionReversal,
   ExpenseRestitutionStatus,
   FinancialMovement,
   ISO8601String,
@@ -43,6 +44,7 @@ import {
   generateRestitutionDeclarationDocId,
   generateRestitutionDocId,
   generateRestitutionReceiptDocId,
+  generateRestitutionReversalDocId,
   generateSharedExpenseDocId,
   generateSupplierRefundDocId,
   validatePositiveCents,
@@ -130,6 +132,21 @@ export function loadDemoRestitutionReceipts(): ExpenseRestitutionReceipt[] {
 
 export function saveDemoRestitutionReceipts(data: ExpenseRestitutionReceipt[]): void {
   universalStorage.setItem(DEMO_RESTITUTION_RECEIPTS_KEY, JSON.stringify(data));
+}
+
+export const DEMO_RESTITUTION_REVERSALS_KEY = 'mpf_v3_demo_restitution_reversals';
+
+export function loadDemoRestitutionReversals(): ExpenseRestitutionReversal[] {
+  try {
+    const raw = universalStorage.getItem(DEMO_RESTITUTION_REVERSALS_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveDemoRestitutionReversals(data: ExpenseRestitutionReversal[]): void {
+  universalStorage.setItem(DEMO_RESTITUTION_REVERSALS_KEY, JSON.stringify(data));
 }
 
 export function loadDemoPaymentRejections(): ExpensePaymentRejection[] {
@@ -1660,6 +1677,133 @@ export async function confirmRestitutionReceipt(
 
     return { receipt, restitution, movement: movResult };
   });
+}
+
+export interface ReverseRestitutionReceiptInput {
+  spaceId: string;
+  expenseId: string;
+  restitutionId: string;
+  receiptId: string;
+  reversalReason: string;
+  idempotencyKey?: string;
+}
+
+export async function reverseRestitutionReceipt(
+  callerUid: string,
+  input: ReverseRestitutionReceiptInput,
+  isDemo = false
+): Promise<{
+  reversal: ExpenseRestitutionReversal;
+  restitution: ExpenseRestitutionObligation;
+  movement?: FinancialMovement;
+}> {
+  if (!input.spaceId || !input.expenseId || !input.restitutionId || !input.receiptId) {
+    throw new Error('Parâmetros obrigatórios ausentes para estorno de recebimento de restituição.');
+  }
+
+  const idempotencyKey = input.idempotencyKey?.trim() || `rev_rst_${input.receiptId}`;
+
+  if (!isDemo) {
+    const callable = httpsCallable<
+      ReverseRestitutionReceiptInput & { idempotencyKey: string },
+      { reversal: ExpenseRestitutionReversal; restitution: ExpenseRestitutionObligation; compensatoryMovement?: FinancialMovement }
+    >(functions, 'reverseRestitutionReceiptOfficial');
+    const res = await callable({ ...input, idempotencyKey });
+    return {
+      reversal: res.data.reversal,
+      restitution: res.data.restitution,
+      movement: res.data.compensatoryMovement,
+    };
+  }
+
+  return withDemoLock(async () => {
+    const restitutions = loadDemoRestitutions();
+    const restitution = restitutions.find((r) => r.id === input.restitutionId);
+    if (!restitution) throw new Error(`Obrigação de restituição "${input.restitutionId}" não encontrada.`);
+
+    const receipts = loadDemoRestitutionReceipts();
+    const receipt = receipts.find((rc) => rc.id === input.receiptId);
+    if (!receipt) throw new Error(`Recibo de restituição "${input.receiptId}" não encontrado.`);
+
+    if (restitution.creditorUid !== callerUid) {
+      throw new Error('Somente o credor legítimo pode estornar o recebimento de restituição.');
+    }
+
+    const reversals = loadDemoRestitutionReversals();
+    const reversalId = generateRestitutionReversalDocId(input.restitutionId, idempotencyKey);
+    const existing = reversals.find((rv) => rv.id === reversalId || rv.receiptId === input.receiptId);
+    if (existing) {
+      return { reversal: existing, restitution };
+    }
+
+    const now = new Date().toISOString();
+
+    // Movimento compensatório de saída na conta do credor
+    const movResult = await recordMovement(
+      {
+        accountId: receipt.destinationAccountId,
+        userId: receipt.creditorUid,
+        authorUid: callerUid,
+        direction: 'outflow',
+        amountCents: receipt.amountCents,
+        effectiveDate: now.split('T')[0],
+        originType: 'shared_settlement',
+        originId: reversalId,
+        reversalOfMovementId: receipt.financialMovementId,
+        description: `Estorno de recebimento de restituição (${input.receiptId})`,
+        notes: input.reversalReason || 'Estorno oficial de recebimento de restituição.',
+        idempotencyKey: `${idempotencyKey}_comp`,
+      },
+      true
+    );
+
+    const reversal: ExpenseRestitutionReversal = {
+      id: reversalId,
+      receiptId: input.receiptId,
+      restitutionId: input.restitutionId,
+      spaceId: input.spaceId,
+      expenseId: input.expenseId,
+      amountCents: receipt.amountCents,
+      reversalReason: input.reversalReason || 'Estorno de recebimento de restituição',
+      compensatoryMovementId: movResult.id,
+      reversedByUid: callerUid,
+      idempotencyKey,
+      createdAt: now,
+    };
+    reversals.push(reversal);
+    saveDemoRestitutionReversals(reversals);
+
+    const newRestituted = Math.max(0, (restitution.restitutedAmountCents || 0) - receipt.amountCents);
+    const newRemaining = Math.min(restitution.amountToRestoreCents, (restitution.remainingAmountCents || 0) + receipt.amountCents);
+    const newStatus: ExpenseRestitutionStatus = newRestituted === 0 ? 'pending' : 'partial';
+
+    restitution.restitutedAmountCents = newRestituted;
+    restitution.remainingAmountCents = newRemaining;
+    restitution.status = newStatus;
+    restitution.updatedAt = now;
+    saveDemoRestitutions(restitutions);
+
+    return { reversal, restitution, movement: movResult };
+  });
+}
+
+export async function getRestitutionReversals(
+  spaceId: string,
+  expenseId: string,
+  restitutionId: string,
+  isDemo = false
+): Promise<ExpenseRestitutionReversal[]> {
+  if (isDemo) {
+    const list = loadDemoRestitutionReversals();
+    return list.filter((r) => r.restitutionId === restitutionId);
+  }
+
+  const snap = await getDocs(
+    collection(db, 'spaces', spaceId, 'shared_expenses', expenseId, 'restitutions', restitutionId, 'reversals')
+  );
+  const result: ExpenseRestitutionReversal[] = [];
+  snap.forEach((d) => result.push({ ...(d.data() as ExpenseRestitutionReversal), id: d.id }));
+  return result;
 }
 
 // ==============================================================================

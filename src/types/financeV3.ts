@@ -62,6 +62,9 @@ export type FinancialMovementOriginType =
   | 'shared_reimbursement'
   | 'restitution_inflow'
   | 'restitution_outflow'
+  | 'shared_settlement'
+  | 'acquisition_checkout'
+  | 'acquisition_reversal'
   | 'manual_adjustment';
 
 /**
@@ -1110,6 +1113,24 @@ export interface ExpenseRestitutionReceipt {
   createdAt: ISO8601String;
 }
 
+/**
+ * Evento oficial de estorno de recebimento de restituição.
+ * Caminho Firestore: spaces/{spaceId}/shared_expenses/{expenseId}/restitutions/{restitutionId}/reversals/{reversalId}
+ */
+export interface ExpenseRestitutionReversal {
+  id: string;
+  receiptId: string;
+  restitutionId: string;
+  spaceId: string;
+  expenseId: string;
+  amountCents: CentsInteger;
+  reversalReason: string;
+  compensatoryMovementId: string;
+  reversedByUid: string;
+  idempotencyKey: string;
+  createdAt: ISO8601String;
+}
+
 export type ExpensePaymentFundingSource = 'personal_checking' | 'credit_card' | 'wallet' | 'custody_transfer';
 export type ExpensePaymentValidationStatus = 'pending_validation' | 'approved' | 'rejected';
 
@@ -1245,6 +1266,7 @@ export type CustodyTransferStatus =
   | 'available'
   | 'partially_used'
   | 'fully_used'
+  | 'return_pending_confirmation'
   | 'partial_return_pending'
   | 'partial_return_confirmed'
   | 'full_return_pending'
@@ -1271,6 +1293,7 @@ export interface CustodyTransfer {
   confirmedAmountCents?: CentsInteger;
   usedAmountCents: CentsInteger;
   returnedAmountCents: CentsInteger;
+  reservedForReturnCents?: CentsInteger;
   /** initialAmountCents - (usedAmountCents + returnedAmountCents) >= 0 */
   availableBalanceCents: CentsInteger;
   sourceAccountId: string;
@@ -1291,6 +1314,7 @@ export type CustodyTransferEventType =
   | 'transfer_declared'
   | 'receipt_confirmed'
   | 'expense_consumed'
+  | 'return_declared'
   | 'return_requested'
   | 'return_confirmed'
   | 'adjustment_reverted';
@@ -1306,9 +1330,9 @@ export interface CustodyTransferEvent {
   amountCents: CentsInteger;
   targetExpenseId?: string;
   affectedAccountId?: string;
-  financialMovementId?: string;
+  financialMovementId?: string | null;
   performedByUid: string;
-  justification?: string;
+  justification?: string | null;
   clientTransactionUuid: string;
   idempotencyKey?: string;
   timestamp: ISO8601String;
@@ -1338,17 +1362,20 @@ export interface CustodyUsage {
 export interface CustodyReturn {
   id: string;
   transferId: string;
-  spaceId?: string;
+  spaceId?: string | null;
   amountCents: CentsInteger;
+  status?: 'pending_confirmation' | 'confirmed';
   returnedByUid: string;
   receivedByUid: string;
   sourceAccountId: string;
-  destinationAccountId: string;
-  sourceMovementId: string;
-  destinationMovementId: string;
-  justification?: string;
+  destinationAccountId?: string | null;
+  sourceMovementId?: string | null;
+  destinationMovementId?: string | null;
+  justification?: string | null;
   idempotencyKey: string;
+  confirmedAt?: ISO8601String;
   createdAt: ISO8601String;
+  updatedAt?: ISO8601String;
 }
 
 /**
@@ -1568,6 +1595,23 @@ export interface AcquisitionPurchaseRecord {
 }
 
 /**
+ * Registro de estorno de compra de aquisição com integridade patrimonial.
+ * Caminho Firestore: acquisition_lists/{listId}/items/{itemId}/purchase_reversals/{reversalId}
+ */
+export interface AcquisitionPurchaseReversal {
+  id: string;
+  purchaseId: string;
+  itemId: string;
+  listId: string;
+  spaceId?: string | null;
+  totalReversedAmountCents: CentsInteger;
+  reversalReason: string;
+  reversedByUid: string;
+  idempotencyKey: string;
+  createdAt: ISO8601String;
+}
+
+/**
  * Cotação independente de mercado para itens de objetivo.
  * Caminho Firestore: acquisition_lists/{listId}/items/{itemId}/quotes/{quoteId}
  */
@@ -1598,7 +1642,7 @@ export interface AcquisitionDepositEvent {
   createdAt: ISO8601String;
 }
 
-export type StockMovementEventType = 'purchase_inflow' | 'manual_adjustment' | 'consumption_outflow';
+export type StockMovementEventType = 'purchase_inflow' | 'manual_adjustment' | 'consumption_outflow' | 'reversal_outflow';
 
 /**
  * Evento imutável de movimentação de estoque para itens recorrentes.

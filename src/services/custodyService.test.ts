@@ -5,6 +5,9 @@ import { createAccount } from './accountService';
 import {
   confirmCustodyReceipt,
   createCustodyTransfer,
+  declareCustodyReturn,
+  confirmCustodyReturnReceipt,
+  getCustodyReturns,
   getSpaceCustodyBalances,
   getSpaceCustodyTransfers,
   getUserCustodyTransfers,
@@ -246,5 +249,110 @@ test('FASE 7 — Transferências sob Custódia e Adiantamentos entre Participant
     assert.equal(balances[0].totalUsedCents, 12000);
     assert.equal(balances[0].totalReturnedCents, 8000);
     assert.equal(balances[0].availableBalanceCents, 0);
+  });
+
+  await t.test('9. Devolução de custódia em 2 etapas: Bob declara devolução (reserva saldo) e Alice confirma recebimento (liquida e credita Alice)', async () => {
+    // Nova transferência de Alice para Bob de R$ 100,00
+    const trRes = await createCustodyTransfer(
+      aliceUid,
+      {
+        spaceId,
+        custodianUid: bobUid,
+        initialAmountCents: 10000,
+        sourceAccountId: aliceChecking.id,
+        description: 'Adiantamento 2 etapas',
+        transferDate: '2026-11-12',
+        idempotencyKey: 'idem_xfer_2step',
+      },
+      true
+    );
+
+    const confRes = await confirmCustodyReceipt(
+      bobUid,
+      {
+        transferId: trRes.transfer.id,
+        destinationAccountId: bobChecking.id,
+        idempotencyKey: 'idem_conf_2step',
+      },
+      true
+    );
+
+    // Saldo inicial de Bob antes da devolução
+    const bobMovsBefore = await getAccountMovements(bobChecking.id, bobUid, true);
+    const bobCountBefore = bobMovsBefore.length;
+
+    // 1. Bob declara devolução de R$ 60,00
+    const declRes = await declareCustodyReturn(
+      bobUid,
+      {
+        transferId: trRes.transfer.id,
+        sourceAccountId: bobChecking.id,
+        amountCents: 6000,
+        justification: 'Devolvendo sobra via Pix',
+        idempotencyKey: 'idem_decl_ret_60',
+      },
+      true
+    );
+
+    assert.equal(declRes.transfer.availableBalanceCents, 4000);
+    assert.equal(declRes.transfer.reservedForReturnCents, 6000);
+    assert.equal(declRes.transfer.custodyStatus, 'return_pending_confirmation');
+    assert.equal(declRes.returnRecord.status, 'pending_confirmation');
+    assert.equal(declRes.returnRecord.amountCents, 6000);
+
+    // Contas bancárias ainda não foram movimentadas na declaração
+    const bobMovsAfterDecl = await getAccountMovements(bobChecking.id, bobUid, true);
+    assert.equal(bobMovsAfterDecl.length, bobCountBefore, 'Não gera movimento bancário antes da confirmação');
+
+    // Replay idempotente na declaração
+    const replayDecl = await declareCustodyReturn(
+      bobUid,
+      {
+        transferId: trRes.transfer.id,
+        sourceAccountId: bobChecking.id,
+        amountCents: 6000,
+        justification: 'Devolvendo sobra via Pix',
+        idempotencyKey: 'idem_decl_ret_60',
+      },
+      true
+    );
+    assert.equal(replayDecl.isIdempotentReplay, true);
+    assert.equal(replayDecl.returnRecord.id, declRes.returnRecord.id);
+
+    // 2. Alice confirma o recebimento dos R$ 60,00
+    const confRetRes = await confirmCustodyReturnReceipt(
+      aliceUid,
+      {
+        transferId: trRes.transfer.id,
+        returnId: declRes.returnRecord.id,
+        destinationAccountId: aliceChecking.id,
+        notes: 'Confirmado na minha conta corrente',
+        idempotencyKey: 'idem_conf_ret_60',
+      },
+      true
+    );
+
+    assert.equal(confRetRes.transfer.availableBalanceCents, 4000);
+    assert.equal(confRetRes.transfer.reservedForReturnCents, 0);
+    assert.equal(confRetRes.transfer.returnedAmountCents, 6000);
+    assert.equal(confRetRes.transfer.custodyStatus, 'partial_return_confirmed');
+    assert.equal(confRetRes.returnRecord.status, 'confirmed');
+
+    // Movimentações bancárias geradas
+    assert.ok(confRetRes.sourceMovement);
+    assert.equal(confRetRes.sourceMovement?.direction, 'outflow');
+    assert.equal(confRetRes.sourceMovement?.amountCents, 6000);
+    assert.equal(confRetRes.sourceMovement?.originType, 'custody_return_out');
+
+    assert.ok(confRetRes.destinationMovement);
+    assert.equal(confRetRes.destinationMovement?.direction, 'inflow');
+    assert.equal(confRetRes.destinationMovement?.amountCents, 6000);
+    assert.equal(confRetRes.destinationMovement?.originType, 'custody_return_in');
+
+    // Listagem de devoluções
+    const returnsList = await getCustodyReturns(trRes.transfer.id, true);
+    assert.equal(returnsList.length, 1);
+    assert.equal(returnsList[0].id, declRes.returnRecord.id);
+    assert.equal(returnsList[0].status, 'confirmed');
   });
 });

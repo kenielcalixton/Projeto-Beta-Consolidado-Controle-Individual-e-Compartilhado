@@ -233,12 +233,14 @@ test('FASE 9 — EMULATOR INTEGRATION: Recorrências e Parcelamentos Desacoplado
   await t.test('4. Cancelamento antecipado de parcelamento preserva parcelas faturadas ou pagas e cancela apenas scheduled', async () => {
     await signInWithEmailAndPassword(auth, 'alice.phase9@exemplo.com', 'SenhaSegura123!');
 
-    // Simula que a parcela 01 foi faturada (billed) e a parcela 02 foi paga (paid)
-    const occ1Ref = doc(db, 'installment_contracts', contract3xId, 'occurrences', '01');
-    const occ2Ref = doc(db, 'installment_contracts', contract3xId, 'occurrences', '02');
+    // Simula que a parcela 01 foi faturada (billed) e a parcela 02 foi paga (paid) via backend Admin
+    const { initializeApp: initAdmin, getApps: getAdminApps } = await import('firebase-admin/app');
+    const { getFirestore: getAdminFirestore } = await import('firebase-admin/firestore');
+    const adminApp = getAdminApps().length ? getAdminApps()[0] : initAdmin({ projectId: 'demo-projeto-beta-v3' });
+    const adminDb = getAdminFirestore(adminApp);
 
-    await updateDoc(occ1Ref, { status: 'billed' });
-    await updateDoc(occ2Ref, { status: 'paid' });
+    await adminDb.doc(`installment_contracts/${contract3xId}/occurrences/01`).update({ status: 'billed' });
+    await adminDb.doc(`installment_contracts/${contract3xId}/occurrences/02`).update({ status: 'paid' });
 
     // Alice executa o cancelamento antecipado
     const cancelRes = await cancelInstallmentContract(

@@ -33,13 +33,14 @@ import {
   StockMovementEventType,
   AcquisitionQuoteEvent,
   AcquisitionDepositEvent,
+  AcquisitionPurchaseReversal,
   CentsInteger,
   DateString,
   ISO8601String,
 } from '../types/financeV3';
 import { validatePositiveCents } from '../utils/movementLedger';
 import { universalStorage } from '../utils/universalStorage';
-import { withDemoLock } from './ledgerService';
+import { recordMovement, withDemoLock } from './ledgerService';
 
 // ------------------------------------------------------------------------------
 // CHAVES DE ARMAZENAMENTO DEMO
@@ -47,6 +48,7 @@ import { withDemoLock } from './ledgerService';
 const DEMO_ACQ_LISTS_KEY = 'demo_acq_lists_v3';
 const DEMO_ACQ_ITEMS_KEY = 'demo_acq_items_v3';
 const DEMO_ACQ_PURCHASES_KEY = 'demo_acq_purchases_v3';
+const DEMO_ACQ_PURCHASE_REVERSALS_KEY = 'demo_acq_purchase_reversals_v3';
 const DEMO_ACQ_STOCK_MOVEMENTS_KEY = 'demo_acq_stock_movements_v3';
 const DEMO_ACQ_QUOTES_KEY = 'demo_acq_quotes_v3';
 const DEMO_ACQ_DEPOSITS_KEY = 'demo_acq_deposits_v3';
@@ -107,6 +109,17 @@ export function generateAcquisitionPurchaseDocId(
   const slug = cleanKey.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 20);
   const h = simpleHash(`acq_purch:${cleanItem}:${cleanKey}`);
   return `pur_${slug ? `${slug}_` : ''}${h}`;
+}
+
+export function generateAcquisitionPurchaseReversalDocId(
+  purchaseId: string,
+  idempotencyKey: string
+): string {
+  const cleanPur = (purchaseId || '').trim();
+  const cleanKey = (idempotencyKey || '').trim();
+  const slug = cleanKey.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 20);
+  const h = simpleHash(`acq_purch_rev:${cleanPur}:${cleanKey}`);
+  return `prev_${slug ? `${slug}_` : ''}${h}`;
 }
 
 export function generateStockMovementDocId(
@@ -170,6 +183,15 @@ function loadDemoAcqPurchases(): AcquisitionPurchaseRecord[] {
 
 function saveDemoAcqPurchases(data: AcquisitionPurchaseRecord[]): void {
   universalStorage.setItem(DEMO_ACQ_PURCHASES_KEY, JSON.stringify(data));
+}
+
+function loadDemoAcqPurchaseReversals(): AcquisitionPurchaseReversal[] {
+  const raw = universalStorage.getItem(DEMO_ACQ_PURCHASE_REVERSALS_KEY);
+  return raw ? JSON.parse(raw) : [];
+}
+
+function saveDemoAcqPurchaseReversals(data: AcquisitionPurchaseReversal[]): void {
+  universalStorage.setItem(DEMO_ACQ_PURCHASE_REVERSALS_KEY, JSON.stringify(data));
 }
 
 function loadDemoStockMovements(): StockMovementEvent[] {
@@ -675,6 +697,165 @@ export async function getAcquisitionPurchases(
   }
   const purchases = loadDemoAcqPurchases();
   return purchases.filter((p) => p.itemId === itemId && p.listId === listId);
+}
+
+export interface ReverseAcquisitionPurchaseInput {
+  listId: string;
+  itemId: string;
+  purchaseId: string;
+  reversalReason?: string;
+  idempotencyKey?: string;
+}
+
+export interface ReverseAcquisitionPurchaseResult {
+  reversal: AcquisitionPurchaseReversal;
+  purchase: AcquisitionPurchaseRecord;
+  item: AcquisitionItem;
+  isIdempotentReplay: boolean;
+}
+
+export async function reverseAcquisitionPurchase(
+  callerUid: string,
+  input: ReverseAcquisitionPurchaseInput,
+  isDemo = false
+): Promise<ReverseAcquisitionPurchaseResult> {
+  if (!input.listId || !input.itemId || !input.purchaseId) {
+    throw new Error('Parâmetros obrigatórios ausentes para estorno de compra.');
+  }
+
+  const idempotencyKey = input.idempotencyKey?.trim() || `rev_pur_${input.purchaseId}`;
+
+  if (!isDemo) {
+    const callable = httpsCallable<
+      ReverseAcquisitionPurchaseInput & { idempotencyKey: string },
+      ReverseAcquisitionPurchaseResult
+    >(functions, 'reverseAcquisitionPurchaseOfficial');
+
+    const res = await callable({
+      ...input,
+      idempotencyKey,
+    });
+    return res.data;
+  }
+
+  return withDemoLock(async () => {
+    const items = loadDemoAcqItems();
+    const itemIdx = items.findIndex((i) => i.id === input.itemId && i.listId === input.listId);
+    if (itemIdx === -1) throw new Error('Item de aquisição não encontrado.');
+    const item = items[itemIdx];
+
+    const purchases = loadDemoAcqPurchases();
+    const purchase = purchases.find((p) => p.id === input.purchaseId);
+    if (!purchase) throw new Error('Registro de compra não encontrado.');
+
+    const reversals = loadDemoAcqPurchaseReversals();
+    const reversalId = generateAcquisitionPurchaseReversalDocId(input.purchaseId, idempotencyKey);
+    const existing = reversals.find((r) => r.id === reversalId || r.purchaseId === input.purchaseId);
+    if (existing) {
+      return { reversal: existing, purchase, item, isIdempotentReplay: true };
+    }
+
+    const now = new Date().toISOString();
+
+    // 1. Reversão de estoque
+    let newStock = item.currentStock || 0;
+    let newStage = item.stage;
+    let finalPaid = item.finalPaidAmountCents;
+
+    if (item.listType === 'recorrente') {
+      const prevStock = item.currentStock || 0;
+      newStock = Math.max(0, prevStock - purchase.quantity);
+      const smovs = loadDemoStockMovements();
+      smovs.push({
+        id: generateStockMovementDocId(item.id, `${idempotencyKey}_smov_rev`),
+        itemId: item.id,
+        movementType: 'reversal_outflow',
+        quantityDelta: -purchase.quantity,
+        previousStock: prevStock,
+        newStock,
+        authorUid: callerUid,
+        justification: input.reversalReason || `Estorno da compra #${purchase.id}`,
+        createdAt: now,
+      });
+      saveDemoStockMovements(smovs);
+    } else if (item.listType === 'objetivo' || item.listType === 'desejo') {
+      newStage = 'cotado';
+      finalPaid = undefined;
+    }
+
+    const updatedItem: AcquisitionItem = {
+      ...item,
+      stage: newStage,
+      currentStock: newStock,
+      finalPaidAmountCents: finalPaid,
+      updatedAt: now,
+    };
+    items[itemIdx] = updatedItem;
+    saveDemoAcqItems(items);
+
+    // 2. Reversão de desembolsos
+    if (Array.isArray(purchase.disbursements)) {
+      for (const d of purchase.disbursements) {
+        if (d.sourceAccountId) {
+          await recordMovement(
+            {
+              accountId: d.sourceAccountId,
+              userId: d.funderUid,
+              authorUid: callerUid,
+              direction: 'inflow',
+              amountCents: d.disbursedAmountCents,
+              effectiveDate: now.slice(0, 10),
+              originType: 'acquisition_checkout',
+              originId: reversalId,
+              reversalOfMovementId: purchase.id,
+              description: `Estorno de compra de aquisição (${item.name})`,
+              notes: input.reversalReason || 'Estorno contábil compensatório de desembolso.',
+              idempotencyKey: `${idempotencyKey}_rev_d_${d.funderUid}`,
+            },
+            true
+          );
+        }
+      }
+    }
+
+    // 3. Registro do estorno
+    const reversalRecord: AcquisitionPurchaseReversal = {
+      id: reversalId,
+      purchaseId: input.purchaseId,
+      itemId: input.itemId,
+      listId: input.listId,
+      spaceId: item.spaceId,
+      totalReversedAmountCents: purchase.totalPaidCents,
+      reversalReason: input.reversalReason || 'Estorno de compra de aquisição',
+      reversedByUid: callerUid,
+      idempotencyKey,
+      createdAt: now,
+    };
+    reversals.push(reversalRecord);
+    saveDemoAcqPurchaseReversals(reversals);
+
+    return {
+      reversal: reversalRecord,
+      purchase,
+      item: updatedItem,
+      isIdempotentReplay: false,
+    };
+  });
+}
+
+export async function getAcquisitionPurchaseReversals(
+  listId: string,
+  itemId: string,
+  isDemo = false
+): Promise<AcquisitionPurchaseReversal[]> {
+  if (!isDemo) {
+    const snap = await getDocs(
+      collection(db, 'acquisition_lists', listId, 'items', itemId, 'purchase_reversals')
+    );
+    return snap.docs.map((d) => d.data() as AcquisitionPurchaseReversal);
+  }
+  const reversals = loadDemoAcqPurchaseReversals();
+  return reversals.filter((r) => r.itemId === itemId && r.listId === listId);
 }
 
 // ==============================================================================

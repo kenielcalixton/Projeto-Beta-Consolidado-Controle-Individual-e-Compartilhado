@@ -25,6 +25,13 @@ import {
   Clock,
   Ban,
   CheckCircle,
+  Repeat,
+  Layers,
+  CalendarClock,
+  Pause,
+  Play,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
 import {
   Account,
@@ -39,6 +46,11 @@ import {
   PersonalTransaction,
   PersonalTransactionStatus,
   PersonalTransactionType,
+  RecurrenceRule,
+  InstallmentContract,
+  InstallmentContractFundingSource,
+  InstallmentOccurrence,
+  RecurrenceInstance,
 } from '../../types/financeV3';
 import { getUserAccounts } from '../../services/accountService';
 import {
@@ -76,6 +88,17 @@ import {
   getRefundReceipts,
 } from '../../services/refundService';
 import {
+  getRecurrenceRules,
+  createRecurrenceRule,
+  updateRecurrenceRuleStatus,
+  generateRecurrenceInstance,
+  getRecurrenceInstances,
+  getInstallmentContracts,
+  createInstallmentContract,
+  getInstallmentOccurrences,
+  cancelInstallmentContract,
+} from '../../services/recurrenceService';
+import {
   formatCentsToBRL,
   parseBRLToCents,
   validatePositiveCents,
@@ -92,7 +115,9 @@ type MainTab =
   | 'transfers'
   | 'budgets'
   | 'refunds'
-  | 'categories';
+  | 'categories'
+  | 'recurrences'
+  | 'installments';
 
 export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
   userId,
@@ -193,6 +218,41 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
   const [newCatColor, setNewCatColor] = useState('#2563EB');
   const [newCatSubmitting, setNewCatSubmitting] = useState(false);
 
+  // Recorrências e Parcelamentos (Fase 9)
+  const [recurrenceRules, setRecurrenceRules] = useState<RecurrenceRule[]>([]);
+  const [installmentContracts, setInstallmentContracts] = useState<InstallmentContract[]>([]);
+  const [expandedContractId, setExpandedContractId] = useState<string | null>(null);
+  const [contractOccurrences, setContractOccurrences] = useState<Record<string, InstallmentOccurrence[]>>({});
+  const [loadingOccurrences, setLoadingOccurrences] = useState<Record<string, boolean>>({});
+
+  // Modal Recorrência
+  const [isRecurrenceModalOpen, setIsRecurrenceModalOpen] = useState(false);
+  const [recTitle, setRecTitle] = useState('');
+  const [recDesc, setRecDesc] = useState('');
+  const [recAmount, setRecAmount] = useState('');
+  const [recFrequency, setRecFrequency] = useState<'monthly' | 'weekly' | 'yearly'>('monthly');
+  const [recStartCompetence, setRecStartCompetence] = useState(() => selectedMonth);
+  const [recDueDay, setRecDueDay] = useState(10);
+  const [recCategory, setRecCategory] = useState('');
+  const [recAccount, setRecAccount] = useState('');
+  const [recSubmitting, setRecSubmitting] = useState(false);
+
+  // Modal Parcelamento
+  const [isInstallmentModalOpen, setIsInstallmentModalOpen] = useState(false);
+  const [instTitle, setInstTitle] = useState('');
+  const [instAmount, setInstAmount] = useState('');
+  const [instCount, setInstCount] = useState(2);
+  const [instFundingSource, setInstFundingSource] = useState<InstallmentContractFundingSource>('credit_card');
+  const [instCardAccount, setInstCardAccount] = useState('');
+  const [instStartMonth, setInstStartMonth] = useState(() => selectedMonth);
+  const [instDueDay, setInstDueDay] = useState(10);
+  const [instSubmitting, setInstSubmitting] = useState(false);
+
+  // Modal Cancelar Parcelamento
+  const [cancelContractModal, setCancelContractModal] = useState<InstallmentContract | null>(null);
+  const [cancelContractReason, setCancelContractReason] = useState('');
+  const [cancelContractSubmitting, setCancelContractSubmitting] = useState(false);
+
   const showToast = (msg: string) => {
     setSuccessToast(msg);
     setTimeout(() => setSuccessToast(null), 4000);
@@ -239,6 +299,14 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
       // 7. Reembolsos
       const refList = await getUserRefunds(userId, isDemo);
       setRefunds(refList);
+
+      // 8. Recorrências e Parcelamentos (Fase 9)
+      const [rulesList, contractsList] = await Promise.all([
+        getRecurrenceRules({ userId }, isDemo),
+        getInstallmentContracts({ userId }, isDemo),
+      ]);
+      setRecurrenceRules(rulesList);
+      setInstallmentContracts(contractsList);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Erro ao carregar dados financeiros';
       setError(msg);
@@ -736,6 +804,205 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
     }
   };
 
+  // 10. Criar Regra de Recorrência
+  const handleCreateRecurrence = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!recTitle.trim()) {
+      setError('Título da recorrência é obrigatório.');
+      return;
+    }
+    let cents = 0;
+    try {
+      cents = parseBRLToCents(recAmount);
+      validatePositiveCents(cents);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Valor inválido';
+      setError(msg);
+      return;
+    }
+
+    setRecSubmitting(true);
+    setError(null);
+    try {
+      const idempotencyKey = `idem_ui_rec_${userId}_${Date.now()}`;
+      await createRecurrenceRule(
+        {
+          scope: 'personal',
+          userId,
+          title: recTitle.trim(),
+          description: recDesc.trim() || undefined,
+          amountCents: cents,
+          frequency: recFrequency,
+          startCompetence: recStartCompetence,
+          dueDay: Number(recDueDay),
+          categoryId: recCategory || undefined,
+          defaultAccountId: recAccount || undefined,
+          idempotencyKey,
+        },
+        isDemo
+      );
+      showToast('Regra de recorrência criada com sucesso!');
+      setIsRecurrenceModalOpen(false);
+      setRecTitle('');
+      setRecDesc('');
+      setRecAmount('');
+      setRecDueDay(10);
+      setRecCategory('');
+      setRecAccount('');
+      await loadAllData();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Falha ao criar recorrência';
+      setError(msg);
+    } finally {
+      setRecSubmitting(false);
+    }
+  };
+
+  // 11. Alterar Status de Recorrência (Pausar / Reativar)
+  const handleToggleRecurrenceStatus = async (ruleId: string, currentStatus: string) => {
+    try {
+      const nextStatus = currentStatus === 'active' ? 'paused' : 'active';
+      await updateRecurrenceRuleStatus({ ruleId, status: nextStatus }, isDemo);
+      showToast(`Recorrência ${nextStatus === 'active' ? 'reativada' : 'pausada'} com sucesso!`);
+      await loadAllData();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Falha ao alterar status da recorrência';
+      setError(msg);
+    }
+  };
+
+  // 12. Gerar Instância do Mês Atual
+  const handleGenerateRecurrenceInstance = async (ruleId: string) => {
+    try {
+      await generateRecurrenceInstance({ ruleId, competenceMonth: selectedMonth }, isDemo);
+      showToast(`Instância de ${selectedMonth} gerada com sucesso!`);
+      await loadAllData();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Falha ao gerar instância';
+      setError(msg);
+    }
+  };
+
+  // 13. Cancelar Recorrência Definitivamente
+  const handleCancelRecurrenceRule = async (ruleId: string) => {
+    try {
+      await updateRecurrenceRuleStatus({ ruleId, status: 'cancelled' }, isDemo);
+      showToast('Recorrência cancelada definitivamente.');
+      await loadAllData();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Falha ao cancelar recorrência';
+      setError(msg);
+    }
+  };
+
+  // 14. Criar Contrato de Parcelamento
+  const handleCreateInstallment = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!instTitle.trim()) {
+      setError('Título do parcelamento é obrigatório.');
+      return;
+    }
+    if (instFundingSource === 'credit_card' && !instCardAccount) {
+      setError('Selecione o cartão de crédito emissor.');
+      return;
+    }
+    let cents = 0;
+    try {
+      cents = parseBRLToCents(instAmount);
+      validatePositiveCents(cents);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Valor inválido';
+      setError(msg);
+      return;
+    }
+
+    setInstSubmitting(true);
+    setError(null);
+    try {
+      const idempotencyKey = `idem_ui_inst_${userId}_${Date.now()}`;
+      await createInstallmentContract(
+        {
+          scope: 'personal',
+          userId,
+          title: instTitle.trim(),
+          totalContractAmountCents: cents,
+          totalInstallmentsCount: Number(instCount),
+          fundingSource: instFundingSource,
+          sourceCardAccountId: instFundingSource === 'credit_card' ? instCardAccount : undefined,
+          startCompetenceMonth: instStartMonth,
+          dueDay: Number(instDueDay),
+          idempotencyKey,
+        },
+        isDemo
+      );
+      showToast(`Parcelamento em ${instCount}x registrado com sucesso!`);
+      setIsInstallmentModalOpen(false);
+      setInstTitle('');
+      setInstAmount('');
+      setInstCount(2);
+      setInstCardAccount('');
+      setInstDueDay(10);
+      await loadAllData();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Falha ao registrar parcelamento';
+      setError(msg);
+    } finally {
+      setInstSubmitting(false);
+    }
+  };
+
+  // 15. Alternar Exibição de Parcelas de um Contrato
+  const handleToggleContractOccurrences = async (contractId: string) => {
+    if (expandedContractId === contractId) {
+      setExpandedContractId(null);
+      return;
+    }
+    setExpandedContractId(contractId);
+    if (!contractOccurrences[contractId]) {
+      setLoadingOccurrences((prev) => ({ ...prev, [contractId]: true }));
+      try {
+        const occs = await getInstallmentOccurrences(contractId, isDemo);
+        setContractOccurrences((prev) => ({ ...prev, [contractId]: occs }));
+      } catch (err: unknown) {
+        console.warn('Erro ao carregar parcelas:', err);
+      } finally {
+        setLoadingOccurrences((prev) => ({ ...prev, [contractId]: false }));
+      }
+    }
+  };
+
+  // 16. Confirmar Cancelamento Antecipado de Parcelamento
+  const handleCancelInstallmentContractSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!cancelContractModal) return;
+
+    setCancelContractSubmitting(true);
+    setError(null);
+    try {
+      const res = await cancelInstallmentContract(
+        {
+          contractId: cancelContractModal.id,
+          cancellationReason: cancelContractReason.trim() || 'Cancelamento antecipado via interface',
+        },
+        isDemo
+      );
+      showToast(`Contrato cancelado! ${res.cancelledCount} parcelas futuras canceladas.`);
+      setCancelContractModal(null);
+      setCancelContractReason('');
+      setContractOccurrences((prev) => {
+        const next = { ...prev };
+        delete next[cancelContractModal.id];
+        return next;
+      });
+      await loadAllData();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Falha ao cancelar contrato';
+      setError(msg);
+    } finally {
+      setCancelContractSubmitting(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       {/* Toast de Sucesso */}
@@ -969,6 +1236,30 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
           >
             <Tag className="w-3.5 h-3.5" />
             Categorias ({categories.length})
+          </button>
+
+          <button
+            onClick={() => setActiveTab('recurrences')}
+            className={`flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all ${
+              activeTab === 'recurrences'
+                ? 'bg-white text-slate-900 shadow-xs'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            <Repeat className="w-3.5 h-3.5" />
+            Recorrências ({recurrenceRules.length})
+          </button>
+
+          <button
+            onClick={() => setActiveTab('installments')}
+            className={`flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all ${
+              activeTab === 'installments'
+                ? 'bg-white text-slate-900 shadow-xs'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            <Layers className="w-3.5 h-3.5" />
+            Parcelamentos ({installmentContracts.length})
           </button>
         </div>
 
@@ -1666,6 +1957,306 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
               </div>
             ))}
           </div>
+        </div>
+      )}
+
+      {/* ABA 7: RECORRÊNCIAS */}
+      {activeTab === 'recurrences' && (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="text-lg font-bold text-slate-900">
+                Regras de Recorrência
+              </h2>
+              <p className="text-xs text-slate-500">
+                Assinaturas e contas fixas periódicas. Gere instâncias mensais sob demanda sem duplicar obrigações.
+              </p>
+            </div>
+
+            <button
+              onClick={() => setIsRecurrenceModalOpen(true)}
+              className="flex items-center gap-1.5 px-3.5 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-xl shadow-xs transition-all"
+            >
+              <Plus className="w-4 h-4" />
+              Nova Recorrência
+            </button>
+          </div>
+
+          {recurrenceRules.length === 0 ? (
+            <div className="p-8 text-center bg-white rounded-2xl border border-slate-100 shadow-xs">
+              <Repeat className="w-10 h-10 text-slate-300 mx-auto mb-2" />
+              <div className="text-sm font-semibold text-slate-700">Nenhuma regra de recorrência cadastrada</div>
+              <p className="text-xs text-slate-400 mt-1">
+                Cadastre assinaturas como Netflix, Spotify, plano de saúde, aluguel ou internet.
+              </p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {recurrenceRules.map((rule) => {
+                const cat = categories.find((c) => c.id === rule.categoryId);
+                const acc = accounts.find((a) => a.id === rule.defaultAccountId);
+                return (
+                  <div
+                    key={rule.id}
+                    className="p-5 rounded-2xl border border-slate-100 bg-white shadow-xs space-y-3"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <div className="text-sm font-bold text-slate-900">{rule.title}</div>
+                        {rule.description && (
+                          <div className="text-xs text-slate-400 mt-0.5">{rule.description}</div>
+                        )}
+                      </div>
+                      <span
+                        className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider ${
+                          rule.status === 'active'
+                            ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                            : rule.status === 'paused'
+                            ? 'bg-amber-50 text-amber-700 border border-amber-200'
+                            : 'bg-rose-50 text-rose-700 border border-rose-200'
+                        }`}
+                      >
+                        {rule.status === 'active' ? 'Ativa' : rule.status === 'paused' ? 'Pausada' : 'Cancelada'}
+                      </span>
+                    </div>
+
+                    <div className="text-xl font-black text-slate-900">
+                      {formatCentsToBRL(rule.amountCents)}
+                      <span className="text-xs font-normal text-slate-400 ml-1">
+                        / {rule.frequency === 'monthly' ? 'mês' : rule.frequency === 'weekly' ? 'semana' : 'ano'}
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2 text-[11px] text-slate-500 pt-2 border-t border-slate-50">
+                      <div>
+                        <span className="font-semibold text-slate-700">Vencimento:</span> Dia {rule.dueDay}
+                      </div>
+                      <div>
+                        <span className="font-semibold text-slate-700">Início:</span> {rule.startCompetence}
+                      </div>
+                      {cat && (
+                        <div className="col-span-2 flex items-center gap-1.5">
+                          <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: cat.color || '#2563EB' }} />
+                          <span className="text-slate-600 font-medium">{cat.name}</span>
+                        </div>
+                      )}
+                      {acc && (
+                        <div className="col-span-2 text-slate-500">
+                          <span className="font-semibold text-slate-700">Conta:</span> {acc.name}
+                        </div>
+                      )}
+                    </div>
+
+                    {rule.status !== 'cancelled' && (
+                      <div className="pt-2 border-t border-slate-100 flex items-center justify-between gap-1">
+                        <button
+                          onClick={() => handleToggleRecurrenceStatus(rule.id, rule.status)}
+                          className="flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-slate-600 hover:text-slate-900 bg-slate-50 hover:bg-slate-100 rounded-lg"
+                        >
+                          {rule.status === 'active' ? (
+                            <>
+                              <Pause className="w-3 h-3 text-amber-500" /> Pausar
+                            </>
+                          ) : (
+                            <>
+                              <Play className="w-3 h-3 text-emerald-500" /> Reativar
+                            </>
+                          )}
+                        </button>
+
+                        {rule.status === 'active' && (
+                          <button
+                            onClick={() => handleGenerateRecurrenceInstance(rule.id)}
+                            className="flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-blue-600 hover:text-blue-800 bg-blue-50 hover:bg-blue-100 rounded-lg"
+                            title={`Lançar competência ${selectedMonth}`}
+                          >
+                            <CalendarClock className="w-3 h-3" /> Gerar ({selectedMonth})
+                          </button>
+                        )}
+
+                        <button
+                          onClick={() => handleCancelRecurrenceRule(rule.id)}
+                          className="px-2 py-1 text-xs text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded-lg"
+                        >
+                          Cancelar
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ABA 8: PARCELAMENTOS */}
+      {activeTab === 'installments' && (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="text-lg font-bold text-slate-900">
+                Contratos de Parcelamento
+              </h2>
+              <p className="text-xs text-slate-500">
+                Financiamentos e compras parceladas com conservação contábil de centavos e integração a faturas de cartão.
+              </p>
+            </div>
+
+            <button
+              onClick={() => setIsInstallmentModalOpen(true)}
+              className="flex items-center gap-1.5 px-3.5 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-xl shadow-xs transition-all"
+            >
+              <Plus className="w-4 h-4" />
+              Novo Parcelamento
+            </button>
+          </div>
+
+          {installmentContracts.length === 0 ? (
+            <div className="p-8 text-center bg-white rounded-2xl border border-slate-100 shadow-xs">
+              <Layers className="w-10 h-10 text-slate-300 mx-auto mb-2" />
+              <div className="text-sm font-semibold text-slate-700">Nenhum contrato de parcelamento ativo</div>
+              <p className="text-xs text-slate-400 mt-1">
+                Registre compras parceladas no cartão de crédito, empréstimos bancários ou carnês.
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {installmentContracts.map((contract) => {
+                const isExpanded = expandedContractId === contract.id;
+                const occs = contractOccurrences[contract.id] || [];
+                const isLoadingOccs = loadingOccurrences[contract.id];
+                const card = accounts.find((a) => a.id === contract.sourceCardAccountId);
+
+                return (
+                  <div
+                    key={contract.id}
+                    className="p-5 rounded-2xl border border-slate-100 bg-white shadow-xs space-y-3"
+                  >
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-bold text-slate-900">{contract.title}</span>
+                          <span
+                            className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider ${
+                              contract.status === 'active'
+                                ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                                : 'bg-rose-50 text-rose-700 border border-rose-200'
+                            }`}
+                          >
+                            {contract.status === 'active' ? 'Ativo' : 'Cancelado Antecipadamente'}
+                          </span>
+                        </div>
+                        <div className="text-xs text-slate-400 mt-0.5 flex items-center gap-2">
+                          <span>
+                            {contract.fundingSource === 'credit_card'
+                              ? `Cartão de Crédito ${card ? `(${card.name})` : ''}`
+                              : 'Empréstimo Pessoal'}
+                          </span>
+                          <span>•</span>
+                          <span>Início: {contract.startCompetenceMonth}</span>
+                        </div>
+                      </div>
+
+                      <div className="text-right">
+                        <div className="text-lg font-black text-slate-900">
+                          {formatCentsToBRL(contract.totalContractAmountCents)}
+                        </div>
+                        <div className="text-xs text-slate-400">
+                          {contract.totalInstallmentsCount} parcelas de ~{formatCentsToBRL(Math.round(contract.totalContractAmountCents / contract.totalInstallmentsCount))}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="pt-2 border-t border-slate-100 flex items-center justify-between">
+                      <button
+                        onClick={() => handleToggleContractOccurrences(contract.id)}
+                        className="flex items-center gap-1 text-xs font-semibold text-blue-600 hover:text-blue-800"
+                      >
+                        {isExpanded ? (
+                          <>
+                            <ChevronUp className="w-4 h-4" /> Ocultar Parcelas
+                          </>
+                        ) : (
+                          <>
+                            <ChevronDown className="w-4 h-4" /> Ver Parcelas ({contract.totalInstallmentsCount})
+                          </>
+                        )}
+                      </button>
+
+                      {contract.status === 'active' && (
+                        <button
+                          onClick={() => {
+                            setCancelContractModal(contract);
+                            setCancelContractReason('');
+                          }}
+                          className="px-2.5 py-1 text-xs font-medium text-rose-600 hover:text-rose-800 hover:bg-rose-50 rounded-lg"
+                        >
+                          Cancelar Antecipadamente
+                        </button>
+                      )}
+                    </div>
+
+                    {isExpanded && (
+                      <div className="mt-3 pt-3 border-t border-slate-100 space-y-2">
+                        {isLoadingOccs ? (
+                          <div className="text-xs text-slate-400 py-2 text-center">Carregando parcelas...</div>
+                        ) : occs.length === 0 ? (
+                          <div className="text-xs text-slate-400 py-2 text-center">Nenhuma parcela encontrada.</div>
+                        ) : (
+                          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
+                            {occs.map((occ) => (
+                              <div
+                                key={occ.id}
+                                className={`p-2.5 rounded-xl border text-xs ${
+                                  occ.status === 'cancelled'
+                                    ? 'bg-slate-50 border-slate-200 opacity-60'
+                                    : occ.status === 'paid'
+                                    ? 'bg-emerald-50/50 border-emerald-100'
+                                    : 'bg-white border-slate-200'
+                                }`}
+                              >
+                                <div className="flex items-center justify-between font-semibold">
+                                  <span className="text-slate-700">
+                                    Parcela {occ.installmentNumber}/{contract.totalInstallmentsCount}
+                                  </span>
+                                  <span
+                                    className={`text-[9px] px-1.5 py-0.5 rounded-full font-bold uppercase ${
+                                      occ.status === 'paid'
+                                        ? 'bg-emerald-100 text-emerald-800'
+                                        : occ.status === 'billed'
+                                        ? 'bg-blue-100 text-blue-800'
+                                        : occ.status === 'cancelled'
+                                        ? 'bg-slate-200 text-slate-600 line-through'
+                                        : 'bg-amber-100 text-amber-800'
+                                    }`}
+                                  >
+                                    {occ.status === 'paid'
+                                      ? 'Paga'
+                                      : occ.status === 'billed'
+                                      ? 'Faturada'
+                                      : occ.status === 'cancelled'
+                                      ? 'Cancelada'
+                                      : 'Agendada'}
+                                  </span>
+                                </div>
+                                <div className="mt-1 font-bold text-slate-900">
+                                  {formatCentsToBRL(occ.totalInstallmentAmountCents)}
+                                </div>
+                                <div className="text-[10px] text-slate-400 mt-0.5">
+                                  Mês: {occ.competenceMonth} • Venc: {occ.dueDate}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
 
@@ -2504,6 +3095,384 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                   className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-xl shadow-xs disabled:opacity-50"
                 >
                   {newCatSubmitting ? 'Salvando...' : 'Salvar Categoria'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+      {/* MODAL: NOVA RECORRÊNCIA */}
+      {isRecurrenceModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-xs">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-xl border border-slate-100">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <h3 className="text-base font-bold text-slate-900">
+                Nova Regra de Recorrência
+              </h3>
+              <button
+                onClick={() => setIsRecurrenceModalOpen(false)}
+                className="p-1 text-slate-400 hover:text-slate-600 rounded-lg"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleCreateRecurrence} className="space-y-3 mt-3">
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-700 uppercase mb-1">
+                  Título da Despesa Periódica *
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="Ex: Netflix, Internet Fibra, Aluguel..."
+                  value={recTitle}
+                  onChange={(e) => setRecTitle(e.target.value)}
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-700 uppercase mb-1">
+                    Valor Previsto (R$) *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="0,00"
+                    value={recAmount}
+                    onChange={(e) => setRecAmount(e.target.value)}
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 font-bold"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-700 uppercase mb-1">
+                    Frequência *
+                  </label>
+                  <select
+                    value={recFrequency}
+                    onChange={(e) => setRecFrequency(e.target.value as any)}
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    <option value="monthly">Mensal</option>
+                    <option value="weekly">Semanal</option>
+                    <option value="yearly">Anual</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-700 uppercase mb-1">
+                    Dia de Vencimento (1 a 31) *
+                  </label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="31"
+                    required
+                    value={recDueDay}
+                    onChange={(e) => setRecDueDay(Number(e.target.value))}
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-700 uppercase mb-1">
+                    Mês de Início (YYYY-MM) *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    pattern="\d{4}-\d{2}"
+                    placeholder="2026-11"
+                    value={recStartCompetence}
+                    onChange={(e) => setRecStartCompetence(e.target.value)}
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-700 uppercase mb-1">
+                  Categoria
+                </label>
+                <select
+                  value={recCategory}
+                  onChange={(e) => setRecCategory(e.target.value)}
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="">Selecione...</option>
+                  {categories
+                    .filter((c) => !c.isArchived && (c.type === 'expense' || c.type === 'both'))
+                    .map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name}
+                      </option>
+                    ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-700 uppercase mb-1">
+                  Conta Padrão (Opcional)
+                </label>
+                <select
+                  value={recAccount}
+                  onChange={(e) => setRecAccount(e.target.value)}
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="">Nenhuma / Definir no lançamento</option>
+                  {accounts
+                    .filter((a) => !a.isArchived)
+                    .map((a) => (
+                      <option key={a.id} value={a.id}>
+                        {a.name} ({a.type === 'credit' ? 'Cartão' : 'Conta'})
+                      </option>
+                    ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-700 uppercase mb-1">
+                  Descrição Adicional
+                </label>
+                <input
+                  type="text"
+                  placeholder="Ex: Assinatura premium família..."
+                  value={recDesc}
+                  onChange={(e) => setRecDesc(e.target.value)}
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+
+              <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setIsRecurrenceModalOpen(false)}
+                  className="px-3 py-2 text-xs font-semibold text-slate-600 hover:text-slate-800"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={recSubmitting}
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-xl shadow-xs disabled:opacity-50"
+                >
+                  {recSubmitting ? 'Salvando...' : 'Criar Recorrência'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: NOVO PARCELAMENTO */}
+      {isInstallmentModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-xs">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-xl border border-slate-100">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <h3 className="text-base font-bold text-slate-900">
+                Novo Contrato de Parcelamento
+              </h3>
+              <button
+                onClick={() => setIsInstallmentModalOpen(false)}
+                className="p-1 text-slate-400 hover:text-slate-600 rounded-lg"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleCreateInstallment} className="space-y-3 mt-3">
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-700 uppercase mb-1">
+                  Título da Compra / Financiamento *
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="Ex: Smartphone Novo, IPVA 2026, Sofá da Sala..."
+                  value={instTitle}
+                  onChange={(e) => setInstTitle(e.target.value)}
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-700 uppercase mb-1">
+                    Valor Total (R$) *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="0,00"
+                    value={instAmount}
+                    onChange={(e) => setInstAmount(e.target.value)}
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 font-bold"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-700 uppercase mb-1">
+                    Nº de Parcelas *
+                  </label>
+                  <input
+                    type="number"
+                    min="2"
+                    max="48"
+                    required
+                    value={instCount}
+                    onChange={(e) => setInstCount(Number(e.target.value))}
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 font-bold"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-700 uppercase mb-1">
+                  Forma de Pagamento *
+                </label>
+                <select
+                  value={instFundingSource}
+                  onChange={(e) => setInstFundingSource(e.target.value as any)}
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="credit_card">Cartão de Crédito (Projeção em Faturas)</option>
+                  <option value="personal_loan">Empréstimo Pessoal / Financiamento</option>
+                </select>
+              </div>
+
+              {instFundingSource === 'credit_card' && (
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-700 uppercase mb-1">
+                    Cartão de Crédito *
+                  </label>
+                  <select
+                    required
+                    value={instCardAccount}
+                    onChange={(e) => setInstCardAccount(e.target.value)}
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    <option value="">Selecione o cartão...</option>
+                    {accounts
+                      .filter((a) => !a.isArchived && a.type === 'credit')
+                      .map((a) => (
+                        <option key={a.id} value={a.id}>
+                          {a.name}
+                        </option>
+                      ))}
+                  </select>
+                </div>
+              )}
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-700 uppercase mb-1">
+                    1º Mês de Competência *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    pattern="\d{4}-\d{2}"
+                    placeholder="2026-11"
+                    value={instStartMonth}
+                    onChange={(e) => setInstStartMonth(e.target.value)}
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-700 uppercase mb-1">
+                    Dia de Vencimento *
+                  </label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="31"
+                    required
+                    value={instDueDay}
+                    onChange={(e) => setInstDueDay(Number(e.target.value))}
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+              </div>
+
+              <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setIsInstallmentModalOpen(false)}
+                  className="px-3 py-2 text-xs font-semibold text-slate-600 hover:text-slate-800"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={instSubmitting}
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-xl shadow-xs disabled:opacity-50"
+                >
+                  {instSubmitting ? 'Gerando...' : 'Criar Parcelamento'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: CANCELAR PARCELAMENTO ANTECIPADAMENTE */}
+      {cancelContractModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-xs">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-xl border border-rose-200">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <h3 className="text-base font-bold text-slate-900">
+                Cancelar Contrato de Parcelamento
+              </h3>
+              <button
+                onClick={() => setCancelContractModal(null)}
+                className="p-1 text-slate-400 hover:text-slate-600 rounded-lg"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="my-3 p-3 bg-rose-50 rounded-xl text-xs space-y-1 text-rose-900">
+              <div>Contrato: <strong>{cancelContractModal.title}</strong></div>
+              <div>Total do Contrato: <strong>{formatCentsToBRL(cancelContractModal.totalContractAmountCents)}</strong></div>
+              <p className="text-[11px] text-rose-700 mt-2">
+                O cancelamento antecipado cancelará todas as parcelas agendadas ainda não faturadas/pagas e liberará imediatamente o limite projetado nas faturas de cartão.
+              </p>
+            </div>
+
+            <form onSubmit={handleCancelInstallmentContractSubmit} className="space-y-3">
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-700 uppercase mb-1">
+                  Motivo do Cancelamento (Opcional)
+                </label>
+                <input
+                  type="text"
+                  placeholder="Ex: Devolução da mercadoria, quitação antecipada..."
+                  value={cancelContractReason}
+                  onChange={(e) => setCancelContractReason(e.target.value)}
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+
+              <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setCancelContractModal(null)}
+                  className="px-3 py-2 text-xs font-semibold text-slate-600 hover:text-slate-800"
+                >
+                  Voltar
+                </button>
+                <button
+                  type="submit"
+                  disabled={cancelContractSubmitting}
+                  className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold rounded-xl shadow-xs disabled:opacity-50"
+                >
+                  {cancelContractSubmitting ? 'Cancelando...' : 'Confirmar Cancelamento'}
                 </button>
               </div>
             </form>
