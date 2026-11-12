@@ -770,7 +770,13 @@ export type SpaceAuditEventType =
   | 'space_unarchived'
   | 'dissolution_requested'
   | 'author_destination_decided'
-  | 'dissolution_cancelled';
+  | 'dissolution_cancelled'
+  | 'shared_expense_created'
+  | 'payment_declaration_submitted'
+  | 'payment_approved'
+  | 'payment_rejected'
+  | 'payment_approval_revoked'
+  | 'supplier_refund_recorded';
 
 /**
  * Evento imutável de governança e auditoria do espaço.
@@ -975,7 +981,11 @@ export interface ExpensePaymentApproval {
   financialMovementId?: string;
   approvedAt: ISO8601String;
   approverUid: string;
-  isRevoked: boolean;
+  /**
+   * Campo derivado em memória a partir de `approval_revocations` ou compatibilidade legada de leitura.
+   * Nunca deve ser mutado no documento original de aprovação no Firestore/Storage.
+   */
+  isRevoked?: boolean;
   revokedAt?: ISO8601String;
   revocationId?: string;
   idempotencyKey: string;
@@ -983,7 +993,7 @@ export interface ExpensePaymentApproval {
 }
 
 /**
- * Evento compensatório de revogação de aprovação pelo responsável financeiro.
+ * Evento compensatório independente e imutável de revogação de aprovação pelo responsável financeiro.
  * Caminho Firestore: spaces/{spaceId}/shared_expenses/{expenseId}/approval_revocations/{revocationId}
  */
 export interface ExpenseApprovalRevocation {
@@ -998,6 +1008,12 @@ export interface ExpenseApprovalRevocation {
   beneficiaryUid?: string;
   revokedAmountCents: CentsInteger;
   compensatoryMovementId?: string;
+  /**
+   * Indica que a compensação contábil gerou saldo projetado insuficiente na conta onde o crédito foi reconhecido,
+   * exigindo restituição real pendente (não é devolução bancária automática).
+   */
+  requiresRestitution?: boolean;
+  restitutionPendingCents?: CentsInteger;
   reason: string;
   revokedByUid: string;
   revokedAt: ISO8601String;

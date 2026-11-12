@@ -1110,5 +1110,171 @@ test('FIRESTORE SECURITY RULES — Validação Real no Firestore Emulator (Fase 
         )
       )
     );
+
+    // 9.11. CENÁRIO 9 (IMUTABILIDADE ESTRITA NAS REGRAS):
+    // Testa updateDoc e deleteDoc em payment_approvals, payment_rejections, approval_revocations e movements
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      const adminDb = context.firestore();
+      await setDoc(
+        doc(
+          adminDb,
+          'spaces',
+          'space_f6',
+          'shared_expenses',
+          'exp_test_1',
+          'payment_approvals',
+          'appr_official_1'
+        ),
+        {
+          id: 'appr_official_1',
+          declarationId: 'decl_bob_valid',
+          expenseId: 'exp_test_1',
+          spaceId: 'space_f6',
+          memberUid: 'uid_bob',
+          responsibleUid: 'uid_alice',
+          beneficiaryUid: 'uid_alice',
+          amountCents: 5000,
+          approverUid: 'uid_alice',
+        }
+      );
+      await setDoc(
+        doc(
+          adminDb,
+          'spaces',
+          'space_f6',
+          'shared_expenses',
+          'exp_test_1',
+          'approval_revocations',
+          'revoc_official_1'
+        ),
+        {
+          id: 'revoc_official_1',
+          approvalId: 'appr_official_1',
+          declarationId: 'decl_bob_valid',
+          expenseId: 'exp_test_1',
+          spaceId: 'space_f6',
+          memberUid: 'uid_bob',
+          responsibleUid: 'uid_alice',
+          beneficiaryUid: 'uid_alice',
+          revokedAmountCents: 5000,
+          reason: 'Motivo oficial',
+          revokedByUid: 'uid_alice',
+        }
+      );
+      await setDoc(doc(adminDb, 'accounts', 'acc_alice_f6'), {
+        id: 'acc_alice_f6',
+        userId: 'uid_alice',
+        name: 'Conta Alice F6',
+        type: 'checking',
+        projectedBalanceCents: 5000,
+      });
+      await setDoc(doc(adminDb, 'accounts', 'acc_alice_f6', 'movements', 'mov_official_1'), {
+        id: 'mov_official_1',
+        accountId: 'acc_alice_f6',
+        userId: 'uid_alice',
+        direction: 'inflow',
+        amountCents: 5000,
+        originType: 'shared_reimbursement',
+        originId: 'appr_official_1',
+      });
+    });
+
+    // Ninguém (nem mesmo a responsável Alice ou o membro Bob) pode executar updateDoc ou deleteDoc em payment_approvals
+    await assertFails(
+      updateDoc(
+        doc(
+          aliceDb,
+          'spaces',
+          'space_f6',
+          'shared_expenses',
+          'exp_test_1',
+          'payment_approvals',
+          'appr_official_1'
+        ),
+        { isRevoked: true }
+      )
+    );
+    await assertFails(
+      deleteDoc(
+        doc(
+          aliceDb,
+          'spaces',
+          'space_f6',
+          'shared_expenses',
+          'exp_test_1',
+          'payment_approvals',
+          'appr_official_1'
+        )
+      )
+    );
+
+    // Ninguém pode executar updateDoc ou deleteDoc em payment_rejections
+    await assertFails(
+      updateDoc(
+        doc(
+          aliceDb,
+          'spaces',
+          'space_f6',
+          'shared_expenses',
+          'exp_test_1',
+          'payment_rejections',
+          'rej_official_1'
+        ),
+        { reason: 'Tentativa de adulterar motivo' }
+      )
+    );
+    await assertFails(
+      deleteDoc(
+        doc(
+          aliceDb,
+          'spaces',
+          'space_f6',
+          'shared_expenses',
+          'exp_test_1',
+          'payment_rejections',
+          'rej_official_1'
+        )
+      )
+    );
+
+    // Ninguém pode executar updateDoc ou deleteDoc em approval_revocations
+    await assertFails(
+      updateDoc(
+        doc(
+          aliceDb,
+          'spaces',
+          'space_f6',
+          'shared_expenses',
+          'exp_test_1',
+          'approval_revocations',
+          'revoc_official_1'
+        ),
+        { reason: 'Tentativa de adulterar revogação' }
+      )
+    );
+    await assertFails(
+      deleteDoc(
+        doc(
+          aliceDb,
+          'spaces',
+          'space_f6',
+          'shared_expenses',
+          'exp_test_1',
+          'approval_revocations',
+          'revoc_official_1'
+        )
+      )
+    );
+
+    // Ninguém pode executar updateDoc ou deleteDoc em movements (livro-razão append-only)
+    await assertFails(
+      updateDoc(doc(aliceDb, 'accounts', 'acc_alice_f6', 'movements', 'mov_official_1'), {
+        amountCents: 100,
+      })
+    );
+    await assertFails(
+      deleteDoc(doc(aliceDb, 'accounts', 'acc_alice_f6', 'movements', 'mov_official_1'))
+    );
   });
 });
+

@@ -267,7 +267,11 @@ export async function reverseMovement(
       const accounts: Account[] = accountsRaw ? JSON.parse(accountsRaw) : [];
       const currentAcc = accounts.find((a) => a.id === accountId);
       if (currentAcc) {
-        if (currentAcc.userId !== authorUid && original.userId !== authorUid) {
+        if (
+          currentAcc.userId !== authorUid &&
+          original.userId !== authorUid &&
+          original.authorUid !== authorUid
+        ) {
           throw new Error('Permissão negada para estornar este movimento.');
         }
         if (currentAcc.isArchived) {

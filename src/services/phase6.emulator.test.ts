@@ -298,7 +298,7 @@ test('FASE 6 — EMULATOR INTEGRATION: Rateios, Segregação de Autoridade vs Be
     assert.ok(res.approval.id);
     approvalId = res.approval.id;
     assert.equal(res.approval.amountCents, 4000);
-    assert.equal(res.approval.isRevoked, false);
+    assert.equal(res.approval.isRevoked, undefined, 'Documento bruto de aprovação não possui campo mutável isRevoked');
     assert.equal(res.approval.beneficiaryUid, bobUid);
     assert.equal(res.liability.status, 'paid');
     assert.equal(res.liability.paidAmountCents, 4000);
@@ -329,6 +329,23 @@ test('FASE 6 — EMULATOR INTEGRATION: Rateios, Segregação de Autoridade vs Be
       false
     );
     assert.equal(replay.approval.id, approvalId);
+
+    // Conflito de idempotência na aprovação (conta de destino divergente)
+    await assert.rejects(
+      async () =>
+        approveExpensePayment(
+          {
+            spaceId,
+            expenseId,
+            declarationId: charlieDeclId,
+            approverUid: aliceUid,
+            destinationAccountId: undefined,
+            idempotencyKey: 'appr_emul_charlie_01',
+          },
+          false
+        ),
+      /already-exists|Conflito de idempotência/
+    );
 
     await signOut(auth);
 
@@ -454,45 +471,226 @@ test('FASE 6 — EMULATOR INTEGRATION: Rateios, Segregação de Autoridade vs Be
   });
 
   // ----------------------------------------------------------------------------
-  // 8. REVOGAÇÃO DE APROVAÇÃO (ESTORNO CONTÁBIL NO BENEFICIÁRIO)
+  // 8. CONCORRÊNCIA REAL (CENÁRIO 4) + IMUTABILIDADE DO DOCUMENTO DE APROVAÇÃO (FRENTE A)
   // ----------------------------------------------------------------------------
-  await t.test('8. Alice revoga aprovação de Charlie: estorna crédito bancário de Bob e reabre cota de Charlie', async () => {
+  await t.test('8. Concorrência Real (6 chamadas simultâneas via Promise.all) e Imutabilidade Estrita de payment_approvals no Firestore', async () => {
     await signInWithEmailAndPassword(auth, 'alice.f6@teste.local', 'SenhaForte123!');
 
-    const revRes = await revokeExpensePaymentApproval(
-      {
-        spaceId,
-        expenseId,
-        approvalId,
-        revokerUid: aliceUid,
-        reason: 'Estorno administrativo para reprocessamento',
-        idempotencyKey: 'revoc_emul_charlie_01',
-      },
-      false
+    // Captura o documento bruto de aprovação ANTES da revogação para provar imutabilidade byte-a-byte
+    const rawApprRef = doc(db, 'spaces', spaceId, 'shared_expenses', expenseId, 'payment_approvals', approvalId);
+    const rawApprBeforeSnap = await getDoc(rawApprRef);
+    assert.ok(rawApprBeforeSnap.exists());
+    const rawApprBeforeJson = JSON.stringify(rawApprBeforeSnap.data());
+
+    // Dispara 6 chamadas concorrentes de revogação da mesma aprovação contra o Firebase Emulator
+    const concurrentCalls = Array.from({ length: 6 }, (_, idx) =>
+      revokeExpensePaymentApproval(
+        {
+          spaceId,
+          expenseId,
+          approvalId,
+          revokerUid: aliceUid,
+          reason: 'Estorno administrativo para reprocessamento',
+          idempotencyKey: `revoc_emul_charlie_concurrent_${idx}`,
+        },
+        false
+      )
     );
 
-    assert.ok(revRes.revocation.id);
-    assert.equal(revRes.revocation.revokedAmountCents, 4000);
-    assert.equal(revRes.liability.status, 'pending');
-    assert.equal(revRes.liability.paidAmountCents, 0);
-    assert.equal(revRes.liability.remainingAmountCents, 3000); // Saldo devedor ajustado (pós-refund)
-    assert.equal(revRes.liability.creditNoteCents, 0);
+    const results = await Promise.all(concurrentCalls);
+    for (const revRes of results) {
+      assert.ok(revRes.revocation.id);
+      assert.equal(revRes.revocation.id, results[0].revocation.id);
+      assert.equal(revRes.revocation.revokedAmountCents, 4000);
+      assert.equal(revRes.liability.status, 'pending');
+      assert.equal(revRes.liability.paidAmountCents, 0);
+      assert.equal(revRes.liability.remainingAmountCents, 3000); // Saldo devedor ajustado (pós-refund)
+      assert.equal(revRes.liability.creditNoteCents, 0);
+      assert.equal(revRes.liability.originalAmountCents, 4000);
+      assert.equal(revRes.liability.assignedShareAmountCents, 4000);
+      assert.equal(revRes.liability.refundAdjustmentCents, 1000);
+      assert.equal(revRes.liability.adjustedShareAmountCents, 3000);
+    }
+
+    // PROVA DE IMUTABILIDADE ESTRITA (FRENTE A):
+    // O documento bruto em payment_approvals/{approvalId} NÃO sofreu update (nenhum campo adicionado ou modificado)
+    const rawApprAfterSnap = await getDoc(rawApprRef);
+    assert.ok(rawApprAfterSnap.exists());
+    assert.equal(
+      JSON.stringify(rawApprAfterSnap.data()),
+      rawApprBeforeJson,
+      'O documento original em payment_approvals deve permanecer 100% imutável após a revogação'
+    );
+    assert.equal(rawApprAfterSnap.data().isRevoked, undefined);
+
+    // PROVA DE CONCORRÊNCIA E UNICIDADE (CENÁRIO 4):
+    // Apenas 1 documento em approval_revocations
+    const revocsSnap = await getDocs(
+      collection(db, 'spaces', spaceId, 'shared_expenses', expenseId, 'approval_revocations')
+    );
+    assert.equal(revocsSnap.size, 1, 'Apenas 1 evento de revogação deve existir após 6 chamadas concorrentes');
+
+    // Apenas 1 registro de auditoria de revogação em spaces/{spaceId}/audit
+    const auditSnap = await getDocs(collection(db, 'spaces', spaceId, 'audit'));
+    const revocAudits = auditSnap.docs
+      .map((d) => d.data())
+      .filter((a) => a.eventType === 'payment_approval_revoked');
+    assert.equal(revocAudits.length, 1, 'Apenas 1 evento de auditoria de revogação deve existir');
+
+    // Teste de conflito de idempotência (Cenário 3): motivo divergente para a mesma aprovação deve falhar
+    await assert.rejects(
+      async () =>
+        revokeExpensePaymentApproval(
+          {
+            spaceId,
+            expenseId,
+            approvalId,
+            revokerUid: aliceUid,
+            reason: 'Motivo divergente para forçar conflito',
+          },
+          false
+        ),
+      /already-exists|Conflito de idempotência/
+    );
 
     await signOut(auth);
 
-    // Saldo bancário de Bob volta para 0 (estorno compensatório)
+    // Verifica que na conta de Bob há apenas 1 movimento de entrada e 1 movimento compensatório de saída (saldo = 0)
     await signInWithEmailAndPassword(auth, 'bob.f6@teste.local', 'SenhaForte123!');
     const bobAccs = await getUserAccounts(bobUid, false, false);
     const bobAcc = bobAccs.find((a) => a.id === bobAccountId)!;
     assert.equal(bobAcc.projectedBalanceCents, 0);
+
+    const bobMovsSnap = await getDocs(collection(db, 'accounts', bobAccountId, 'movements'));
+    const bobMovs = bobMovsSnap.docs.map((d) => d.data());
+    const inflowMovs = bobMovs.filter((m) => m.direction === 'inflow');
+    const outflowReversals = bobMovs.filter(
+      (m) => m.direction === 'outflow' && m.reversalOfMovementId === inflowMovs[0]?.id
+    );
+    assert.equal(inflowMovs.length, 1);
+    assert.equal(outflowReversals.length, 1, 'Apenas 1 movimento compensatório deve existir após 6 chamadas concorrentes');
     await signOut(auth);
   });
 
   // ----------------------------------------------------------------------------
-  // 9. AUDITORIA DE NOTIFICAÇÕES NO FIRESTORE
+  // 9. CENÁRIOS 5 E 8 NO EMULATOR REAL: PAGAMENTO PARCIAL + DINHEIRO JÁ UTILIZADO
   // ----------------------------------------------------------------------------
-  await t.test('9. Validação de Notificações no Firestore para Alice, Bob e Charlie', async () => {
-    // 9.1. Notificações de Alice (Validadora)
+  await t.test('9. Cenários 5 e 8 no Emulator: Pagamento parcial preservado na revogação + Restituição sinalizada quando o saldo já foi utilizado', async () => {
+    // Charlie declara 1º pagamento parcial de R$ 10,00 (1000 centavos) e 2º pagamento parcial de R$ 20,00 (2000 centavos)
+    await signInWithEmailAndPassword(auth, 'charlie.f6@teste.local', 'SenhaForte123!');
+    const declPart1 = await declareExpensePayment(
+      {
+        spaceId,
+        expenseId,
+        memberUid: charlieUid,
+        memberName: 'Charlie Admin',
+        amountCents: 1000,
+        paymentDate: '2026-11-13',
+        paymentMethod: 'pix',
+        idempotencyKey: 'decl_emul_charlie_part_1000',
+      },
+      false
+    );
+    const declPart2 = await declareExpensePayment(
+      {
+        spaceId,
+        expenseId,
+        memberUid: charlieUid,
+        memberName: 'Charlie Admin',
+        amountCents: 2000,
+        paymentDate: '2026-11-14',
+        paymentMethod: 'pix',
+        idempotencyKey: 'decl_emul_charlie_part_2000',
+      },
+      false
+    );
+    await signOut(auth);
+
+    // Alice aprova ambos os pagamentos creditando a conta de Bob
+    await signInWithEmailAndPassword(auth, 'alice.f6@teste.local', 'SenhaForte123!');
+    const apprPart1 = await approveExpensePayment(
+      {
+        spaceId,
+        expenseId,
+        declarationId: declPart1.id,
+        approverUid: aliceUid,
+        destinationAccountId: bobAccountId,
+      },
+      false
+    );
+    assert.equal(apprPart1.liability.paidAmountCents, 1000);
+    assert.equal(apprPart1.liability.remainingAmountCents, 2000);
+    assert.equal(apprPart1.liability.status, 'partially_paid');
+
+    const apprPart2 = await approveExpensePayment(
+      {
+        spaceId,
+        expenseId,
+        declarationId: declPart2.id,
+        approverUid: aliceUid,
+        destinationAccountId: bobAccountId,
+      },
+      false
+    );
+    assert.equal(apprPart2.liability.paidAmountCents, 3000);
+    assert.equal(apprPart2.liability.remainingAmountCents, 0);
+    assert.equal(apprPart2.liability.status, 'paid');
+    await signOut(auth);
+
+    // CENÁRIO 8: Bob utiliza R$ 25,00 (2500 centavos) do seu saldo de R$ 30,00 (restando apenas R$ 5,00 na conta)
+    await signInWithEmailAndPassword(auth, 'bob.f6@teste.local', 'SenhaForte123!');
+    const { recordMovement } = await import('./ledgerService');
+    await recordMovement(
+      {
+        accountId: bobAccountId,
+        userId: bobUid,
+        direction: 'outflow',
+        amountCents: 2500,
+        effectiveDate: '2026-11-14',
+        originType: 'personal_expense',
+        originId: 'tx_bob_spend_2500',
+        description: 'Saque/Gasto pessoal de Bob no Emulator',
+        authorUid: bobUid,
+        idempotencyKey: 'idem_emul_bob_spend_2500',
+      },
+      false
+    );
+    await signOut(auth);
+
+    // Agora Alice revoga a 2ª aprovação (de R$ 20,00 / 2000 centavos)
+    await signInWithEmailAndPassword(auth, 'alice.f6@teste.local', 'SenhaForte123!');
+    const revocPart2 = await revokeExpensePaymentApproval(
+      {
+        spaceId,
+        expenseId,
+        approvalId: apprPart2.approval.id,
+        revokerUid: aliceUid,
+        reason: 'Estorno do segundo pagamento parcial',
+      },
+      false
+    );
+
+    // Valida Cenário 5: O 1º pagamento parcial de R$ 10,00 (1000) permanece reconhecido!
+    assert.equal(revocPart2.liability.paidAmountCents, 1000);
+    assert.equal(revocPart2.liability.remainingAmountCents, 2000);
+    assert.equal(revocPart2.liability.status, 'partially_paid');
+
+    // Valida Cenário 8: Como Bob tinha apenas R$ 5,00 (500) na conta quando R$ 20,00 (2000) foi estornado contabilmente,
+    // requiresRestitution é true e restitutionPendingCents é 1500 (R$ 15,00)
+    assert.equal(revocPart2.revocation.requiresRestitution, true);
+    assert.equal(revocPart2.revocation.restitutionPendingCents, 1500);
+    assert.ok(
+      revocPart2.compensatoryMovement?.description.includes('Restituição financeira pendente'),
+      'Descrição do movimento compensatório deve explicitar a restituição financeira pendente'
+    );
+    await signOut(auth);
+  });
+
+  // ----------------------------------------------------------------------------
+  // 10. AUDITORIA DE NOTIFICAÇÕES NO FIRESTORE (SEM DUPLICIDADE)
+  // ----------------------------------------------------------------------------
+  await t.test('10. Validação de Notificações no Firestore para Alice, Bob e Charlie sem duplicações por evento', async () => {
+    // 10.1. Notificações de Alice (Validadora)
     await signInWithEmailAndPassword(auth, 'alice.f6@teste.local', 'SenhaForte123!');
     const aliceNotifsSnap = await getDocs(collection(db, 'users', aliceUid, 'notifications'));
     const aliceNotifs = aliceNotifsSnap.docs.map((d) => d.data());
@@ -501,7 +699,7 @@ test('FASE 6 — EMULATOR INTEGRATION: Rateios, Segregação de Autoridade vs Be
     assert.ok(aliceNotifs.some((n) => n.type === 'payment_declaration_submitted'));
     await signOut(auth);
 
-    // 9.2. Notificações de Bob (Credor)
+    // 10.2. Notificações de Bob (Credor)
     await signInWithEmailAndPassword(auth, 'bob.f6@teste.local', 'SenhaForte123!');
     const bobNotifsSnap = await getDocs(collection(db, 'users', bobUid, 'notifications'));
     const bobNotifs = bobNotifsSnap.docs.map((d) => d.data());
@@ -511,7 +709,7 @@ test('FASE 6 — EMULATOR INTEGRATION: Rateios, Segregação de Autoridade vs Be
     assert.ok(bobNotifs.some((n) => n.type === 'payment_approval_revoked'));
     await signOut(auth);
 
-    // 9.3. Notificações de Charlie (Membro devedor)
+    // 10.3. Notificações de Charlie (Membro devedor)
     await signInWithEmailAndPassword(auth, 'charlie.f6@teste.local', 'SenhaForte123!');
     const charlieNotifsSnap = await getDocs(collection(db, 'users', charlieUid, 'notifications'));
     const charlieNotifs = charlieNotifsSnap.docs.map((d) => d.data());

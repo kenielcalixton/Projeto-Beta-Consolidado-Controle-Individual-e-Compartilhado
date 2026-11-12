@@ -7,6 +7,7 @@ import {
   ExpenseLiabilitySplitMethod,
   ExpensePaymentApproval,
   ExpensePaymentDeclaration,
+  ExpensePaymentRejection,
   PaymentDeclarationMethod,
   SharedExpense,
   Space,
@@ -20,11 +21,13 @@ import {
   declareExpensePayment,
   getExpenseLiabilities,
   getExpensePaymentDeclarations,
+  getExpensePaymentRejections,
   getExpenseSupplierRefunds,
   getSharedExpenses,
+  getSpaceApprovalRevocations,
   getSpaceFinancialSummary,
+  getSpacePaymentApprovals,
   getSpacePendingDeclarations,
-  loadDemoPaymentApprovals,
   rejectExpensePayment,
   recordSupplierRefund,
   revokeExpensePaymentApproval,
@@ -67,6 +70,8 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
   const [expandedExpenseId, setExpandedExpenseId] = useState<string | null>(null);
   const [pendingDeclarations, setPendingDeclarations] = useState<ExpensePaymentDeclaration[]>([]);
   const [allApprovals, setAllApprovals] = useState<ExpensePaymentApproval[]>([]);
+  const [allRevocations, setAllRevocations] = useState<ExpenseApprovalRevocation[]>([]);
+  const [allRejections, setAllRejections] = useState<ExpensePaymentRejection[]>([]);
   const [refunds, setRefunds] = useState<SupplierRefundEvent[]>([]);
   const [summary, setSummary] = useState<SpaceFinancialSummary | null>(null);
 
@@ -127,16 +132,18 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
   const [refundAmountInput, setRefundAmountInput] = useState('');
   const [refundJustification, setRefundJustification] = useState('');
 
-  // Carrega todos os dados financeiros do espaço
+  // Carrega todos os dados financeiros do espaço (Modo Real/Emulador e Modo Demo)
   const loadFinanceData = async () => {
     try {
       setLoading(true);
-      const [mems, accs, exps, summ, pDecls] = await Promise.all([
+      const [mems, accs, exps, summ, pDecls, apps, revocs] = await Promise.all([
         getSpaceMembers(space.id, userId, isDemo).catch(() => []),
         getUserAccounts(userId, false, isDemo).catch(() => []),
         getSharedExpenses(space.id, userId, isDemo).catch(() => []),
         getSpaceFinancialSummary(space.id, userId, isDemo).catch(() => null),
         getSpacePendingDeclarations(space.id, userId, isDemo).catch(() => []),
+        getSpacePaymentApprovals(space.id, userId, isDemo).catch(() => []),
+        getSpaceApprovalRevocations(space.id, userId, isDemo).catch(() => []),
       ]);
 
       setMembers(mems);
@@ -144,20 +151,22 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
       setExpenses(exps);
       setSummary(summ);
       setPendingDeclarations(pDecls);
+      setAllApprovals(apps);
+      setAllRevocations(revocs);
 
-      // Carrega obrigações de cada despesa
+      // Carrega obrigações e rejeições de cada despesa
       const liabs: Record<string, ExpenseLiability[]> = {};
+      const rejs: ExpensePaymentRejection[] = [];
       for (const e of exps) {
-        const list = await getExpenseLiabilities(space.id, e.id, isDemo).catch(() => []);
+        const [list, expRejs] = await Promise.all([
+          getExpenseLiabilities(space.id, e.id, isDemo).catch(() => []),
+          getExpensePaymentRejections(space.id, e.id, isDemo).catch(() => []),
+        ]);
         liabs[e.id] = list;
+        rejs.push(...expRejs);
       }
       setLiabilitiesMap(liabs);
-
-      // Carrega histórico de aprovações
-      if (isDemo) {
-        const apps = loadDemoPaymentApprovals().filter((a) => a.spaceId === space.id);
-        setAllApprovals(apps);
-      }
+      setAllRejections(rejs);
     } catch (err: any) {
       onFeedback('error', err.message || 'Erro ao carregar dados financeiros do espaço.');
     } finally {
@@ -861,32 +870,41 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
             )}
           </div>
 
-          {/* Histórico de Aprovações com possibilidade de revogação */}
+          {/* Histórico de Aprovações e Revogações (Imutável Append-Only) */}
           {allApprovals.length > 0 && (
             <div className="pt-4 border-t border-gray-100 space-y-3">
               <h4 className="text-xs font-bold text-gray-700 uppercase tracking-wider">
-                Histórico de Aprovações ({allApprovals.length})
+                Histórico de Aprovações e Revogações ({allApprovals.length})
               </h4>
-              <div className="space-y-2">
+              <div className="space-y-2.5">
                 {allApprovals.map((appr) => {
                   const exp = expenses.find((e) => e.id === appr.expenseId);
+                  const revoc = allRevocations.find((r) => r.approvalId === appr.id);
+                  const isRevoked = Boolean(revoc) || Boolean(appr.isRevoked);
                   const isResponsible = appr.responsibleUid === userId;
+                  const validatorName =
+                    members.find((m) => m.uid === appr.responsibleUid)?.displayName ||
+                    appr.responsibleUid;
+                  const beneficiaryUid =
+                    appr.beneficiaryUid || exp?.payerUid || appr.responsibleUid;
+                  const beneficiaryName =
+                    members.find((m) => m.uid === beneficiaryUid)?.displayName || beneficiaryUid;
 
                   return (
                     <div
                       key={appr.id}
-                      className={`border rounded-xl p-3 flex items-center justify-between text-xs ${
-                        appr.isRevoked
-                          ? 'border-gray-200 bg-gray-50 opacity-60'
+                      className={`border rounded-xl p-3.5 flex items-start justify-between text-xs ${
+                        isRevoked
+                          ? 'border-gray-200 bg-gray-50/80'
                           : 'border-emerald-200 bg-emerald-50/10'
                       }`}
                     >
-                      <div>
-                        <div className="font-bold text-gray-900 flex items-center gap-2">
+                      <div className="space-y-1.5">
+                        <div className="font-bold text-gray-900 flex flex-wrap items-center gap-2">
                           <span>Aprovação #{appr.id.slice(0, 16)}...</span>
-                          {appr.isRevoked ? (
+                          {isRevoked ? (
                             <span className="text-[10px] bg-rose-100 text-rose-800 px-2 py-0.5 rounded-full font-bold">
-                              Revogada
+                              Revogada (Evento Compensatório)
                             </span>
                           ) : (
                             <span className="text-[10px] bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full font-bold">
@@ -894,14 +912,58 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
                             </span>
                           )}
                         </div>
-                        <div className="text-gray-500 text-[11px] mt-0.5">
-                          Despesa: {exp?.title} • Valor: {formatCentsToBRL(appr.amountCents)} •
-                          Aprovado em: {appr.approvedAt.slice(0, 10)}
+                        <div className="text-gray-600 text-[11px]">
+                          Despesa: <strong>{exp?.title}</strong> • Valor:{' '}
+                          <strong>{formatCentsToBRL(appr.amountCents)}</strong> • Declaração:{' '}
+                          <span className="font-mono">{appr.declarationId.slice(0, 12)}...</span>
                         </div>
+                        <div className="text-gray-500 text-[11px] flex flex-wrap gap-3">
+                          <span>
+                            Validador: <strong>{validatorName}</strong>
+                          </span>
+                          <span>
+                            Beneficiário do Crédito: <strong>{beneficiaryName}</strong>
+                          </span>
+                          <span>Aprovado em: {appr.approvedAt.slice(0, 10)}</span>
+                          {appr.financialMovementId && (
+                            <span className="font-mono text-indigo-700">
+                              Movimento Entrada: #{appr.financialMovementId.slice(0, 14)}...
+                            </span>
+                          )}
+                        </div>
+
+                        {revoc && (
+                          <div className="mt-2 pt-2 border-t border-rose-200/60 bg-rose-50/50 rounded-lg p-2.5 space-y-1 text-[11px] text-rose-900">
+                            <div className="font-bold flex items-center gap-1.5">
+                              <i className="ph ph-arrow-counter-clockwise text-sm" />
+                              <span>
+                                Evento de Revogação #{revoc.id.slice(0, 14)}... ({revoc.revokedAt.slice(0, 10)})
+                              </span>
+                            </div>
+                            <div>
+                              Motivo da revogação: <strong>{revoc.reason}</strong>
+                            </div>
+                            {revoc.compensatoryMovementId && (
+                              <div className="font-mono text-rose-700">
+                                Movimento Compensatório (Outflow): #{revoc.compensatoryMovementId}
+                              </div>
+                            )}
+                            <div className="text-[10px] text-gray-600 italic">
+                              Nota contábil: Este estorno é exclusivamente um ajuste contábil de livro-razão e não executa transferência bancária automática.
+                            </div>
+                            {revoc.requiresRestitution && (
+                              <div className="mt-1 px-2 py-1 bg-amber-100 border border-amber-300 text-amber-900 rounded-md font-bold text-[10px]">
+                                ⚠ Restituição Financeira Pendente:{' '}
+                                {formatCentsToBRL(revoc.restitutionPendingCents || revoc.revokedAmountCents)}{' '}
+                                (crédito original já utilizado na conta de destino)
+                              </div>
+                            )}
+                          </div>
+                        )}
                       </div>
 
                       <div>
-                        {!appr.isRevoked && isResponsible && !isArchived && (
+                        {!isRevoked && isResponsible && !isArchived && (
                           <button
                             onClick={() => {
                               setSelectedApprovalForRevocation(appr);
@@ -912,6 +974,41 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
                             Revogar
                           </button>
                         )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Histórico de Rejeições (Imutável Append-Only) */}
+          {allRejections.length > 0 && (
+            <div className="pt-4 border-t border-gray-100 space-y-3">
+              <h4 className="text-xs font-bold text-gray-700 uppercase tracking-wider">
+                Histórico de Rejeições ({allRejections.length})
+              </h4>
+              <div className="space-y-2">
+                {allRejections.map((rej) => {
+                  const exp = expenses.find((e) => e.id === rej.expenseId);
+                  return (
+                    <div
+                      key={rej.id}
+                      className="border border-rose-200 bg-rose-50/20 rounded-xl p-3 text-xs space-y-1"
+                    >
+                      <div className="font-bold text-gray-900 flex items-center gap-2">
+                        <span>Rejeição #{rej.id.slice(0, 16)}...</span>
+                        <span className="text-[10px] bg-rose-100 text-rose-800 px-2 py-0.5 rounded-full font-bold">
+                          Recusado
+                        </span>
+                      </div>
+                      <div className="text-gray-600 text-[11px]">
+                        Despesa: <strong>{exp?.title}</strong> • Valor:{' '}
+                        <strong>{formatCentsToBRL(rej.amountCents)}</strong> • Data:{' '}
+                        {rej.rejectedAt.slice(0, 10)}
+                      </div>
+                      <div className="text-rose-700 text-[11px]">
+                        Justificativa: <strong>{rej.reason}</strong>
                       </div>
                     </div>
                   );
@@ -1541,7 +1638,7 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
 
             <div className="space-y-3 text-xs">
               <div className="bg-rose-50 border border-rose-200 text-rose-800 p-3 rounded-xl text-xs space-y-1">
-                <strong>Atenção:</strong> A revogação não apaga o registro original. Ela gerará um novo evento compensatório imutável e estornará a movimentação contábil se houver sido creditada.
+                <strong>Atenção (Histórico Imutável & Ajuste Contábil):</strong> A revogação preserva integralmente o documento original de aprovação sem alterá-lo, registra um evento compensatório independente em <code>approval_revocations</code> e cria uma saída compensatória exclusivamente contábil (não realiza transferência bancária automática). Se o crédito já tiver sido utilizado, será registrada pendência de restituição financeira.
               </div>
 
               <div>

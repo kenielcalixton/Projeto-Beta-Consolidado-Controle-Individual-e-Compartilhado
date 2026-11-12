@@ -366,7 +366,7 @@ test('FASE 6 — Rateios e Reembolsos Compartilhados (Arquitetura v3.1)', async 
 
     assert.equal(approvalResult.approval.amountCents, 5000);
     assert.equal(approvalResult.approval.memberUid, 'bob_uid');
-    assert.equal(approvalResult.approval.isRevoked, false);
+    assert.equal(approvalResult.approval.isRevoked, undefined, 'Documento bruto de aprovação não possui flag mutável isRevoked');
     assert.equal(approvalResult.liability.status, 'paid');
     assert.equal(approvalResult.liability.paidAmountCents, 5000);
     assert.equal(approvalResult.liability.remainingAmountCents, 0);
@@ -440,11 +440,12 @@ test('FASE 6 — Rateios e Reembolsos Compartilhados (Arquitetura v3.1)', async 
   });
 
   // ----------------------------------------------------------------------------
-  // 9. HISTÓRICO IMUTÁVEL E REVOGAÇÃO DE APROVAÇÃO
+  // 9. HISTÓRICO IMUTÁVEL E REVOGAÇÃO DE APROVAÇÃO (FRENTE A + FRENTE B)
   // ----------------------------------------------------------------------------
-  await t.test('12. Revogação de aprovação: gera evento compensatório, estorna movimento contábil e restaura saldo devedor', async () => {
+  await t.test('12. Revogação de aprovação: preserva aprovação original 100% imutável, gera evento em approval_revocations, estorna movimento contábil e restaura saldo devedor', async () => {
     const approvals = loadDemoPaymentApprovals();
     const bobApproval = approvals.find((a) => a.memberUid === 'bob_uid')!;
+    const snapshotBeforeRevoke = JSON.stringify(bobApproval);
 
     const revokeRes = await revokeExpensePaymentApproval(
       {
@@ -471,16 +472,26 @@ test('FASE 6 — Rateios e Reembolsos Compartilhados (Arquitetura v3.1)', async 
     assert.ok(revokeRes.compensatoryMovement);
     assert.equal(revokeRes.compensatoryMovement?.direction, 'outflow');
     assert.equal(revokeRes.compensatoryMovement?.amountCents, 5000);
+    assert.equal(revokeRes.compensatoryMovement?.reversalOfMovementId, bobApproval.financialMovementId);
 
     const accs = await getUserAccounts('alice_uid', false, true);
     const aliceAcc = accs.find((a) => a.id === bobApproval.destinationAccountId)!;
     assert.equal(aliceAcc.projectedBalanceCents, 0);
 
-    // Aprovação original foi marcada como revogada sem apagar documento
-    const reloadedApprovals = loadDemoPaymentApprovals();
-    const reloadedBobAppr = reloadedApprovals.find((a) => a.id === bobApproval.id)!;
-    assert.equal(reloadedBobAppr.isRevoked, true);
-    assert.ok(reloadedBobAppr.revokedAt);
+    // PROVA DE IMUTABILIDADE ESTRITA (FRENTE A):
+    // O documento bruto de aprovação em storage NÃO sofreu absolutamente nenhuma mutação!
+    const reloadedRawApprovals = loadDemoPaymentApprovals();
+    const reloadedRawBobAppr = reloadedRawApprovals.find((a) => a.id === bobApproval.id)!;
+    assert.equal(JSON.stringify(reloadedRawBobAppr), snapshotBeforeRevoke, 'Documento original de aprovação deve permanecer byte-a-byte imutável');
+    assert.equal(reloadedRawBobAppr.isRevoked, undefined);
+
+    // Já a consulta derivada (getExpensePaymentApprovals) reflete isRevoked: true a partir de approval_revocations
+    const { getExpensePaymentApprovals } = await import('./sharedFinanceService');
+    const derivedApprovals = await getExpensePaymentApprovals('space_alpha', bobApproval.expenseId, true);
+    const derivedBobAppr = derivedApprovals.find((a) => a.id === bobApproval.id)!;
+    assert.equal(derivedBobAppr.isRevoked, true);
+    assert.equal(derivedBobAppr.revocationId, revokeRes.revocation.id);
+    assert.ok(derivedBobAppr.revokedAt);
   });
 
   // ----------------------------------------------------------------------------
@@ -773,5 +784,249 @@ test('FASE 6 — Rateios e Reembolsos Compartilhados (Arquitetura v3.1)', async 
     const queriedBobDecl = queriedDecls.find((d) => d.id === decl.id)!;
     assert.equal(queriedBobDecl.status, 'rejected');
     assert.equal(queriedBobDecl.rejectionReason, 'Comprovante ilegível e sem autenticação bancária');
+  });
+
+  // ----------------------------------------------------------------------------
+  // 15. CENÁRIO 5: PAGAMENTO PARCIAL ANTERIOR + REVOGAÇÃO DO SEGUNDO PAGAMENTO
+  // ----------------------------------------------------------------------------
+  await t.test('18. Cenário 5 (Pagamento parcial anterior): Cota de R$ 100,00 com pagamentos de R$ 30,00 e R$ 70,00; revogar R$ 70,00 preserva os R$ 30,00 pagos', async () => {
+    const createRes = await createSharedExpense(
+      'space_partial_revoc',
+      {
+        spaceId: 'space_partial_revoc',
+        title: 'Internet Fibra Anual',
+        totalOriginalAmountCents: 20000, // R$ 100,00 para cada
+        competenceMonth: '2026-11',
+        competenceDate: '2026-11-10',
+        categoryId: 'cat_net',
+        categoryName: 'Internet',
+        createdByUid: 'alice_uid',
+        responsibleUid: 'alice_uid',
+        payerUid: 'alice_uid',
+        splitMethod: 'equal',
+        participants: [
+          { uid: 'alice_uid', name: 'Alice' },
+          { uid: 'bob_uid', name: 'Bob' },
+        ],
+      },
+      true
+    );
+    const expId = createRes.expense.id;
+
+    // 1º pagamento parcial de R$ 30,00 (3000 centavos)
+    const decl1 = await declareExpensePayment(
+      {
+        spaceId: 'space_partial_revoc',
+        expenseId: expId,
+        memberUid: 'bob_uid',
+        memberName: 'Bob',
+        amountCents: 3000,
+        paymentDate: '2026-11-11',
+        paymentMethod: 'pix',
+        idempotencyKey: 'decl_bob_part_30',
+      },
+      true
+    );
+    const appr1 = await approveExpensePayment(
+      {
+        spaceId: 'space_partial_revoc',
+        expenseId: expId,
+        declarationId: decl1.id,
+        approverUid: 'alice_uid',
+      },
+      true
+    );
+    assert.equal(appr1.liability.paidAmountCents, 3000);
+    assert.equal(appr1.liability.remainingAmountCents, 7000);
+    assert.equal(appr1.liability.status, 'partially_paid');
+
+    // 2º pagamento de R$ 70,00 (7000 centavos)
+    const decl2 = await declareExpensePayment(
+      {
+        spaceId: 'space_partial_revoc',
+        expenseId: expId,
+        memberUid: 'bob_uid',
+        memberName: 'Bob',
+        amountCents: 7000,
+        paymentDate: '2026-11-12',
+        paymentMethod: 'pix',
+        idempotencyKey: 'decl_bob_part_70',
+      },
+      true
+    );
+    const appr2 = await approveExpensePayment(
+      {
+        spaceId: 'space_partial_revoc',
+        expenseId: expId,
+        declarationId: decl2.id,
+        approverUid: 'alice_uid',
+      },
+      true
+    );
+    assert.equal(appr2.liability.paidAmountCents, 10000);
+    assert.equal(appr2.liability.remainingAmountCents, 0);
+    assert.equal(appr2.liability.status, 'paid');
+
+    // Revoga apenas a aprovação de R$ 70,00
+    const revocRes = await revokeExpensePaymentApproval(
+      {
+        spaceId: 'space_partial_revoc',
+        expenseId: expId,
+        approvalId: appr2.approval.id,
+        revokerUid: 'alice_uid',
+        reason: 'Segundo comprovante Pix foi agendado e cancelado',
+      },
+      true
+    );
+
+    // R$ 30,00 permanece reconhecido! Saldo restante volta para R$ 70,00!
+    assert.equal(revocRes.liability.paidAmountCents, 3000);
+    assert.equal(revocRes.liability.remainingAmountCents, 7000);
+    assert.equal(revocRes.liability.status, 'partially_paid');
+  });
+
+  // ----------------------------------------------------------------------------
+  // 16. CENÁRIO 6 & 8: REEMBOLSO DE FORNECEDOR + REVOGAÇÃO E DINHEIRO JÁ UTILIZADO
+  // ----------------------------------------------------------------------------
+  await t.test('19. Cenários 6 e 8: Reembolso de fornecedor + Revogação preserva ajustes e sinaliza restituição quando saldo já foi utilizado', async () => {
+    const bobCreditorAcc = await createAccount('bob_credor_c8', { name: 'Conta Bob C8', type: 'checking' }, true);
+
+    const createRes = await createSharedExpense(
+      'space_c6_c8',
+      {
+        spaceId: 'space_c6_c8',
+        title: 'Equipamento de Som',
+        totalOriginalAmountCents: 20000, // R$ 100,00 cada
+        competenceMonth: '2026-11',
+        competenceDate: '2026-11-10',
+        categoryId: 'cat_lazer',
+        categoryName: 'Lazer',
+        createdByUid: 'alice_uid',
+        responsibleUid: 'alice_uid',
+        payerUid: 'bob_credor_c8',
+        splitMethod: 'equal',
+        participants: [
+          { uid: 'alice_uid', name: 'Alice' },
+          { uid: 'bob_credor_c8', name: 'Bob' },
+        ],
+      },
+      true
+    );
+    const expId = createRes.expense.id;
+
+    // Fornecedor devolve R$ 40,00 total -> R$ 20,00 de redução para cada (cota líquida = R$ 80,00)
+    await recordSupplierRefund(
+      {
+        spaceId: 'space_c6_c8',
+        expenseId: expId,
+        refundType: 'partial_refund',
+        amountRefundedCents: 4000,
+        recipientUid: 'bob_credor_c8',
+        date: '2026-11-11',
+        justification: 'Desconto por avaria na caixa',
+      },
+      true
+    );
+
+    // Alice declara e aprova o pagamento da cota líquida de R$ 80,00 (8000 centavos)
+    const aliceDecl = await declareExpensePayment(
+      {
+        spaceId: 'space_c6_c8',
+        expenseId: expId,
+        memberUid: 'alice_uid',
+        memberName: 'Alice',
+        amountCents: 8000,
+        paymentDate: '2026-11-12',
+        paymentMethod: 'pix',
+      },
+      true
+    );
+
+    const appr = await approveExpensePayment(
+      {
+        spaceId: 'space_c6_c8',
+        expenseId: expId,
+        declarationId: aliceDecl.id,
+        approverUid: 'alice_uid',
+        destinationAccountId: bobCreditorAcc.id,
+      },
+      true
+    );
+    assert.equal(appr.liability.paidAmountCents, 8000);
+    assert.equal(appr.liability.remainingAmountCents, 0);
+
+    // CENÁRIO 8: Bob utiliza R$ 60,00 do saldo da conta (restando apenas R$ 20,00 na conta)
+    const { recordMovement } = await import('./ledgerService');
+    await recordMovement(
+      {
+        accountId: bobCreditorAcc.id,
+        userId: 'bob_credor_c8',
+        direction: 'outflow',
+        amountCents: 6000,
+        effectiveDate: '2026-11-12',
+        originType: 'personal_expense',
+        originId: 'tx_personal_bob_spend',
+        description: 'Gasto pessoal de Bob utilizando o saldo',
+        authorUid: 'bob_credor_c8',
+        idempotencyKey: 'idem_bob_spend_6000',
+      },
+      true
+    );
+
+    // Agora Alice revoga a aprovação de R$ 80,00
+    const revoc = await revokeExpensePaymentApproval(
+      {
+        spaceId: 'space_c6_c8',
+        expenseId: expId,
+        approvalId: appr.approval.id,
+        revokerUid: 'alice_uid',
+        reason: 'Estorno do pagamento de R$ 80,00',
+      },
+      true
+    );
+
+    // Verifica Cenário 6: restauração respeita a cota líquida ajustada (R$ 80,00) e preserva originalAmountCents (R$ 100,00) e refundAdjustmentCents (R$ 20,00)
+    assert.equal(revoc.liability.originalAmountCents, 10000);
+    assert.equal(revoc.liability.assignedShareAmountCents, 10000);
+    assert.equal(revoc.liability.refundAdjustmentCents, 2000);
+    assert.equal(revoc.liability.adjustedShareAmountCents, 8000);
+    assert.equal(revoc.liability.paidAmountCents, 0);
+    assert.equal(revoc.liability.remainingAmountCents, 8000);
+    assert.equal(revoc.liability.creditNoteCents, 0);
+    assert.equal(revoc.liability.status, 'pending');
+
+    // Verifica Cenário 8: como Bob tinha apenas R$ 20,00 (2000) quando ocorreu o estorno de R$ 80,00 (8000),
+    // requiresRestitution é true e restitutionPendingCents é 6000 (R$ 60,00)
+    assert.equal(revoc.revocation.requiresRestitution, true);
+    assert.equal(revoc.revocation.restitutionPendingCents, 6000);
+    assert.ok(revoc.compensatoryMovement?.description.includes('Estorno contábil'));
+
+    // Verifica Cenário 3: Repetição idempotente retorna o mesmo resultado, mas payload divergente falha
+    const replay = await revokeExpensePaymentApproval(
+      {
+        spaceId: 'space_c6_c8',
+        expenseId: expId,
+        approvalId: appr.approval.id,
+        revokerUid: 'alice_uid',
+        reason: 'Estorno do pagamento de R$ 80,00',
+      },
+      true
+    );
+    assert.equal(replay.revocation.id, revoc.revocation.id);
+
+    await assert.rejects(
+      async () =>
+        revokeExpensePaymentApproval(
+          {
+            spaceId: 'space_c6_c8',
+            expenseId: expId,
+            approvalId: appr.approval.id,
+            revokerUid: 'alice_uid',
+            reason: 'Motivo divergente na segunda tentativa',
+          },
+          true
+        ),
+      /Conflito de idempotência/
+    );
   });
 });

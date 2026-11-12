@@ -204,6 +204,9 @@ export interface CreateSharedExpenseInput {
   idempotencyKey?: string;
 }
 
+import { recordSpaceAuditEvent } from './spaceAuditService';
+import { getAccountById } from './accountService';
+
 export async function createSharedExpense(
   spaceId: string,
   input: CreateSharedExpenseInput,
@@ -236,7 +239,7 @@ export async function createSharedExpense(
 
   const idempotencyKey =
     input.idempotencyKey?.trim() ||
-    `idem_exp_${spaceId}_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    `idem_exp_${spaceId}_${input.createdByUid}_${input.title.trim()}_${input.totalOriginalAmountCents}_${input.competenceDate}`;
 
   if (!isDemo) {
     const callable = httpsCallable<
@@ -261,6 +264,14 @@ export async function createSharedExpense(
     );
 
     if (existing) {
+      if (
+        existing.totalOriginalAmountCents !== input.totalOriginalAmountCents ||
+        existing.title !== input.title.trim()
+      ) {
+        throw new Error(
+          'Conflito de idempotência: Chave já utilizada para uma despesa com parâmetros divergentes.'
+        );
+      }
       const existingLiabs = loadDemoSharedLiabilities().filter((l) => l.expenseId === existing.id);
       return { expense: existing, liabilities: existingLiabs };
     }
@@ -444,7 +455,7 @@ export async function declareExpensePayment(
 
   const idempotencyKey =
     input.idempotencyKey?.trim() ||
-    `idem_decl_${input.expenseId}_${input.memberUid}_${Date.now()}`;
+    `idem_decl_${input.expenseId}_${input.memberUid}_${input.amountCents}_${input.paymentDate}`;
 
   if (!isDemo) {
     const callable = httpsCallable<
@@ -476,20 +487,28 @@ export async function declareExpensePayment(
       );
     }
 
-    const remaining = liability.remainingAmountCents ?? liability.adjustedShareAmountCents;
-    if (input.amountCents > remaining) {
-      throw new Error(
-        `Valor declarado (R$ ${(input.amountCents / 100).toFixed(2)}) excede o saldo devedor restante (R$ ${(remaining / 100).toFixed(2)}).`
-      );
-    }
-
     const declarations = loadDemoPaymentDeclarations();
     const declId = generatePaymentDeclarationDocId(input.expenseId, idempotencyKey);
     const existing = declarations.find(
       (d) => d.id === declId || d.idempotencyKey === idempotencyKey
     );
     if (existing) {
+      if (
+        existing.amountCents !== input.amountCents ||
+        existing.paymentDate !== input.paymentDate
+      ) {
+        throw new Error(
+          'Conflito de idempotência: Declaração já registrada com parâmetros divergentes.'
+        );
+      }
       return existing;
+    }
+
+    const remaining = liability.remainingAmountCents ?? liability.adjustedShareAmountCents;
+    if (input.amountCents > remaining) {
+      throw new Error(
+        `Valor declarado (R$ ${(input.amountCents / 100).toFixed(2)}) excede o saldo devedor restante (R$ ${(remaining / 100).toFixed(2)}).`
+      );
     }
 
     const now = new Date().toISOString();
@@ -568,7 +587,7 @@ export async function getExpensePaymentDeclarations(
       }
       const appr = approvals.find((a) => a.declarationId === decl.id);
       if (appr) {
-        const hasRevoc = revocations.some((rev) => rev.approvalId === appr.id) || appr.isRevoked;
+        const hasRevoc = revocations.some((rev) => rev.approvalId === appr.id) || Boolean(appr.isRevoked);
         return { ...decl, status: (hasRevoc ? 'cancelled' : 'approved') as PaymentDeclarationStatus };
       }
       return { ...decl, status: 'pending_validation' as const };
@@ -587,7 +606,7 @@ export async function getExpensePaymentDeclarations(
     }
     const appr = approvals.find((a) => a.declarationId === decl.id);
     if (appr) {
-      const hasRevoc = revocations.some((rev) => rev.approvalId === appr.id) || appr.isRevoked;
+      const hasRevoc = revocations.some((rev) => rev.approvalId === appr.id) || Boolean(appr.isRevoked);
       return { ...decl, status: hasRevoc ? 'cancelled' : 'approved' };
     }
     return { ...decl, status: 'pending_validation' };
@@ -599,24 +618,110 @@ export async function getSpacePendingDeclarations(
   responsibleUid: string,
   isDemo = false
 ): Promise<ExpensePaymentDeclaration[]> {
+  const expenses = await getSharedExpenses(spaceId, responsibleUid, isDemo);
+  const myExpenses = expenses.filter((e) => e.responsibleUid === responsibleUid);
+  const results: ExpensePaymentDeclaration[] = [];
+  for (const exp of myExpenses) {
+    const decls = await getExpensePaymentDeclarations(spaceId, exp.id, isDemo);
+    results.push(...decls.filter((d) => d.status === 'pending_validation'));
+  }
+  return results;
+}
+
+/**
+ * Consulta aprovações de uma despesa derivando o estado `isRevoked` em memória
+ * a partir dos eventos independentes em `approval_revocations`, mantendo
+ * o documento armazenado de `ExpensePaymentApproval` 100% imutável.
+ */
+export async function getExpensePaymentApprovals(
+  spaceId: string,
+  expenseId: string,
+  isDemo = false
+): Promise<ExpensePaymentApproval[]> {
   if (!isDemo) {
-    const expenses = await getSharedExpenses(spaceId, responsibleUid, isDemo);
-    const myExpenses = expenses.filter((e) => e.responsibleUid === responsibleUid);
-    const results: ExpensePaymentDeclaration[] = [];
-    for (const exp of myExpenses) {
-      const decls = await getExpensePaymentDeclarations(spaceId, exp.id, isDemo);
-      results.push(...decls.filter((d) => d.status === 'pending_validation'));
-    }
-    return results;
+    const apprRef = collection(db, 'spaces', spaceId, 'shared_expenses', expenseId, 'payment_approvals');
+    const revocRef = collection(db, 'spaces', spaceId, 'shared_expenses', expenseId, 'approval_revocations');
+    const [apprSnap, revocSnap] = await Promise.all([getDocs(apprRef), getDocs(revocRef)]);
+    const revocations = revocSnap.docs.map((d) => d.data() as ExpenseApprovalRevocation);
+
+    return apprSnap.docs.map((d) => {
+      const appr = d.data() as ExpensePaymentApproval;
+      const revoc = revocations.find((r) => r.approvalId === appr.id);
+      return {
+        ...appr,
+        isRevoked: Boolean(revoc) || Boolean(appr.isRevoked),
+        revokedAt: revoc?.revokedAt || appr.revokedAt,
+        revocationId: revoc?.id || appr.revocationId,
+      };
+    });
   }
 
-  const all = loadDemoPaymentDeclarations();
-  return all.filter(
-    (d) =>
-      d.spaceId === spaceId &&
-      d.responsibleUid === responsibleUid &&
-      d.status === 'pending_validation'
-  );
+  const approvals = loadDemoPaymentApprovals().filter((a) => a.spaceId === spaceId && a.expenseId === expenseId);
+  const revocations = loadDemoApprovalRevocations().filter((r) => r.spaceId === spaceId && r.expenseId === expenseId);
+
+  return approvals.map((appr) => {
+    const revoc = revocations.find((r) => r.approvalId === appr.id);
+    return {
+      ...appr,
+      isRevoked: Boolean(revoc) || Boolean(appr.isRevoked),
+      revokedAt: revoc?.revokedAt || appr.revokedAt,
+      revocationId: revoc?.id || appr.revocationId,
+    };
+  });
+}
+
+export async function getExpenseApprovalRevocations(
+  spaceId: string,
+  expenseId: string,
+  isDemo = false
+): Promise<ExpenseApprovalRevocation[]> {
+  if (!isDemo) {
+    const revocRef = collection(db, 'spaces', spaceId, 'shared_expenses', expenseId, 'approval_revocations');
+    const snap = await getDocs(revocRef);
+    return snap.docs.map((d) => d.data() as ExpenseApprovalRevocation);
+  }
+  return loadDemoApprovalRevocations().filter((r) => r.spaceId === spaceId && r.expenseId === expenseId);
+}
+
+export async function getExpensePaymentRejections(
+  spaceId: string,
+  expenseId: string,
+  isDemo = false
+): Promise<ExpensePaymentRejection[]> {
+  if (!isDemo) {
+    const rejRef = collection(db, 'spaces', spaceId, 'shared_expenses', expenseId, 'payment_rejections');
+    const snap = await getDocs(rejRef);
+    return snap.docs.map((d) => d.data() as ExpensePaymentRejection);
+  }
+  return loadDemoPaymentRejections().filter((r) => r.spaceId === spaceId && r.expenseId === expenseId);
+}
+
+export async function getSpacePaymentApprovals(
+  spaceId: string,
+  userId: string,
+  isDemo = false
+): Promise<ExpensePaymentApproval[]> {
+  const expenses = await getSharedExpenses(spaceId, userId, isDemo);
+  const results: ExpensePaymentApproval[] = [];
+  for (const exp of expenses) {
+    const apprs = await getExpensePaymentApprovals(spaceId, exp.id, isDemo);
+    results.push(...apprs);
+  }
+  return results;
+}
+
+export async function getSpaceApprovalRevocations(
+  spaceId: string,
+  userId: string,
+  isDemo = false
+): Promise<ExpenseApprovalRevocation[]> {
+  const expenses = await getSharedExpenses(spaceId, userId, isDemo);
+  const results: ExpenseApprovalRevocation[] = [];
+  for (const exp of expenses) {
+    const revocs = await getExpenseApprovalRevocations(spaceId, exp.id, isDemo);
+    results.push(...revocs);
+  }
+  return results;
 }
 
 // ==============================================================================
@@ -642,7 +747,7 @@ export async function approveExpensePayment(
 }> {
   const idempotencyKey =
     input.idempotencyKey?.trim() ||
-    `idem_appr_${input.declarationId}_${Date.now()}`;
+    `idem_val_${input.declarationId}_approved`;
 
   if (!isDemo) {
     const callable = httpsCallable<
@@ -681,11 +786,28 @@ export async function approveExpensePayment(
     if (!decl) {
       throw new Error(`Declaração de pagamento "${input.declarationId}" não encontrada.`);
     }
+    if (decl.expenseId !== input.expenseId || decl.spaceId !== input.spaceId) {
+      throw new Error('Declaração não pertence à despesa ou ao espaço informados.');
+    }
+
+    const rejections = loadDemoPaymentRejections();
+    if (rejections.some((r) => r.declarationId === input.declarationId)) {
+      throw new Error('Esta declaração de pagamento já foi rejeitada e não pode ser aprovada.');
+    }
 
     const approvals = loadDemoPaymentApprovals();
+    const revocations = loadDemoApprovalRevocations();
     const approvalId = generatePaymentApprovalDocId(input.declarationId, idempotencyKey);
-    const existing = approvals.find((a) => a.id === approvalId || a.idempotencyKey === idempotencyKey);
+    const existing = approvals.find((a) => a.id === approvalId || a.declarationId === input.declarationId);
     if (existing) {
+      if (revocations.some((r) => r.approvalId === existing.id) || existing.isRevoked) {
+        throw new Error('A aprovação desta declaração já foi revogada anteriormente.');
+      }
+      if ((existing.destinationAccountId || undefined) !== (input.destinationAccountId || undefined)) {
+        throw new Error(
+          'Conflito de idempotência: Aprovação já registrada com conta de destino divergente.'
+        );
+      }
       const liabs = loadDemoSharedLiabilities();
       const liab = liabs.find((l) => l.expenseId === input.expenseId && l.memberUid === decl.memberUid)!;
       return { approval: existing, liability: liab };
@@ -727,6 +849,8 @@ export async function approveExpensePayment(
       );
     }
 
+    // REGRA DE IMUTABILIDADE ESTRITA (FRENTE A):
+    // O registro de ExpensePaymentApproval é criado sem flags mutáveis e NUNCA é editado posteriormente.
     const approval: ExpensePaymentApproval = {
       id: approvalId,
       expenseId: input.expenseId,
@@ -741,7 +865,6 @@ export async function approveExpensePayment(
       financialMovementId: financialMovement?.id,
       approvedAt: now,
       approverUid: input.approverUid,
-      isRevoked: false,
       idempotencyKey,
       createdAt: now,
     };
@@ -754,12 +877,36 @@ export async function approveExpensePayment(
     // Atualiza saldo da obrigação
     const currentPaid = liability.paidAmountCents || 0;
     const newPaid = currentPaid + decl.amountCents;
-    const remaining = liability.adjustedShareAmountCents - newPaid;
+    const adjusted = liability.adjustedShareAmountCents;
+    const remaining = Math.max(0, adjusted - newPaid);
+    const creditNote = Math.max(0, newPaid - adjusted);
     liability.paidAmountCents = newPaid;
-    liability.remainingAmountCents = Math.max(0, remaining);
-    const newStatus = remaining <= 0 ? 'paid' : 'partially_paid';
+    liability.remainingAmountCents = remaining;
+    liability.creditNoteCents = creditNote;
+    const newStatus = remaining === 0 ? 'paid' : 'partially_paid';
     liability.status = newStatus;
     saveDemoSharedLiabilities(liabilities);
+
+    recordSpaceAuditEvent(
+      {
+        spaceId: input.spaceId,
+        eventType: 'payment_approved',
+        performedByUid: input.approverUid,
+        performedByName: 'Responsável Financeiro',
+        targetUid: decl.memberUid,
+        targetName: decl.memberName,
+        eventId: `audit_appr_${approvalId}`,
+        details: {
+          expenseId: input.expenseId,
+          declarationId: input.declarationId,
+          approvalId,
+          beneficiaryUid,
+          amountCents: decl.amountCents,
+          financialMovementId: financialMovement?.id || null,
+        },
+      },
+      true
+    ).catch(() => {});
 
     // Notificação ao devedor
     sendSpaceNotification(
@@ -834,15 +981,20 @@ export async function rejectExpensePayment(
     throw new Error('A justificativa da rejeição do pagamento é estritamente obrigatória.');
   }
 
+  const idempotencyKey =
+    input.idempotencyKey?.trim() ||
+    `idem_val_${input.declarationId}_rejected`;
+
   if (!isDemo) {
     const callable = httpsCallable<
-      RejectExpensePaymentInput & { decision: 'rejected' },
+      RejectExpensePaymentInput & { decision: 'rejected'; idempotencyKey: string },
       { rejection: ExpensePaymentRejection; declaration: ExpensePaymentDeclaration; liability: ExpenseLiability }
     >(functions, 'validateExpensePaymentOfficial');
 
     const res = await callable({
       ...input,
       decision: 'rejected',
+      idempotencyKey,
     });
     return res.data;
   }
@@ -866,6 +1018,11 @@ export async function rejectExpensePayment(
       throw new Error(`Declaração de pagamento "${input.declarationId}" não encontrada.`);
     }
 
+    const approvals = loadDemoPaymentApprovals();
+    if (approvals.some((a) => a.declarationId === input.declarationId)) {
+      throw new Error('Esta declaração já foi aprovada e não pode ser rejeitada diretamente.');
+    }
+
     const liabilities = loadDemoSharedLiabilities();
     const liability = liabilities.find(
       (l) => l.expenseId === input.expenseId && l.memberUid === decl.memberUid
@@ -874,9 +1031,21 @@ export async function rejectExpensePayment(
       throw new Error('Obrigação do membro não encontrada.');
     }
 
-    const now = new Date().toISOString();
     const rejections = loadDemoPaymentRejections();
-    const rejectionId = generatePaymentRejectionDocId(input.declarationId, `idem_rej_${input.declarationId}_${Date.now()}`);
+    const rejectionId = generatePaymentRejectionDocId(input.declarationId, idempotencyKey);
+    const existing = rejections.find((r) => r.id === rejectionId || r.declarationId === input.declarationId);
+    if (existing) {
+      if (existing.reason !== input.rejectionReason.trim()) {
+        throw new Error('Conflito de idempotência: Rejeição já registrada com justificativa divergente.');
+      }
+      return {
+        rejection: existing,
+        declaration: { ...decl, status: 'rejected', rejectionReason: existing.reason },
+        liability,
+      };
+    }
+
+    const now = new Date().toISOString();
     const rejection: ExpensePaymentRejection = {
       id: rejectionId,
       expenseId: input.expenseId,
@@ -890,7 +1059,7 @@ export async function rejectExpensePayment(
       rejectionReason: input.rejectionReason.trim(),
       rejectedByUid: input.rejecterUid,
       rejectedAt: now,
-      idempotencyKey: `idem_rej_${input.declarationId}`,
+      idempotencyKey,
       createdAt: now,
     };
 
@@ -903,6 +1072,26 @@ export async function rejectExpensePayment(
     const currentPaid = liability.paidAmountCents || 0;
     liability.status = currentPaid > 0 ? 'partially_paid' : 'pending';
     saveDemoSharedLiabilities(liabilities);
+
+    recordSpaceAuditEvent(
+      {
+        spaceId: input.spaceId,
+        eventType: 'payment_rejected',
+        performedByUid: input.rejecterUid,
+        performedByName: 'Responsável Financeiro',
+        targetUid: decl.memberUid,
+        targetName: decl.memberName,
+        eventId: `audit_rej_${rejectionId}`,
+        details: {
+          expenseId: input.expenseId,
+          declarationId: input.declarationId,
+          rejectionId,
+          amountCents: decl.amountCents,
+          reason: input.rejectionReason.trim(),
+        },
+      },
+      true
+    ).catch(() => {});
 
     // Notificação ao devedor
     sendSpaceNotification(
@@ -953,7 +1142,7 @@ export async function revokeExpensePaymentApproval(
 
   const idempotencyKey =
     input.idempotencyKey?.trim() ||
-    `idem_revoc_${input.approvalId}_${Date.now()}`;
+    `idem_revoc_${input.approvalId}`;
 
   if (!isDemo) {
     const callable = httpsCallable<
@@ -990,19 +1179,28 @@ export async function revokeExpensePaymentApproval(
     if (!approval) {
       throw new Error(`Aprovação "${input.approvalId}" não encontrada.`);
     }
-    if (approval.isRevoked) {
-      throw new Error('Esta aprovação de pagamento já se encontra revogada.');
+    if (approval.expenseId !== input.expenseId || approval.spaceId !== input.spaceId) {
+      throw new Error('A aprovação informada não pertence à despesa ou ao espaço especificados.');
     }
 
     const revocations = loadDemoApprovalRevocations();
     const revocationId = generateApprovalRevocationDocId(input.approvalId, idempotencyKey);
     const existing = revocations.find(
-      (r) => r.id === revocationId || r.idempotencyKey === idempotencyKey
+      (r) => r.id === revocationId || r.approvalId === input.approvalId
     );
     if (existing) {
+      if (existing.reason !== input.reason.trim()) {
+        throw new Error(
+          'Conflito de idempotência: Aprovação já revogada com motivo divergente.'
+        );
+      }
       const liabs = loadDemoSharedLiabilities();
       const liab = liabs.find((l) => l.expenseId === input.expenseId && l.memberUid === approval.memberUid)!;
       return { revocation: existing, liability: liab };
+    }
+
+    if (approval.isRevoked) {
+      throw new Error('Esta aprovação de pagamento já se encontra revogada.');
     }
 
     const liabilities = loadDemoSharedLiabilities();
@@ -1013,13 +1211,30 @@ export async function revokeExpensePaymentApproval(
       throw new Error('Obrigação do membro não encontrada.');
     }
 
+    const beneficiaryUid = approval.beneficiaryUid || expense.payerUid || expense.responsibleUid;
     let compensatoryMovement: FinancialMovement | undefined;
+    let requiresRestitution = false;
+    let restitutionPendingCents = 0;
+
     if (approval.financialMovementId && approval.destinationAccountId) {
+      const acc = await getAccountById(approval.destinationAccountId, beneficiaryUid, true);
+      if (acc) {
+        const currentBal = acc.projectedBalanceCents || 0;
+        if (currentBal < approval.amountCents) {
+          requiresRestitution = true;
+          restitutionPendingCents = approval.amountCents - Math.max(0, currentBal);
+        }
+      }
+
+      const reasonSummary = requiresRestitution
+        ? `Revogação de aprovação (Estorno contábil — Restituição financeira pendente de R$ ${(restitutionPendingCents / 100).toFixed(2)} pois o saldo já foi utilizado): ${input.reason.trim()}`
+        : `Revogação de aprovação (Ajuste exclusivamente contábil, não representa transferência bancária automática): ${input.reason.trim()}`;
+
       const res = await reverseMovement(
         approval.destinationAccountId,
         approval.financialMovementId,
         input.revokerUid,
-        `Revogação de aprovação de reembolso: ${input.reason.trim()}`,
+        reasonSummary,
         true
       );
       compensatoryMovement = res.compensatoryMovement;
@@ -1035,9 +1250,11 @@ export async function revokeExpensePaymentApproval(
       liabilityId: approval.liabilityId || approval.memberUid,
       memberUid: approval.memberUid,
       responsibleUid: expense.responsibleUid,
-      beneficiaryUid: approval.beneficiaryUid || expense.payerUid || expense.responsibleUid,
+      beneficiaryUid,
       revokedAmountCents: approval.amountCents,
       compensatoryMovementId: compensatoryMovement?.id,
+      requiresRestitution,
+      restitutionPendingCents,
       reason: input.reason.trim(),
       revokedByUid: input.revokerUid,
       revokedAt: now,
@@ -1048,21 +1265,53 @@ export async function revokeExpensePaymentApproval(
     revocations.push(revocation);
     saveDemoApprovalRevocations(revocations);
 
-    // Marca a aprovação como revogada sem alterar o documento histórico original de declaração
-    approval.isRevoked = true;
-    approval.revokedAt = now;
-    approval.revocationId = revocationId;
-    saveDemoPaymentApprovals(approvals);
+    // REGRA DE IMUTABILIDADE ESTRITA (FRENTE A):
+    // O registro original em `payment_approvals` NUNCA sofre mutação (não escrevemos `isRevoked = true` no storage).
+    // O estado revogado é derivado exclusivamente da presença de `revocation` em `approval_revocations`.
 
-    // Restaura o saldo da obrigação
+    // Restaura o saldo da obrigação preservando pagamentos parciais anteriores e ajustes de reembolso comercial (Frentes B e D)
     const currentPaid = liability.paidAmountCents || 0;
     const restoredPaid = Math.max(0, currentPaid - approval.amountCents);
-    const remaining = liability.adjustedShareAmountCents - restoredPaid;
+    const original = liability.originalAmountCents ?? liability.assignedShareAmountCents;
+    const assigned = liability.assignedShareAmountCents ?? original;
+    const refundAdj = liability.refundAdjustmentCents || 0;
+    const adjusted = liability.adjustedShareAmountCents ?? Math.max(0, original - refundAdj);
+    const remaining = Math.max(0, adjusted - restoredPaid);
+    const restoredCreditNote = Math.max(0, restoredPaid - adjusted);
+
+    liability.originalAmountCents = original;
+    liability.assignedShareAmountCents = assigned;
+    liability.refundAdjustmentCents = refundAdj;
+    liability.adjustedShareAmountCents = adjusted;
     liability.paidAmountCents = restoredPaid;
     liability.remainingAmountCents = remaining;
-    liability.creditNoteCents = Math.max(0, restoredPaid - liability.adjustedShareAmountCents);
-    liability.status = restoredPaid === 0 ? 'pending' : 'partially_paid';
+    liability.creditNoteCents = restoredCreditNote;
+    liability.status = remaining === 0 ? 'paid' : restoredPaid > 0 ? 'partially_paid' : 'pending';
     saveDemoSharedLiabilities(liabilities);
+
+    recordSpaceAuditEvent(
+      {
+        spaceId: input.spaceId,
+        eventType: 'payment_approval_revoked',
+        performedByUid: input.revokerUid,
+        performedByName: 'Responsável Financeiro',
+        targetUid: approval.memberUid,
+        eventId: `audit_revoc_${revocationId}`,
+        details: {
+          expenseId: input.expenseId,
+          approvalId: input.approvalId,
+          revocationId,
+          declarationId: approval.declarationId,
+          beneficiaryUid,
+          revokedAmountCents: approval.amountCents,
+          compensatoryMovementId: compensatoryMovement?.id || null,
+          requiresRestitution,
+          restitutionPendingCents,
+          reason: input.reason.trim(),
+        },
+      },
+      true
+    ).catch(() => {});
 
     // Notificações
     sendSpaceNotification(
@@ -1078,7 +1327,6 @@ export async function revokeExpensePaymentApproval(
       true
     ).catch(() => {});
 
-    const beneficiaryUid = approval.beneficiaryUid || expense.payerUid;
     if (beneficiaryUid && beneficiaryUid !== input.revokerUid) {
       sendSpaceNotification(
         {
@@ -1086,8 +1334,8 @@ export async function revokeExpensePaymentApproval(
           spaceId: input.spaceId,
           spaceName: 'Espaço Compartilhado',
           type: 'payment_approval_revoked',
-          title: 'Reembolso estornado',
-          message: `O crédito de reembolso referente a "${expense.title}" foi estornado pelo responsável. Motivo: ${input.reason.trim()}`,
+          title: 'Reembolso estornado contabilmente',
+          message: `O crédito de reembolso referente a "${expense.title}" foi estornado contabilmente pelo responsável. Motivo: ${input.reason.trim()}`,
           originEventId: revocationId,
         },
         true
@@ -1125,7 +1373,7 @@ export async function recordSupplierRefund(
 
   const idempotencyKey =
     input.idempotencyKey?.trim() ||
-    `idem_supref_${input.expenseId}_${Date.now()}`;
+    `idem_supref_${input.expenseId}_${input.refundType}_${input.amountRefundedCents}_${input.date}`;
 
   if (!isDemo) {
     const callable = httpsCallable<
@@ -1145,6 +1393,11 @@ export async function recordSupplierRefund(
     const refundId = generateSupplierRefundDocId(input.expenseId, idempotencyKey);
     const existing = refunds.find((r) => r.id === refundId);
     if (existing) {
+      if (existing.amountRefundedCents !== input.amountRefundedCents) {
+        throw new Error(
+          'Conflito de idempotência: Reembolso comercial já registrado com valor divergente.'
+        );
+      }
       return existing;
     }
 
@@ -1213,6 +1466,7 @@ export async function recordSupplierRefund(
           liab.adjustedShareAmountCents = newAdjusted;
           liab.remainingAmountCents = remaining;
           liab.creditNoteCents = creditNote;
+          liab.status = remaining === 0 && paid > 0 ? 'paid' : paid > 0 ? 'partially_paid' : liab.status;
 
           sendSpaceNotification(
             {
@@ -1291,14 +1545,16 @@ export async function getSpaceFinancialSummary(
     totalMyPendingToPayCents += l.remainingAmountCents ?? l.adjustedShareAmountCents;
   }
 
-  // Valores a receber: quando o usuário é responsibleUid da despesa
+  // Valores a receber: quando o usuário é o credor/beneficiário (payerUid || responsibleUid) da despesa
   let totalMyPendingToReceiveCents = 0;
-  const myResponsibleExpenseIds = new Set(
-    expenses.filter((e) => e.responsibleUid === userId).map((e) => e.id)
+  const myCreditorExpenseIds = new Set(
+    expenses
+      .filter((e) => (e.payerUid || e.responsibleUid) === userId)
+      .map((e) => e.id)
   );
 
   for (const l of allLiabilities) {
-    if (myResponsibleExpenseIds.has(l.expenseId) && l.memberUid !== userId) {
+    if (myCreditorExpenseIds.has(l.expenseId) && l.memberUid !== userId) {
       totalMyPendingToReceiveCents += l.remainingAmountCents ?? l.adjustedShareAmountCents;
     }
   }

@@ -348,27 +348,24 @@ export function generatePaymentDeclarationDocId(expenseId: string, idempotencyKe
   return `decl_${cleanSlug ? `${cleanSlug}_` : ''}${hash.slice(0, 32)}`;
 }
 
-export function generatePaymentApprovalDocId(declarationId: string, idempotencyKey: string): string {
+export function generatePaymentApprovalDocId(declarationId: string, _idempotencyKey?: string): string {
   const cleanDecl = (declarationId || '').trim();
-  const cleanKey = (idempotencyKey || '').trim();
-  const cleanSlug = cleanKey.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 24);
-  const hash = sha256Hex(`appr:${cleanDecl}:${cleanKey}`);
+  const cleanSlug = cleanDecl.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 24);
+  const hash = sha256Hex(`appr_canonical:${cleanDecl}`);
   return `appr_${cleanSlug ? `${cleanSlug}_` : ''}${hash.slice(0, 32)}`;
 }
 
-export function generatePaymentRejectionDocId(declarationId: string, idempotencyKey: string): string {
+export function generatePaymentRejectionDocId(declarationId: string, _idempotencyKey?: string): string {
   const cleanDecl = (declarationId || '').trim();
-  const cleanKey = (idempotencyKey || '').trim();
-  const cleanSlug = cleanKey.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 24);
-  const hash = sha256Hex(`rej:${cleanDecl}:${cleanKey}`);
+  const cleanSlug = cleanDecl.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 24);
+  const hash = sha256Hex(`rej_canonical:${cleanDecl}`);
   return `rej_${cleanSlug ? `${cleanSlug}_` : ''}${hash.slice(0, 32)}`;
 }
 
-export function generateApprovalRevocationDocId(approvalId: string, idempotencyKey: string): string {
+export function generateApprovalRevocationDocId(approvalId: string, _idempotencyKey?: string): string {
   const cleanAppr = (approvalId || '').trim();
-  const cleanKey = (idempotencyKey || '').trim();
-  const cleanSlug = cleanKey.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 24);
-  const hash = sha256Hex(`revoc:${cleanAppr}:${cleanKey}`);
+  const cleanSlug = cleanAppr.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 24);
+  const hash = sha256Hex(`revoc_canonical:${cleanAppr}`);
   return `revoc_${cleanSlug ? `${cleanSlug}_` : ''}${hash.slice(0, 32)}`;
 }
 
