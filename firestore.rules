@@ -638,14 +638,40 @@ service cloud.firestore {
 
     // 7. Recorrências e Parcelamentos
     match /recurrence_rules/{ruleId} {
-      allow read, write: if isAuthenticated() && resource.data.userId == request.auth.uid;
+      allow read: if isAuthenticated() && (
+        (resource.data.scope == 'personal' && resource.data.userId == request.auth.uid) ||
+        (resource.data.scope == 'shared' && isSpaceMember(resource.data.spaceId))
+      );
+      allow create: if isAuthenticated() && (
+        (request.resource.data.scope == 'personal' && request.resource.data.userId == request.auth.uid) ||
+        (request.resource.data.scope == 'shared' && isSpaceMember(request.resource.data.spaceId) && isSpaceActive(request.resource.data.spaceId))
+      );
+      allow update: if isAuthenticated() && (
+        (resource.data.scope == 'personal' && resource.data.userId == request.auth.uid) ||
+        (resource.data.scope == 'shared' && isSpaceMember(resource.data.spaceId) && isSpaceActive(resource.data.spaceId))
+      );
+      allow delete: if false;
+
       match /instances/{competenceMonth} {
         allow read, write: if isAuthenticated();
       }
     }
 
     match /installment_contracts/{contractId} {
-      allow read, write: if isAuthenticated() && resource.data.userId == request.auth.uid;
+      allow read: if isAuthenticated() && (
+        (resource.data.scope == 'personal' && resource.data.userId == request.auth.uid) ||
+        (resource.data.scope == 'shared' && isSpaceMember(resource.data.spaceId))
+      );
+      allow create: if isAuthenticated() && (
+        (request.resource.data.scope == 'personal' && request.resource.data.userId == request.auth.uid) ||
+        (request.resource.data.scope == 'shared' && isSpaceMember(request.resource.data.spaceId) && isSpaceActive(request.resource.data.spaceId))
+      );
+      allow update: if isAuthenticated() && (
+        (resource.data.scope == 'personal' && resource.data.userId == request.auth.uid) ||
+        (resource.data.scope == 'shared' && isSpaceMember(resource.data.spaceId) && isSpaceActive(resource.data.spaceId))
+      );
+      allow delete: if false;
+
       match /occurrences/{installmentNumber} {
         allow read, write: if isAuthenticated();
       }

@@ -6134,3 +6134,373 @@ export const recordAcquisitionDepositOfficial = onCall(
     );
   }
 );
+
+// ==============================================================================
+// FASE 9: RECORRÊNCIAS E PARCELAMENTOS DESACOPLADOS (ARQUITETURA V3.1)
+// ==============================================================================
+
+export function serverGenerateRecurrenceRuleDocId(userId, idempotencyKey) {
+  const cleanUid = (userId || '').trim();
+  const cleanKey = (idempotencyKey || '').trim();
+  const cleanSlug = cleanKey.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 20);
+  const hash = sha256HexServer(`rec_rule:${cleanUid}:${cleanKey}`);
+  return `rec_${cleanSlug ? `${cleanSlug}_` : ''}${hash.slice(0, 32)}`;
+}
+
+export function serverGenerateInstallmentContractDocId(userId, idempotencyKey) {
+  const cleanUid = (userId || '').trim();
+  const cleanKey = (idempotencyKey || '').trim();
+  const cleanSlug = cleanKey.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 20);
+  const hash = sha256HexServer(`inst_contract:${cleanUid}:${cleanKey}`);
+  return `inst_${cleanSlug ? `${cleanSlug}_` : ''}${hash.slice(0, 32)}`;
+}
+
+/**
+ * Criação da regra de recorrência mestra (pessoal ou compartilhada).
+ */
+export async function executeServerSideCreateRecurrenceRule(db, callerUid, payload) {
+  if (!callerUid || typeof callerUid !== 'string' || !callerUid.trim()) {
+    throw new HttpsError('unauthenticated', 'Autenticação obrigatória.');
+  }
+
+  const cleanCaller = callerUid.trim();
+  const scope = payload.scope === 'shared' ? 'shared' : 'personal';
+  const spaceId = payload.spaceId ? String(payload.spaceId).trim() : null;
+  const title = (payload.title || '').trim();
+  const description = payload.description ? String(payload.description).trim() : null;
+  const amountCents = Number(payload.amountCents);
+  const frequency = payload.frequency || 'monthly';
+  const interval = Number(payload.interval) || 1;
+  const startCompetence = (payload.startCompetence || payload.startCompetenceMonth || '').trim();
+  const startCompetenceMonth = startCompetence;
+  const endCompetenceMonth = payload.endCompetenceMonth || payload.endCompetence ? String(payload.endCompetenceMonth || payload.endCompetence).trim() : null;
+  const dueDay = Number(payload.dueDay ?? payload.dayOfMonth) || 10;
+  const dayOfMonth = dueDay;
+  const categoryId = (payload.categoryId || 'cat_default').trim();
+  const defaultAccountId = payload.defaultAccountId ? String(payload.defaultAccountId).trim() : null;
+  const idemKey = (payload.idempotencyKey || '').trim();
+
+  if (!title) throw new HttpsError('invalid-argument', 'title é obrigatório.');
+  if (!Number.isSafeInteger(amountCents) || amountCents <= 0) {
+    throw new HttpsError('invalid-argument', 'amountCents deve ser um inteiro positivo em centavos.');
+  }
+  if (!/^\d{4}-\d{2}$/.test(startCompetence)) {
+    throw new HttpsError('invalid-argument', 'startCompetence deve estar no formato YYYY-MM.');
+  }
+  if (dueDay < 1 || dueDay > 31) {
+    throw new HttpsError('invalid-argument', 'dueDay deve estar entre 1 e 31.');
+  }
+  if (!idemKey) throw new HttpsError('invalid-argument', 'Chave de idempotência é obrigatória.');
+
+  const ruleId = serverGenerateRecurrenceRuleDocId(cleanCaller, idemKey);
+
+  return await db.runTransaction(async (tx) => {
+    if (scope === 'shared') {
+      if (!spaceId) throw new HttpsError('invalid-argument', 'spaceId é obrigatório para recorrência compartilhada.');
+      const spaceSnap = await tx.get(db.collection('spaces').doc(spaceId));
+      if (!spaceSnap.exists) throw new HttpsError('not-found', 'Espaço compartilhado não encontrado.');
+      if (!spaceSnap.data().memberUids?.includes(cleanCaller)) {
+        throw new HttpsError('permission-denied', 'Usuário não é membro do espaço.');
+      }
+    }
+
+    const ruleRef = db.collection('recurrence_rules').doc(ruleId);
+    const ruleSnap = await tx.get(ruleRef);
+    if (ruleSnap.exists) {
+      return { rule: ruleSnap.data(), isIdempotentReplay: true };
+    }
+
+    const now = new Date().toISOString();
+    const ruleDoc = {
+      id: ruleId,
+      scope,
+      userId: cleanCaller,
+      spaceId,
+      title,
+      description,
+      amountCents,
+      frequency,
+      interval,
+      startCompetence,
+      startCompetenceMonth,
+      endCompetence: endCompetenceMonth,
+      endCompetenceMonth,
+      dueDay,
+      dayOfMonth,
+      categoryId,
+      defaultAccountId,
+      status: 'active',
+      createdAt: now,
+    };
+    tx.set(ruleRef, ruleDoc);
+
+    return { rule: ruleDoc, isIdempotentReplay: false };
+  });
+}
+
+/**
+ * Geração idempotente de instância de recorrência para uma competência específica YYYY-MM.
+ */
+export async function executeServerSideGenerateRecurrenceInstance(db, callerUid, payload) {
+  if (!callerUid || typeof callerUid !== 'string' || !callerUid.trim()) {
+    throw new HttpsError('unauthenticated', 'Autenticação obrigatória.');
+  }
+
+  const cleanCaller = callerUid.trim();
+  const ruleId = (payload.ruleId || '').trim();
+  const competenceMonth = (payload.competenceMonth || '').trim();
+
+  if (!ruleId) throw new HttpsError('invalid-argument', 'ruleId é obrigatório.');
+  if (!/^\d{4}-\d{2}$/.test(competenceMonth)) {
+    throw new HttpsError('invalid-argument', 'competenceMonth deve estar no formato YYYY-MM.');
+  }
+
+  return await db.runTransaction(async (tx) => {
+    const ruleRef = db.collection('recurrence_rules').doc(ruleId);
+    const ruleSnap = await tx.get(ruleRef);
+    if (!ruleSnap.exists) throw new HttpsError('not-found', 'Regra de recorrência não encontrada.');
+    const rule = ruleSnap.data();
+
+    // Valida permissão
+    if (rule.scope === 'personal' && rule.userId !== cleanCaller) {
+      throw new HttpsError('permission-denied', 'Acesso negado à regra de recorrência.');
+    } else if (rule.scope === 'shared' && rule.spaceId) {
+      const spaceSnap = await tx.get(db.collection('spaces').doc(rule.spaceId));
+      if (!spaceSnap.exists || !spaceSnap.data().memberUids?.includes(cleanCaller)) {
+        throw new HttpsError('permission-denied', 'Usuário não é membro do espaço.');
+      }
+    }
+
+    // Idempotência por competência
+    const instanceRef = ruleRef.collection('instances').doc(competenceMonth);
+    const instanceSnap = await tx.get(instanceRef);
+    if (instanceSnap.exists) {
+      return { instance: instanceSnap.data(), isIdempotentReplay: true };
+    }
+
+    if (rule.status === 'cancelled') {
+      throw new HttpsError('failed-precondition', 'Regra de recorrência está cancelada.');
+    }
+
+    const now = new Date().toISOString();
+    const instanceDoc = {
+      id: competenceMonth,
+      ruleId,
+      competenceMonth,
+      generationStatus: 'generated',
+      actualAmountCents: rule.amountCents,
+      generatedAt: now,
+    };
+    tx.set(instanceRef, instanceDoc);
+
+    return { instance: instanceDoc, isIdempotentReplay: false };
+  });
+}
+
+/**
+ * Criação de contrato mestre de parcelamento com divisão estrita de centavos.
+ */
+export async function executeServerSideCreateInstallmentContract(db, callerUid, payload) {
+  if (!callerUid || typeof callerUid !== 'string' || !callerUid.trim()) {
+    throw new HttpsError('unauthenticated', 'Autenticação obrigatória.');
+  }
+
+  const cleanCaller = callerUid.trim();
+  const scope = payload.scope === 'shared' ? 'shared' : 'personal';
+  const spaceId = payload.spaceId ? String(payload.spaceId).trim() : null;
+  const title = (payload.title || '').trim();
+  const totalContractAmountCents = Number(payload.totalContractAmountCents);
+  const totalInstallmentsCount = Number(payload.totalInstallmentsCount);
+  const fundingSource = payload.fundingSource === 'personal_loan' ? 'personal_loan' : 'credit_card';
+  const sourceCardAccountId = payload.sourceCardAccountId ? String(payload.sourceCardAccountId).trim() : null;
+  const startCompetenceMonth = (payload.startCompetenceMonth || '').trim();
+  const dueDay = Number(payload.dueDay) || 10;
+  const idemKey = (payload.idempotencyKey || '').trim();
+
+  if (!title) throw new HttpsError('invalid-argument', 'title é obrigatório.');
+  if (!Number.isSafeInteger(totalContractAmountCents) || totalContractAmountCents <= 0) {
+    throw new HttpsError('invalid-argument', 'totalContractAmountCents deve ser um inteiro positivo em centavos.');
+  }
+  if (!Number.isSafeInteger(totalInstallmentsCount) || totalInstallmentsCount < 2) {
+    throw new HttpsError('invalid-argument', 'totalInstallmentsCount deve ser no mínimo 2 parcelas.');
+  }
+  if (!/^\d{4}-\d{2}$/.test(startCompetenceMonth)) {
+    throw new HttpsError('invalid-argument', 'startCompetenceMonth deve estar no formato YYYY-MM.');
+  }
+  if (!idemKey) throw new HttpsError('invalid-argument', 'Chave de idempotência é obrigatória.');
+
+  const contractId = serverGenerateInstallmentContractDocId(cleanCaller, idemKey);
+
+  // Divisão estrita com conservação contábil
+  const baseInstallment = Math.floor(totalContractAmountCents / totalInstallmentsCount);
+  const remainder = totalContractAmountCents - (baseInstallment * totalInstallmentsCount);
+
+  return await db.runTransaction(async (tx) => {
+    if (scope === 'shared') {
+      if (!spaceId) throw new HttpsError('invalid-argument', 'spaceId é obrigatório para parcelamento compartilhado.');
+      const spaceSnap = await tx.get(db.collection('spaces').doc(spaceId));
+      if (!spaceSnap.exists || !spaceSnap.data().memberUids?.includes(cleanCaller)) {
+        throw new HttpsError('permission-denied', 'Usuário não é membro do espaço.');
+      }
+    }
+
+    const contractRef = db.collection('installment_contracts').doc(contractId);
+    const contractSnap = await tx.get(contractRef);
+    if (contractSnap.exists) {
+      return { contract: contractSnap.data(), isIdempotentReplay: true };
+    }
+
+    const now = new Date().toISOString();
+    const contractDoc = {
+      id: contractId,
+      scope,
+      userId: cleanCaller,
+      spaceId,
+      title,
+      totalContractAmountCents,
+      totalInstallmentsCount,
+      fundingSource,
+      sourceCardAccountId,
+      startCompetenceMonth,
+      status: 'active',
+      createdAt: now,
+    };
+    tx.set(contractRef, contractDoc);
+
+    // Gera todas as ocorrências
+    const [startYearStr, startMonthStr] = startCompetenceMonth.split('-');
+    let curYear = parseInt(startYearStr, 10);
+    let curMonth = parseInt(startMonthStr, 10);
+
+    for (let i = 1; i <= totalInstallmentsCount; i++) {
+      const monthPadded = String(curMonth).padStart(2, '0');
+      const compMonth = `${curYear}-${monthPadded}`;
+      const dayPadded = String(dueDay).padStart(2, '0');
+      const dueDate = `${compMonth}-${dayPadded}`;
+      const occId = String(i).padStart(2, '0');
+
+      const principalAmountCents = i === 1 ? baseInstallment + remainder : baseInstallment;
+      const occurrenceDoc = {
+        id: occId,
+        contractId,
+        installmentNumber: i,
+        competenceMonth: compMonth,
+        principalAmountCents,
+        interestAmountCents: 0,
+        totalInstallmentAmountCents: principalAmountCents,
+        status: 'scheduled',
+        dueDate,
+      };
+
+      const occRef = contractRef.collection('occurrences').doc(occId);
+      tx.set(occRef, occurrenceDoc);
+
+      curMonth++;
+      if (curMonth > 12) {
+        curMonth = 1;
+        curYear++;
+      }
+    }
+
+    return { contract: contractDoc, isIdempotentReplay: false };
+  });
+}
+
+/**
+ * Cancelamento antecipado de contrato de parcelamento:
+ * Cancela apenas parcelas scheduled. Parcelas billed ou paid são preservadas intactas.
+ */
+export async function executeServerSideCancelInstallmentContract(db, callerUid, payload) {
+  if (!callerUid || typeof callerUid !== 'string' || !callerUid.trim()) {
+    throw new HttpsError('unauthenticated', 'Autenticação obrigatória.');
+  }
+
+  const cleanCaller = callerUid.trim();
+  const contractId = (payload.contractId || '').trim();
+  const cancellationReason = payload.cancellationReason ? String(payload.cancellationReason).trim() : 'Cancelamento antecipado';
+
+  if (!contractId) throw new HttpsError('invalid-argument', 'contractId é obrigatório.');
+
+  return await db.runTransaction(async (tx) => {
+    const contractRef = db.collection('installment_contracts').doc(contractId);
+    const contractSnap = await tx.get(contractRef);
+    if (!contractSnap.exists) throw new HttpsError('not-found', 'Contrato de parcelamento não encontrado.');
+    const contract = contractSnap.data();
+
+    if (contract.userId !== cleanCaller) {
+      throw new HttpsError('permission-denied', 'Somente o titular pode cancelar o contrato.');
+    }
+
+    const occurrencesSnap = await tx.get(contractRef.collection('occurrences'));
+
+    tx.update(contractRef, {
+      status: 'cancelled_early',
+      cancellationReason,
+      updatedAt: new Date().toISOString(),
+    });
+
+    let cancelledCount = 0;
+    occurrencesSnap.forEach((docSnap) => {
+      const occ = docSnap.data();
+      if (occ.status === 'scheduled') {
+        tx.update(docSnap.ref, { status: 'cancelled' });
+        cancelledCount++;
+      }
+    });
+
+    return {
+      contract: { ...contract, status: 'cancelled_early', cancellationReason },
+      cancelledCount,
+      isIdempotentReplay: false,
+    };
+  });
+}
+
+// ------------------------------------------------------------------------------
+// CALLABLE EXPORTS FASE 9
+// ------------------------------------------------------------------------------
+
+export const createRecurrenceRuleOfficial = onCall(
+  { region: 'us-central1' },
+  async (request) => {
+    return await executeServerSideCreateRecurrenceRule(
+      getAdminDb(),
+      request.auth?.uid,
+      request.data
+    );
+  }
+);
+
+export const generateRecurrenceInstanceOfficial = onCall(
+  { region: 'us-central1' },
+  async (request) => {
+    return await executeServerSideGenerateRecurrenceInstance(
+      getAdminDb(),
+      request.auth?.uid,
+      request.data
+    );
+  }
+);
+
+export const createInstallmentContractOfficial = onCall(
+  { region: 'us-central1' },
+  async (request) => {
+    return await executeServerSideCreateInstallmentContract(
+      getAdminDb(),
+      request.auth?.uid,
+      request.data
+    );
+  }
+);
+
+export const cancelInstallmentContractOfficial = onCall(
+  { region: 'us-central1' },
+  async (request) => {
+    return await executeServerSideCancelInstallmentContract(
+      getAdminDb(),
+      request.auth?.uid,
+      request.data
+    );
+  }
+);
+
