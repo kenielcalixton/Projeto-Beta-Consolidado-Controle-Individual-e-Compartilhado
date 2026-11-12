@@ -2,6 +2,9 @@ import React, { useEffect, useState } from 'react';
 import {
   Account,
   CentsInteger,
+  CustodyBalanceSummary,
+  CustodyReturn,
+  CustodyTransfer,
   ExpenseApprovalRevocation,
   ExpenseLiability,
   ExpenseLiabilitySplitMethod,
@@ -36,6 +39,13 @@ import {
   revokeExpensePaymentApproval,
   SpaceFinancialSummary,
 } from '../../services/sharedFinanceService';
+import {
+  confirmCustodyReceipt,
+  createCustodyTransfer,
+  getSpaceCustodyBalances,
+  getSpaceCustodyTransfers,
+  returnCustodyFunds,
+} from '../../services/custodyService';
 import { calculateExpenseSplit, SplitParticipant } from '../../utils/splitEngine';
 import { formatCentsToBRL, parseBRLToCents } from '../../utils/movementLedger';
 import { getUserAccounts } from '../../services/accountService';
@@ -46,8 +56,8 @@ interface SharedFinanceSectionV3Props {
   userId: string;
   userName: string;
   isDemo?: boolean;
-  activeTab: 'expenses' | 'liabilities' | 'validations' | 'refunds';
-  onTabChange: (tab: 'expenses' | 'liabilities' | 'validations' | 'refunds') => void;
+  activeTab: 'expenses' | 'liabilities' | 'validations' | 'refunds' | 'custody';
+  onTabChange: (tab: 'expenses' | 'liabilities' | 'validations' | 'refunds' | 'custody') => void;
   onFeedback: (type: 'success' | 'error', text: string) => void;
 }
 
@@ -141,20 +151,49 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
   const [refundAmountInput, setRefundAmountInput] = useState('');
   const [refundJustification, setRefundJustification] = useState('');
 
+  // Estados da Fase 7: Custódia & Adiantamentos
+  const [allCustodyTransfers, setAllCustodyTransfers] = useState<CustodyTransfer[]>([]);
+  const [allCustodyBalances, setAllCustodyBalances] = useState<CustodyBalanceSummary[]>([]);
+  const [isCreateCustodyModalOpen, setIsCreateCustodyModalOpen] = useState(false);
+  const [isConfirmCustodyModalOpen, setIsConfirmCustodyModalOpen] = useState(false);
+  const [isReturnCustodyModalOpen, setIsReturnCustodyModalOpen] = useState(false);
+  const [selectedCustodyTransfer, setSelectedCustodyTransfer] = useState<CustodyTransfer | null>(null);
+
+  // Formulário: Criar Custódia
+  const [custodyRecipientUid, setCustodyRecipientUid] = useState('');
+  const [custodyAmountInput, setCustodyAmountInput] = useState('');
+  const [custodySourceAccountId, setCustodySourceAccountId] = useState('');
+  const [custodyDescription, setCustodyDescription] = useState('');
+  const [custodyNotes, setCustodyNotes] = useState('');
+
+  // Formulário: Confirmar Recebimento de Custódia
+  const [custodyDestAccountId, setCustodyDestAccountId] = useState('');
+  const [custodyConfirmAmountInput, setCustodyConfirmAmountInput] = useState('');
+  const [custodyConfirmNotes, setCustodyConfirmNotes] = useState('');
+
+  // Formulário: Devolver Custódia
+  const [custodyReturnSourceAccountId, setCustodyReturnSourceAccountId] = useState('');
+  const [custodyReturnDestAccountId, setCustodyReturnDestAccountId] = useState('');
+  const [custodyReturnAmountInput, setCustodyReturnAmountInput] = useState('');
+  const [custodyReturnJustification, setCustodyReturnJustification] = useState('');
+
   // Carrega todos os dados financeiros do espaço (Modo Real/Emulador e Modo Demo)
   const loadFinanceData = async () => {
     try {
       setLoading(true);
-      const [mems, accs, exps, summ, pDecls, apps, revocs, restits] = await Promise.all([
-        getSpaceMembers(space.id, userId, isDemo).catch(() => []),
-        getUserAccounts(userId, false, isDemo).catch(() => []),
-        getSharedExpenses(space.id, userId, isDemo).catch(() => []),
-        getSpaceFinancialSummary(space.id, userId, isDemo).catch(() => null),
-        getSpacePendingDeclarations(space.id, userId, isDemo).catch(() => []),
-        getSpacePaymentApprovals(space.id, userId, isDemo).catch(() => []),
-        getSpaceApprovalRevocations(space.id, userId, isDemo).catch(() => []),
-        getSpaceRestitutions(space.id, isDemo).catch(() => []),
-      ]);
+      const [mems, accs, exps, summ, pDecls, apps, revocs, restits, custTransfers, custBals] =
+        await Promise.all([
+          getSpaceMembers(space.id, userId, isDemo).catch(() => []),
+          getUserAccounts(userId, false, isDemo).catch(() => []),
+          getSharedExpenses(space.id, userId, isDemo).catch(() => []),
+          getSpaceFinancialSummary(space.id, userId, isDemo).catch(() => null),
+          getSpacePendingDeclarations(space.id, userId, isDemo).catch(() => []),
+          getSpacePaymentApprovals(space.id, userId, isDemo).catch(() => []),
+          getSpaceApprovalRevocations(space.id, userId, isDemo).catch(() => []),
+          getSpaceRestitutions(space.id, isDemo).catch(() => []),
+          getSpaceCustodyTransfers(space.id, isDemo).catch(() => []),
+          getSpaceCustodyBalances(space.id, isDemo).catch(() => []),
+        ]);
 
       setMembers(mems);
       setAccounts(accs);
@@ -164,6 +203,8 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
       setAllApprovals(apps);
       setAllRevocations(revocs);
       setAllRestitutions(restits);
+      setAllCustodyTransfers(custTransfers);
+      setAllCustodyBalances(custBals);
 
       // Carrega obrigações e rejeições de cada despesa
       const liabs: Record<string, ExpenseLiability[]> = {};
@@ -442,6 +483,137 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
       await loadFinanceData();
     } catch (err: any) {
       onFeedback('error', err.message || 'Erro ao confirmar restituição.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Handler: Criar transferência de custódia
+  const handleCreateCustody = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!custodyRecipientUid) {
+      onFeedback('error', 'Selecione o participante custodiante.');
+      return;
+    }
+    if (!custodySourceAccountId) {
+      onFeedback('error', 'Selecione a conta bancária de origem.');
+      return;
+    }
+    const cents = parseBRLToCents(custodyAmountInput);
+    if (!cents || cents <= 0) {
+      onFeedback('error', 'Informe um valor válido em centavos.');
+      return;
+    }
+    try {
+      setLoading(true);
+      await createCustodyTransfer(
+        userId,
+        {
+          spaceId: space.id,
+          custodianUid: custodyRecipientUid,
+          initialAmountCents: cents,
+          sourceAccountId: custodySourceAccountId,
+          description: custodyDescription.trim() || 'Transferência sob custódia',
+          notes: custodyNotes.trim() || undefined,
+        },
+        isDemo
+      );
+      onFeedback('success', 'Transferência sob custódia declarada com sucesso!');
+      setIsCreateCustodyModalOpen(false);
+      setCustodyRecipientUid('');
+      setCustodyAmountInput('');
+      setCustodySourceAccountId('');
+      setCustodyDescription('');
+      setCustodyNotes('');
+      await loadFinanceData();
+    } catch (err: any) {
+      onFeedback('error', err.message || 'Erro ao criar transferência sob custódia.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Handler: Confirmar recebimento de custódia pelo custodiante
+  const handleConfirmCustody = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedCustodyTransfer) return;
+    if (!custodyDestAccountId) {
+      onFeedback('error', 'Selecione a conta bancária de destino.');
+      return;
+    }
+    const cents = custodyConfirmAmountInput
+      ? parseBRLToCents(custodyConfirmAmountInput)
+      : selectedCustodyTransfer.initialAmountCents;
+    if (!cents || cents <= 0) {
+      onFeedback('error', 'Informe um valor válido em centavos.');
+      return;
+    }
+    try {
+      setLoading(true);
+      await confirmCustodyReceipt(
+        userId,
+        {
+          transferId: selectedCustodyTransfer.id,
+          destinationAccountId: custodyDestAccountId,
+          confirmedAmountCents: cents,
+          notes: custodyConfirmNotes.trim() || undefined,
+        },
+        isDemo
+      );
+      onFeedback('success', 'Recebimento de custódia confirmado com sucesso!');
+      setIsConfirmCustodyModalOpen(false);
+      setSelectedCustodyTransfer(null);
+      setCustodyDestAccountId('');
+      setCustodyConfirmAmountInput('');
+      setCustodyConfirmNotes('');
+      await loadFinanceData();
+    } catch (err: any) {
+      onFeedback('error', err.message || 'Erro ao confirmar recebimento de custódia.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Handler: Devolver saldo sob custódia
+  const handleReturnCustody = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedCustodyTransfer) return;
+    if (!custodyReturnSourceAccountId) {
+      onFeedback('error', 'Selecione a sua conta de saída.');
+      return;
+    }
+    if (!custodyReturnDestAccountId) {
+      onFeedback('error', 'Selecione a conta de destino do remetente.');
+      return;
+    }
+    const cents = parseBRLToCents(custodyReturnAmountInput);
+    if (!cents || cents <= 0) {
+      onFeedback('error', 'Informe um valor válido em centavos.');
+      return;
+    }
+    try {
+      setLoading(true);
+      await returnCustodyFunds(
+        userId,
+        {
+          transferId: selectedCustodyTransfer.id,
+          sourceAccountId: custodyReturnSourceAccountId,
+          destinationAccountId: custodyReturnDestAccountId,
+          amountCents: cents,
+          justification: custodyReturnJustification.trim() || undefined,
+        },
+        isDemo
+      );
+      onFeedback('success', 'Devolução de recursos sob custódia confirmada!');
+      setIsReturnCustodyModalOpen(false);
+      setSelectedCustodyTransfer(null);
+      setCustodyReturnSourceAccountId('');
+      setCustodyReturnDestAccountId('');
+      setCustodyReturnAmountInput('');
+      setCustodyReturnJustification('');
+      await loadFinanceData();
+    } catch (err: any) {
+      onFeedback('error', err.message || 'Erro ao devolver recursos sob custódia.');
     } finally {
       setLoading(false);
     }
@@ -1190,6 +1362,151 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
                   )}
                 </div>
               ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ABA: TRANSFERÊNCIAS SOB CUSTÓDIA E ADIANTAMENTOS (FASE 7) */}
+      {activeTab === 'custody' && (
+        <div className="bg-white border border-gray-200 rounded-2xl p-6 shadow-sm space-y-6">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-bold text-gray-900">
+                Transferências sob Custódia e Adiantamentos
+              </h3>
+              <p className="text-xs text-gray-500">
+                Adiantamentos bilaterais entre participantes. Inexistência de caixa comum: cada centavo possui titularidade individual estrita.
+              </p>
+            </div>
+            {!isArchived && !isHistoricalOnly && (
+              <button
+                onClick={() => setIsCreateCustodyModalOpen(true)}
+                className="px-3 py-1.5 bg-indigo-600 text-white rounded-xl text-xs font-bold hover:bg-indigo-700 flex items-center gap-1.5 shadow-sm"
+              >
+                <i className="ph ph-plus-circle text-sm" /> Nova Transferência
+              </button>
+            )}
+          </div>
+
+          {/* Resumo consolidado de saldos de custódia */}
+          {allCustodyBalances.length > 0 && (
+            <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-2">
+              <span className="text-[11px] font-bold text-slate-700 uppercase tracking-wider block">
+                Balanço Consolidado entre Participantes
+              </span>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+                {allCustodyBalances.map((b, idx) => {
+                  const sName = members.find((m) => m.uid === b.senderUid)?.displayName || b.senderUid;
+                  const cName = members.find((m) => m.uid === b.custodianUid)?.displayName || b.custodianUid;
+                  return (
+                    <div key={idx} className="bg-white p-3 rounded-lg border border-slate-200 space-y-1">
+                      <div className="flex justify-between font-bold text-gray-900">
+                        <span>{sName} ➔ {cName}</span>
+                        <span className="text-indigo-600">Disponível: {formatCentsToBRL(b.availableBalanceCents)}</span>
+                      </div>
+                      <div className="flex justify-between text-gray-500 text-[11px]">
+                        <span>Total Confiado: {formatCentsToBRL(b.totalConfirmedCents || b.totalInitialCents)}</span>
+                        <span>Usado: {formatCentsToBRL(b.totalUsedCents)} • Devolvido: {formatCentsToBRL(b.totalReturnedCents)}</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Lista de transferências sob custódia */}
+          {allCustodyTransfers.length === 0 ? (
+            <div className="text-center py-8 text-gray-400 text-xs italic">
+              Nenhuma transferência sob custódia registrada no espaço.
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {allCustodyTransfers.map((t) => {
+                const sName = members.find((m) => m.uid === t.senderUid)?.displayName || t.senderUid;
+                const cName = members.find((m) => m.uid === t.custodianUid)?.displayName || t.custodianUid;
+                const isCustodian = t.custodianUid === userId;
+
+                return (
+                  <div
+                    key={t.id}
+                    className="border border-gray-200 rounded-xl p-4 flex flex-col md:flex-row md:items-center justify-between gap-3 bg-white"
+                  >
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-bold text-gray-900">
+                          {t.description || 'Transferência sob custódia'}
+                        </span>
+                        <span
+                          className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                            t.custodyStatus === 'pending_receipt'
+                              ? 'bg-amber-100 text-amber-800'
+                              : t.custodyStatus === 'available'
+                              ? 'bg-emerald-100 text-emerald-800'
+                              : t.custodyStatus === 'partially_used'
+                              ? 'bg-blue-100 text-blue-800'
+                              : 'bg-gray-100 text-gray-700'
+                          }`}
+                        >
+                          {t.custodyStatus === 'pending_receipt' && 'Aguardando Confirmação'}
+                          {t.custodyStatus === 'available' && 'Disponível'}
+                          {t.custodyStatus === 'partially_used' && 'Parcialmente Utilizado'}
+                          {t.custodyStatus === 'fully_used' && 'Totalmente Utilizado'}
+                          {t.custodyStatus === 'settled_by_usage' && 'Liquidado por Uso'}
+                          {t.custodyStatus === 'settled_by_return' && 'Liquidado por Devolução'}
+                          {t.custodyStatus === 'settled_by_mixed' && 'Liquidado Misto (Uso + Devolução)'}
+                          {t.custodyStatus === 'partial_return_confirmed' && 'Devolução Parcial'}
+                        </span>
+                      </div>
+                      <p className="text-xs text-gray-600">
+                        Remetente: <strong className="text-gray-900">{sName}</strong> ➔ Custodiante:{' '}
+                        <strong className="text-gray-900">{cName}</strong>
+                      </p>
+                      <p className="text-xs text-gray-500">
+                        Inicial: {formatCentsToBRL(t.initialAmountCents)} • Disponível:{' '}
+                        <strong className="text-emerald-700">{formatCentsToBRL(t.availableBalanceCents)}</strong> • Utilizado:{' '}
+                        {formatCentsToBRL(t.usedAmountCents)} • Devolvido:{' '}
+                        {formatCentsToBRL(t.returnedAmountCents)}
+                      </p>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      {/* Botão de confirmação exclusivo para o custodiante */}
+                      {isCustodian && t.custodyStatus === 'pending_receipt' && !isArchived && (
+                        <button
+                          onClick={() => {
+                            setSelectedCustodyTransfer(t);
+                            setCustodyConfirmAmountInput(
+                              (t.initialAmountCents / 100).toFixed(2).replace('.', ',')
+                            );
+                            setIsConfirmCustodyModalOpen(true);
+                          }}
+                          className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold whitespace-nowrap shadow-xs"
+                        >
+                          Confirmar Recebimento
+                        </button>
+                      )}
+
+                      {/* Botão de devolução exclusivo para o custodiante com saldo disponível */}
+                      {isCustodian && t.availableBalanceCents > 0 && t.custodyStatus !== 'pending_receipt' && !isArchived && (
+                        <button
+                          onClick={() => {
+                            setSelectedCustodyTransfer(t);
+                            setCustodyReturnAmountInput(
+                              (t.availableBalanceCents / 100).toFixed(2).replace('.', ',')
+                            );
+                            setIsReturnCustodyModalOpen(true);
+                          }}
+                          className="px-3 py-1.5 bg-indigo-50 border border-indigo-200 text-indigo-700 hover:bg-indigo-100 rounded-xl text-xs font-bold whitespace-nowrap shadow-xs"
+                        >
+                          Devolver Recursos
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>
@@ -1959,6 +2276,321 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
                   className="px-4 py-2 bg-emerald-600 text-white rounded-xl text-xs font-bold hover:bg-emerald-700"
                 >
                   Confirmar e Creditar
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ======================================================================== */}
+      {/* MODAL 8: NOVA TRANSFERÊNCIA SOB CUSTÓDIA (FASE 7)                         */}
+      {/* ======================================================================== */}
+      {isCreateCustodyModalOpen && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-xl space-y-4">
+            <div className="flex items-center justify-between border-b border-gray-100 pb-3">
+              <h3 className="text-base font-bold text-gray-900">Nova Transferência sob Custódia</h3>
+              <button
+                onClick={() => setIsCreateCustodyModalOpen(false)}
+                className="text-gray-400 hover:text-gray-600"
+              >
+                <i className="ph ph-x text-lg" />
+              </button>
+            </div>
+
+            <form onSubmit={handleCreateCustody} className="space-y-3 text-xs">
+              <div className="bg-indigo-50 border border-indigo-200 text-indigo-900 p-3 rounded-xl text-xs space-y-1">
+                <strong>Inexistência de Caixa Coletivo:</strong> O valor transferido sairá da sua conta e ficará sob a custódia do participante escolhido para utilização em despesas ou devolução futura.
+              </div>
+
+              <div>
+                <label className="font-bold text-gray-700 block mb-1">
+                  Participante Custodiante *
+                </label>
+                <select
+                  required
+                  value={custodyRecipientUid}
+                  onChange={(e) => setCustodyRecipientUid(e.target.value)}
+                  className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 text-xs font-semibold"
+                >
+                  <option value="">Selecione quem custodiará o valor...</option>
+                  {members
+                    .filter((m) => m.uid !== userId && m.participationStatus === 'active')
+                    .map((m) => (
+                      <option key={m.uid} value={m.uid}>
+                        {m.displayName} ({m.role})
+                      </option>
+                    ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="font-bold text-gray-700 block mb-1">Valor do Adiantamento (R$) *</label>
+                <input
+                  type="text"
+                  required
+                  value={custodyAmountInput}
+                  onChange={(e) => setCustodyAmountInput(e.target.value)}
+                  placeholder="Ex: 250,00"
+                  className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 text-xs font-bold"
+                />
+              </div>
+
+              <div>
+                <label className="font-bold text-gray-700 block mb-1">
+                  Minha Conta Bancária de Saída *
+                </label>
+                <select
+                  required
+                  value={custodySourceAccountId}
+                  onChange={(e) => setCustodySourceAccountId(e.target.value)}
+                  className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 text-xs font-semibold"
+                >
+                  <option value="">Selecione a conta para débito...</option>
+                  {accounts
+                    .filter((a) => !a.isArchived && a.type !== 'credit')
+                    .map((a) => (
+                      <option key={a.id} value={a.id}>
+                        {a.name} ({a.type})
+                      </option>
+                    ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="font-bold text-gray-700 block mb-1">Descrição / Finalidade *</label>
+                <input
+                  type="text"
+                  required
+                  value={custodyDescription}
+                  onChange={(e) => setCustodyDescription(e.target.value)}
+                  placeholder="Ex: Fundo adiantado para reservas"
+                  className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 text-xs"
+                />
+              </div>
+
+              <div>
+                <label className="font-bold text-gray-700 block mb-1">Observações (Opcional)</label>
+                <textarea
+                  rows={2}
+                  value={custodyNotes}
+                  onChange={(e) => setCustodyNotes(e.target.value)}
+                  placeholder="Instruções ou detalhes adicionais..."
+                  className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 text-xs"
+                />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2 border-t border-gray-100">
+                <button
+                  type="button"
+                  onClick={() => setIsCreateCustodyModalOpen(false)}
+                  className="px-4 py-2 border border-gray-200 text-gray-700 rounded-xl text-xs font-bold hover:bg-gray-50"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold hover:bg-indigo-700"
+                >
+                  Declarar Transferência
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ======================================================================== */}
+      {/* MODAL 9: CONFIRMAR RECEBIMENTO DE CUSTÓDIA                                */}
+      {/* ======================================================================== */}
+      {isConfirmCustodyModalOpen && selectedCustodyTransfer && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-xl space-y-4">
+            <div className="flex items-center justify-between border-b border-gray-100 pb-3">
+              <h3 className="text-base font-bold text-gray-900">Confirmar Recebimento de Custódia</h3>
+              <button
+                onClick={() => setIsConfirmCustodyModalOpen(false)}
+                className="text-gray-400 hover:text-gray-600"
+              >
+                <i className="ph ph-x text-lg" />
+              </button>
+            </div>
+
+            <form onSubmit={handleConfirmCustody} className="space-y-3 text-xs">
+              <div className="bg-emerald-50 border border-emerald-200 text-emerald-900 p-3 rounded-xl text-xs space-y-1">
+                <strong>Confirmação de Crédito:</strong> Ao confirmar, o valor recebido será creditado na sua conta bancária e o saldo ficará disponível para cobertura de despesas compartilhadas.
+              </div>
+
+              <div>
+                <span className="text-gray-500 block">Valor Declarado pelo Remetente:</span>
+                <strong className="text-gray-900 text-sm">
+                  {formatCentsToBRL(selectedCustodyTransfer.initialAmountCents)}
+                </strong>
+              </div>
+
+              <div>
+                <label className="font-bold text-gray-700 block mb-1">
+                  Conta Bancária de Destino (Sua Conta) *
+                </label>
+                <select
+                  required
+                  value={custodyDestAccountId}
+                  onChange={(e) => setCustodyDestAccountId(e.target.value)}
+                  className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 text-xs font-semibold"
+                >
+                  <option value="">Selecione onde o dinheiro entrou...</option>
+                  {accounts
+                    .filter((a) => !a.isArchived && a.type !== 'credit')
+                    .map((a) => (
+                      <option key={a.id} value={a.id}>
+                        {a.name} ({a.type})
+                      </option>
+                    ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="font-bold text-gray-700 block mb-1">Valor Efetivamente Recebido (R$)</label>
+                <input
+                  type="text"
+                  required
+                  value={custodyConfirmAmountInput}
+                  onChange={(e) => setCustodyConfirmAmountInput(e.target.value)}
+                  className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 text-xs font-bold"
+                />
+              </div>
+
+              <div>
+                <label className="font-bold text-gray-700 block mb-1">Observações (Opcional)</label>
+                <input
+                  type="text"
+                  value={custodyConfirmNotes}
+                  onChange={(e) => setCustodyConfirmNotes(e.target.value)}
+                  placeholder="Ex: Recebido via Pix no Nubank"
+                  className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 text-xs"
+                />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2 border-t border-gray-100">
+                <button
+                  type="button"
+                  onClick={() => setIsConfirmCustodyModalOpen(false)}
+                  className="px-4 py-2 border border-gray-200 text-gray-700 rounded-xl text-xs font-bold hover:bg-gray-50"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 bg-emerald-600 text-white rounded-xl text-xs font-bold hover:bg-emerald-700"
+                >
+                  Confirmar e Disponibilizar Saldo
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ======================================================================== */}
+      {/* MODAL 10: DEVOLVER RECURSOS SOB CUSTÓDIA                                  */}
+      {/* ======================================================================== */}
+      {isReturnCustodyModalOpen && selectedCustodyTransfer && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-xl space-y-4">
+            <div className="flex items-center justify-between border-b border-gray-100 pb-3">
+              <h3 className="text-base font-bold text-gray-900">Devolver Recursos sob Custódia</h3>
+              <button
+                onClick={() => setIsReturnCustodyModalOpen(false)}
+                className="text-gray-400 hover:text-gray-600"
+              >
+                <i className="ph ph-x text-lg" />
+              </button>
+            </div>
+
+            <form onSubmit={handleReturnCustody} className="space-y-3 text-xs">
+              <div className="bg-indigo-50 border border-indigo-200 text-indigo-900 p-3 rounded-xl text-xs space-y-1">
+                <strong>Devolução de Saldo Não Utilizado:</strong> O valor será debitado da sua conta de saída e creditado na conta de destino do remetente original, liquidando o saldo sob custódia.
+              </div>
+
+              <div>
+                <span className="text-gray-500 block">Saldo Disponível para Devolução:</span>
+                <strong className="text-emerald-700 text-sm">
+                  {formatCentsToBRL(selectedCustodyTransfer.availableBalanceCents)}
+                </strong>
+              </div>
+
+              <div>
+                <label className="font-bold text-gray-700 block mb-1">
+                  Sua Conta Bancária de Saída *
+                </label>
+                <select
+                  required
+                  value={custodyReturnSourceAccountId}
+                  onChange={(e) => setCustodyReturnSourceAccountId(e.target.value)}
+                  className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 text-xs font-semibold"
+                >
+                  <option value="">Selecione sua conta para débito...</option>
+                  {accounts
+                    .filter((a) => !a.isArchived && a.type !== 'credit')
+                    .map((a) => (
+                      <option key={a.id} value={a.id}>
+                        {a.name} ({a.type})
+                      </option>
+                    ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="font-bold text-gray-700 block mb-1">
+                  Conta de Destino do Remetente *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={custodyReturnDestAccountId}
+                  onChange={(e) => setCustodyReturnDestAccountId(e.target.value)}
+                  placeholder="ID da conta bancária de destino do remetente"
+                  className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 text-xs"
+                />
+              </div>
+
+              <div>
+                <label className="font-bold text-gray-700 block mb-1">Valor da Devolução (R$) *</label>
+                <input
+                  type="text"
+                  required
+                  value={custodyReturnAmountInput}
+                  onChange={(e) => setCustodyReturnAmountInput(e.target.value)}
+                  className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 text-xs font-bold"
+                />
+              </div>
+
+              <div>
+                <label className="font-bold text-gray-700 block mb-1">Justificativa da Devolução *</label>
+                <textarea
+                  required
+                  rows={2}
+                  value={custodyReturnJustification}
+                  onChange={(e) => setCustodyReturnJustification(e.target.value)}
+                  placeholder="Ex: Saldo não utilizado após a conclusão das compras."
+                  className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 text-xs"
+                />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2 border-t border-gray-100">
+                <button
+                  type="button"
+                  onClick={() => setIsReturnCustodyModalOpen(false)}
+                  className="px-4 py-2 border border-gray-200 text-gray-700 rounded-xl text-xs font-bold hover:bg-gray-50"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold hover:bg-indigo-700"
+                >
+                  Confirmar Devolução
                 </button>
               </div>
             </form>

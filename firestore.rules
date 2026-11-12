@@ -576,6 +576,22 @@ service cloud.firestore {
         );
         allow update, delete: if false; // Eventos são estritamente imutáveis
       }
+
+      match /usages/{usageId} {
+        allow read: if isAuthenticated() && (
+          get(/databases/$(database)/documents/transfers/$(transferId)).data.senderUid == request.auth.uid ||
+          get(/databases/$(database)/documents/transfers/$(transferId)).data.custodianUid == request.auth.uid
+        );
+        allow write: if false; // Processado atomicamente via Cloud Functions
+      }
+
+      match /returns/{returnId} {
+        allow read: if isAuthenticated() && (
+          get(/databases/$(database)/documents/transfers/$(transferId)).data.senderUid == request.auth.uid ||
+          get(/databases/$(database)/documents/transfers/$(transferId)).data.custodianUid == request.auth.uid
+        );
+        allow write: if false; // Processado atomicamente via Cloud Functions
+      }
     }
 
     // 6. Listas de Aquisição e Copropriedade

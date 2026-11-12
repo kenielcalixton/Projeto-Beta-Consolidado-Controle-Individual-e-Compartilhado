@@ -52,6 +52,10 @@ export type FinancialMovementOriginType =
   | 'custody_deposit'
   | 'custody_withdrawal'
   | 'custody_return'
+  | 'custody_transfer_out'
+  | 'custody_transfer_in'
+  | 'custody_return_out'
+  | 'custody_return_in'
   | 'settlement_inflow'
   | 'settlement_outflow'
   | 'supplier_refund'
@@ -781,7 +785,12 @@ export type SpaceAuditEventType =
   | 'supplier_refund_recorded'
   | 'restitution_created'
   | 'restitution_declared'
-  | 'restitution_receipt_confirmed';
+  | 'restitution_receipt_confirmed'
+  | 'custody_transfer_created'
+  | 'custody_receipt_confirmed'
+  | 'custody_consumed'
+  | 'custody_return_requested'
+  | 'custody_return_confirmed';
 
 /**
  * Evento imutável de governança e auditoria do espaço.
@@ -820,6 +829,11 @@ export type SpaceNotificationType =
   | 'restitution_created'
   | 'restitution_declared'
   | 'restitution_receipt_confirmed'
+  | 'custody_transfer_created'
+  | 'custody_receipt_confirmed'
+  | 'custody_consumed'
+  | 'custody_return_requested'
+  | 'custody_return_confirmed'
   | 'liability_settled';
 
 /**
@@ -1239,6 +1253,8 @@ export type CustodyTransferStatus =
   | 'settled_by_return'
   | 'settled_by_mixed';
 
+export type CustodyTransferType = 'linked_to_expense' | 'free_custody';
+
 /**
  * Contrato bilateral de adiantamento e custódia de recursos.
  * Caminho Firestore: transfers/{transferId}
@@ -1247,9 +1263,12 @@ export interface CustodyTransfer {
   id: string;
   scopeType: CustodyTransferScopeType;
   spaceId?: string;
+  transferType?: CustodyTransferType;
+  targetExpenseId?: string;
   senderUid: string;
   custodianUid: string;
   initialAmountCents: CentsInteger;
+  confirmedAmountCents?: CentsInteger;
   usedAmountCents: CentsInteger;
   returnedAmountCents: CentsInteger;
   /** initialAmountCents - (usedAmountCents + returnedAmountCents) >= 0 */
@@ -1257,6 +1276,13 @@ export interface CustodyTransfer {
   sourceAccountId: string;
   destinationAccountId?: string;
   custodyStatus: CustodyTransferStatus;
+  description?: string;
+  notes?: string;
+  transferDate?: DateString;
+  idempotencyKey?: string;
+  sourceMovementId?: string;
+  destinationMovementId?: string;
+  confirmedAt?: ISO8601String;
   createdAt: ISO8601String;
   updatedAt: ISO8601String;
 }
@@ -1284,7 +1310,58 @@ export interface CustodyTransferEvent {
   performedByUid: string;
   justification?: string;
   clientTransactionUuid: string;
+  idempotencyKey?: string;
   timestamp: ISO8601String;
+}
+
+/**
+ * Registro de utilização de recursos em custódia para pagamento de despesa compartilhada.
+ * Caminho Firestore: transfers/{transferId}/usages/{usageId}
+ */
+export interface CustodyUsage {
+  id: string;
+  transferId: string;
+  spaceId?: string;
+  expenseId: string;
+  amountCents: CentsInteger;
+  usedByUid: string;
+  beneficiaryUid: string;
+  notes?: string;
+  idempotencyKey: string;
+  createdAt: ISO8601String;
+}
+
+/**
+ * Registro de devolução (parcial ou integral) de fundos em custódia para o remetente original.
+ * Caminho Firestore: transfers/{transferId}/returns/{returnId}
+ */
+export interface CustodyReturn {
+  id: string;
+  transferId: string;
+  spaceId?: string;
+  amountCents: CentsInteger;
+  returnedByUid: string;
+  receivedByUid: string;
+  sourceAccountId: string;
+  destinationAccountId: string;
+  sourceMovementId: string;
+  destinationMovementId: string;
+  justification?: string;
+  idempotencyKey: string;
+  createdAt: ISO8601String;
+}
+
+/**
+ * Resumo consolidado de saldos sob custódia entre participantes de um espaço compartilhado.
+ */
+export interface CustodyBalanceSummary {
+  senderUid: string;
+  custodianUid: string;
+  totalInitialCents: CentsInteger;
+  totalConfirmedCents: CentsInteger;
+  totalUsedCents: CentsInteger;
+  totalReturnedCents: CentsInteger;
+  availableBalanceCents: CentsInteger;
 }
 
 // ==============================================================================

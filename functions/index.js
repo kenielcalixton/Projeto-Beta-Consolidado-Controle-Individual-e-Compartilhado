@@ -59,6 +59,11 @@ export const ALLOWED_GOVERNANCE_EVENTS = new Set([
   'restitution_created',
   'restitution_declared',
   'restitution_receipt_confirmed',
+  'custody_transfer_created',
+  'custody_receipt_confirmed',
+  'custody_consumed',
+  'custody_return_requested',
+  'custody_return_confirmed',
 ]);
 
 /**
@@ -4692,6 +4697,903 @@ export const confirmRestitutionReceiptOfficial = onCall(
     );
   }
 );
+
+// ==============================================================================
+// FASE 7: TRANSFERÊNCIAS E CUSTÓDIA ENTRE PARTICIPANTES
+// ==============================================================================
+
+export function serverGenerateCustodyTransferDocId(senderUid, idempotencyKey) {
+  const cleanUid = (senderUid || '').trim();
+  const cleanKey = (idempotencyKey || '').trim();
+  const cleanSlug = cleanKey.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 24);
+  const hash = sha256HexServer(`cust_xfer:${cleanUid}:${cleanKey}`);
+  return `cust_${cleanSlug ? `${cleanSlug}_` : ''}${hash.slice(0, 32)}`;
+}
+
+export function serverGenerateCustodyEventDocId(transferId, eventType, idempotencyKey) {
+  const cleanXfer = (transferId || '').trim();
+  const cleanEvt = (eventType || '').trim();
+  const cleanKey = (idempotencyKey || '').trim();
+  const cleanSlug = cleanKey.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 20);
+  const hash = sha256HexServer(`cust_evt:${cleanXfer}:${cleanEvt}:${cleanKey}`);
+  return `cevt_${cleanSlug ? `${cleanSlug}_` : ''}${hash.slice(0, 32)}`;
+}
+
+export function serverGenerateCustodyUsageDocId(transferId, expenseId, idempotencyKey) {
+  const cleanXfer = (transferId || '').trim();
+  const cleanExp = (expenseId || '').trim();
+  const cleanKey = (idempotencyKey || '').trim();
+  const cleanSlug = cleanKey.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 20);
+  const hash = sha256HexServer(`cust_use:${cleanXfer}:${cleanExp}:${cleanKey}`);
+  return `cuse_${cleanSlug ? `${cleanSlug}_` : ''}${hash.slice(0, 32)}`;
+}
+
+export function serverGenerateCustodyReturnDocId(transferId, idempotencyKey) {
+  const cleanXfer = (transferId || '').trim();
+  const cleanKey = (idempotencyKey || '').trim();
+  const cleanSlug = cleanKey.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 20);
+  const hash = sha256HexServer(`cust_ret:${cleanXfer}:${cleanKey}`);
+  return `cret_${cleanSlug ? `${cleanSlug}_` : ''}${hash.slice(0, 32)}`;
+}
+
+/**
+ * Criação da transferência sob custódia:
+ * Debita a conta de origem do remetente e cria a obrigação/registro de custódia em pending_receipt.
+ */
+export async function executeServerSideCreateCustodyTransfer(db, callerUid, payload) {
+  if (!callerUid || typeof callerUid !== 'string' || !callerUid.trim()) {
+    throw new HttpsError('unauthenticated', 'Autenticação obrigatória para transferências sob custódia.');
+  }
+
+  const cleanSender = callerUid.trim();
+  const cleanCustodian = (payload.custodianUid || '').trim();
+  const cleanSourceAcc = (payload.sourceAccountId || '').trim();
+  const spaceId = payload.spaceId ? String(payload.spaceId).trim() : null;
+  const scopeType = payload.scopeType === 'direct_bilateral' ? 'direct_bilateral' : 'shared_space';
+  const transferType = payload.transferType === 'linked_to_expense' ? 'linked_to_expense' : 'free_custody';
+  const targetExpenseId = payload.targetExpenseId ? String(payload.targetExpenseId).trim() : null;
+  const initialAmountCents = Number(payload.initialAmountCents);
+  const transferDate = (payload.transferDate || '').trim();
+  const description = (payload.description || '').trim() || 'Transferência sob custódia';
+  const notes = payload.notes ? String(payload.notes).trim() : null;
+  const idemKey = (payload.idempotencyKey || '').trim();
+
+  if (!cleanCustodian || cleanCustodian === cleanSender) {
+    throw new HttpsError('invalid-argument', 'O destinatário da custódia deve ser um participante distinto do remetente.');
+  }
+  if (!Number.isSafeInteger(initialAmountCents) || initialAmountCents <= 0) {
+    throw new HttpsError('invalid-argument', 'O valor inicial deve ser um inteiro estritamente positivo em centavos.');
+  }
+  if (!cleanSourceAcc) {
+    throw new HttpsError('invalid-argument', 'A conta bancária de origem é obrigatória.');
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(transferDate)) {
+    throw new HttpsError('invalid-argument', 'Data de transferência inválida. Use o formato YYYY-MM-DD.');
+  }
+  if (!idemKey) {
+    throw new HttpsError('invalid-argument', 'Chave de idempotência é obrigatória.');
+  }
+
+  const transferId = serverGenerateCustodyTransferDocId(cleanSender, idemKey);
+
+  return await db.runTransaction(async (tx) => {
+    // 1. Valida espaço se aplicável
+    let spaceData = null;
+    if (scopeType === 'shared_space' && spaceId) {
+      const spaceSnap = await tx.get(db.collection('spaces').doc(spaceId));
+      if (!spaceSnap.exists) {
+        throw new HttpsError('not-found', 'Espaço compartilhado não encontrado.');
+      }
+      spaceData = spaceSnap.data();
+      if (spaceData.spaceStatus !== 'active') {
+        throw new HttpsError('failed-precondition', 'Espaço compartilhado não está ativo.');
+      }
+      const members = spaceData.memberUids || [];
+      if (!members.includes(cleanSender) || !members.includes(cleanCustodian)) {
+        throw new HttpsError('permission-denied', 'Ambos os participantes devem ser membros do espaço compartilhado.');
+      }
+    }
+
+    // 2. Verifica idempotência
+    const transferRef = db.collection('transfers').doc(transferId);
+    const transferSnap = await tx.get(transferRef);
+    if (transferSnap.exists) {
+      const existing = transferSnap.data();
+      if (
+        existing.initialAmountCents !== initialAmountCents ||
+        existing.senderUid !== cleanSender ||
+        existing.custodianUid !== cleanCustodian ||
+        existing.sourceAccountId !== cleanSourceAcc
+      ) {
+        throw new HttpsError('already-exists', 'Conflito de idempotência: transferência existente com parâmetros divergentes.');
+      }
+      const existingMovSnap = await tx.get(
+        db.collection('accounts').doc(cleanSourceAcc).collection('movements').doc(existing.sourceMovementId)
+      );
+      return {
+        transfer: existing,
+        sourceMovement: existingMovSnap.exists ? existingMovSnap.data() : null,
+        isIdempotentReplay: true,
+      };
+    }
+
+    // 3. Valida conta de origem
+    const sourceAccRef = db.collection('accounts').doc(cleanSourceAcc);
+    const sourceAccSnap = await tx.get(sourceAccRef);
+    if (!sourceAccSnap.exists || sourceAccSnap.data().userId !== cleanSender) {
+      throw new HttpsError('permission-denied', 'Conta bancária de origem não encontrada ou não pertence ao remetente.');
+    }
+    const sourceAcc = sourceAccSnap.data();
+    if (isAccountArchivedServer(sourceAcc)) {
+      throw new HttpsError('failed-precondition', 'A conta de origem está arquivada.');
+    }
+    if (isCreditAccountServer(sourceAcc)) {
+      throw new HttpsError('invalid-argument', 'Transferências sob custódia não podem ser debitadas diretamente de conta de cartão de crédito.');
+    }
+
+    const now = new Date().toISOString();
+    const movId = serverGenerateMovementDocId(cleanSourceAcc, `${idemKey}_out`);
+    const movRef = sourceAccRef.collection('movements').doc(movId);
+
+    const sourceMovement = serverBuildFinancialMovement({
+      id: movId,
+      accountId: cleanSourceAcc,
+      userId: cleanSender,
+      direction: 'outflow',
+      amountCents: initialAmountCents,
+      effectiveDate: transferDate,
+      originType: 'custody_transfer_out',
+      originId: transferId,
+      description: `${description} (Custodiante: ${cleanCustodian})`,
+      notes: notes || `Transferência de recursos para custódia #${transferId}`,
+      authorUid: cleanSender,
+      idempotencyKey: `${idemKey}_out`,
+    });
+
+    // 4. Executa débito contábil
+    tx.set(movRef, sourceMovement);
+    const currentBal = sourceAcc.projectedBalanceCents || 0;
+    tx.update(sourceAccRef, {
+      projectedBalanceCents: currentBal - initialAmountCents,
+      updatedAt: now,
+    });
+
+    // 5. Grava documento canônico da custódia
+    const transferDoc = {
+      id: transferId,
+      scopeType,
+      spaceId: spaceId || null,
+      transferType,
+      targetExpenseId: targetExpenseId || null,
+      senderUid: cleanSender,
+      custodianUid: cleanCustodian,
+      initialAmountCents,
+      confirmedAmountCents: null,
+      usedAmountCents: 0,
+      returnedAmountCents: 0,
+      availableBalanceCents: 0, // Apenas fica disponível após a confirmação do custodiante
+      sourceAccountId: cleanSourceAcc,
+      destinationAccountId: null,
+      custodyStatus: 'pending_receipt',
+      description,
+      notes: notes || null,
+      transferDate,
+      idempotencyKey: idemKey,
+      sourceMovementId: movId,
+      destinationMovementId: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    tx.set(transferRef, transferDoc);
+
+    // 6. Registra evento de auditoria da custódia
+    const eventId = serverGenerateCustodyEventDocId(transferId, 'transfer_declared', idemKey);
+    const eventRef = transferRef.collection('events').doc(eventId);
+    tx.set(eventRef, {
+      id: eventId,
+      transferId,
+      eventType: 'transfer_declared',
+      amountCents: initialAmountCents,
+      targetExpenseId: targetExpenseId || null,
+      affectedAccountId: cleanSourceAcc,
+      financialMovementId: movId,
+      performedByUid: cleanSender,
+      justification: notes || null,
+      clientTransactionUuid: transferId,
+      idempotencyKey: idemKey,
+      timestamp: now,
+    });
+
+    // 7. Notificação e auditoria do espaço
+    if (scopeType === 'shared_space' && spaceId && spaceData) {
+      const auditId = `audit_cust_created_${transferId}`;
+      tx.set(db.collection('spaces').doc(spaceId).collection('audit').doc(auditId), {
+        id: auditId,
+        spaceId,
+        eventType: 'custody_transfer_created',
+        performedByUid: cleanSender,
+        performedByName: 'Participante',
+        targetUid: cleanCustodian,
+        details: { transferId, initialAmountCents, transferType, targetExpenseId },
+        timestamp: now,
+      });
+
+      const notifId = `notif_cust_declared_${transferId}`;
+      tx.set(db.collection('users').doc(cleanCustodian).collection('notifications').doc(notifId), {
+        id: notifId,
+        userId: cleanCustodian,
+        spaceId,
+        spaceName: spaceData.name || 'Espaço Compartilhado',
+        type: 'custody_transfer_created',
+        title: 'Transferência sob custódia declarada',
+        message: `Você recebeu uma declaração de transferência de R$ ${(initialAmountCents / 100).toFixed(2)} para sua custódia. Confirme o recebimento na sua conta bancária.`,
+        read: false,
+        originEventId: transferId,
+        createdAt: now,
+      }, { merge: true });
+    }
+
+    return {
+      transfer: transferDoc,
+      sourceMovement,
+      isIdempotentReplay: false,
+    };
+  });
+}
+
+/**
+ * Confirmação de recebimento da custódia pelo custodiante:
+ * Credita a conta de destino do custodiante e libera o saldo disponível (availableBalanceCents).
+ */
+export async function executeServerSideConfirmCustodyReceipt(db, callerUid, payload) {
+  if (!callerUid || typeof callerUid !== 'string' || !callerUid.trim()) {
+    throw new HttpsError('unauthenticated', 'Autenticação obrigatória para confirmação de recebimento.');
+  }
+
+  const cleanCaller = callerUid.trim();
+  const transferId = (payload.transferId || '').trim();
+  const cleanDestAcc = (payload.destinationAccountId || '').trim();
+  const notes = payload.notes ? String(payload.notes).trim() : null;
+  const idemKey = (payload.idempotencyKey || '').trim();
+
+  if (!transferId) {
+    throw new HttpsError('invalid-argument', 'ID da transferência é obrigatório.');
+  }
+  if (!cleanDestAcc) {
+    throw new HttpsError('invalid-argument', 'Conta de destino do custodiante é obrigatória.');
+  }
+  if (!idemKey) {
+    throw new HttpsError('invalid-argument', 'Chave de idempotência é obrigatória.');
+  }
+
+  return await db.runTransaction(async (tx) => {
+    const transferRef = db.collection('transfers').doc(transferId);
+    const transferSnap = await tx.get(transferRef);
+    if (!transferSnap.exists) {
+      throw new HttpsError('not-found', 'Transferência sob custódia não encontrada.');
+    }
+    const transfer = transferSnap.data();
+
+    if (transfer.custodianUid !== cleanCaller) {
+      throw new HttpsError('permission-denied', 'Somente o custodiante legítimo pode confirmar o recebimento da custódia.');
+    }
+
+    // Suporte a valor confirmado com divergência comprovada
+    const confirmedAmount = payload.confirmedAmountCents !== undefined && payload.confirmedAmountCents !== null
+      ? Number(payload.confirmedAmountCents)
+      : transfer.initialAmountCents;
+
+    if (!Number.isSafeInteger(confirmedAmount) || confirmedAmount <= 0) {
+      throw new HttpsError('invalid-argument', 'O valor confirmado deve ser um inteiro positivo em centavos.');
+    }
+    if (confirmedAmount > transfer.initialAmountCents) {
+      throw new HttpsError('invalid-argument', 'O valor confirmado não pode exceder o valor declarado inicialmente.');
+    }
+
+    // Idempotência
+    if (transfer.custodyStatus !== 'pending_receipt') {
+      if (transfer.destinationAccountId === cleanDestAcc && transfer.confirmedAmountCents === confirmedAmount) {
+        const destMovSnap = await tx.get(
+          db.collection('accounts').doc(cleanDestAcc).collection('movements').doc(transfer.destinationMovementId)
+        );
+        return {
+          transfer,
+          destinationMovement: destMovSnap.exists ? destMovSnap.data() : null,
+          isIdempotentReplay: true,
+        };
+      }
+      throw new HttpsError('failed-precondition', `A transferência já se encontra no status "${transfer.custodyStatus}".`);
+    }
+
+    // Valida conta de destino
+    const destAccRef = db.collection('accounts').doc(cleanDestAcc);
+    const destAccSnap = await tx.get(destAccRef);
+    if (!destAccSnap.exists || destAccSnap.data().userId !== cleanCaller) {
+      throw new HttpsError('permission-denied', 'Conta de destino não encontrada ou não pertence ao custodiante.');
+    }
+    const destAcc = destAccSnap.data();
+    if (isAccountArchivedServer(destAcc)) {
+      throw new HttpsError('failed-precondition', 'A conta de destino está arquivada.');
+    }
+    if (isCreditAccountServer(destAcc)) {
+      throw new HttpsError('invalid-argument', 'Não é permitido receber custódia diretamente em conta de cartão de crédito.');
+    }
+
+    // Valida espaço se aplicável
+    let spaceData = null;
+    if (transfer.spaceId) {
+      const spaceSnap = await tx.get(db.collection('spaces').doc(transfer.spaceId));
+      if (spaceSnap.exists) {
+        spaceData = spaceSnap.data();
+      }
+    }
+
+    const now = new Date().toISOString();
+    const movId = serverGenerateMovementDocId(cleanDestAcc, `${idemKey}_in`);
+    const movRef = destAccRef.collection('movements').doc(movId);
+
+    const destinationMovement = serverBuildFinancialMovement({
+      id: movId,
+      accountId: cleanDestAcc,
+      userId: cleanCaller,
+      direction: 'inflow',
+      amountCents: confirmedAmount,
+      effectiveDate: now.slice(0, 10),
+      originType: 'custody_transfer_in',
+      originId: transferId,
+      description: `Custódia recebida de ${transfer.senderUid}`,
+      notes: notes || `Crédito de recursos para custódia #${transferId}`,
+      authorUid: cleanCaller,
+      idempotencyKey: `${idemKey}_in`,
+    });
+
+    // 1. Efetiva crédito na conta do custodiante
+    tx.set(movRef, destinationMovement);
+    const currentBal = destAcc.projectedBalanceCents || 0;
+    tx.update(destAccRef, {
+      projectedBalanceCents: currentBal + confirmedAmount,
+      updatedAt: now,
+    });
+
+    // 2. Atualiza estado da custódia para available
+    const updatedTransfer = {
+      ...transfer,
+      destinationAccountId: cleanDestAcc,
+      destinationMovementId: movId,
+      confirmedAmountCents: confirmedAmount,
+      availableBalanceCents: confirmedAmount,
+      custodyStatus: 'available',
+      confirmedAt: now,
+      updatedAt: now,
+    };
+    tx.update(transferRef, {
+      destinationAccountId: cleanDestAcc,
+      destinationMovementId: movId,
+      confirmedAmountCents: confirmedAmount,
+      availableBalanceCents: confirmedAmount,
+      custodyStatus: 'available',
+      confirmedAt: now,
+      updatedAt: now,
+    });
+
+    // 3. Registra evento de auditoria
+    const eventId = serverGenerateCustodyEventDocId(transferId, 'receipt_confirmed', idemKey);
+    const eventRef = transferRef.collection('events').doc(eventId);
+    tx.set(eventRef, {
+      id: eventId,
+      transferId,
+      eventType: 'receipt_confirmed',
+      amountCents: confirmedAmount,
+      affectedAccountId: cleanDestAcc,
+      financialMovementId: movId,
+      performedByUid: cleanCaller,
+      justification: notes || null,
+      clientTransactionUuid: transferId,
+      idempotencyKey: idemKey,
+      timestamp: now,
+    });
+
+    // 4. Notificação e auditoria no espaço
+    if (transfer.spaceId) {
+      const auditId = `audit_cust_confirmed_${transferId}`;
+      tx.set(db.collection('spaces').doc(transfer.spaceId).collection('audit').doc(auditId), {
+        id: auditId,
+        spaceId: transfer.spaceId,
+        eventType: 'custody_receipt_confirmed',
+        performedByUid: cleanCaller,
+        performedByName: 'Custodiante',
+        targetUid: transfer.senderUid,
+        details: { transferId, confirmedAmountCents: confirmedAmount },
+        timestamp: now,
+      });
+
+      const notifId = `notif_cust_confirmed_${transferId}`;
+      tx.set(db.collection('users').doc(transfer.senderUid).collection('notifications').doc(notifId), {
+        id: notifId,
+        userId: transfer.senderUid,
+        spaceId: transfer.spaceId,
+        spaceName: spaceData?.name || 'Espaço Compartilhado',
+        type: 'custody_receipt_confirmed',
+        title: 'Recebimento de custódia confirmado',
+        message: `O custodiante confirmou o recebimento de R$ ${(confirmedAmount / 100).toFixed(2)} em sua conta bancária. O saldo está disponível para uso.`,
+        read: false,
+        originEventId: transferId,
+        createdAt: now,
+      }, { merge: true });
+    }
+
+    return {
+      transfer: updatedTransfer,
+      destinationMovement,
+      isIdempotentReplay: false,
+    };
+  });
+}
+
+/**
+ * Utilização dos recursos sob custódia para pagamento de despesa compartilhada:
+ * Abate o saldo sob custódia sem gerar débito bancário adicional (recursos já recebidos pelo custodiante).
+ */
+export async function executeServerSideUseCustodyFundsInExpense(db, callerUid, payload) {
+  if (!callerUid || typeof callerUid !== 'string' || !callerUid.trim()) {
+    throw new HttpsError('unauthenticated', 'Autenticação obrigatória para utilização de custódia.');
+  }
+
+  const cleanCaller = callerUid.trim();
+  const transferId = (payload.transferId || '').trim();
+  const expenseId = (payload.expenseId || '').trim();
+  const amountCents = Number(payload.amountCents);
+  const notes = payload.notes ? String(payload.notes).trim() : null;
+  const idemKey = (payload.idempotencyKey || '').trim();
+
+  if (!transferId) {
+    throw new HttpsError('invalid-argument', 'ID da transferência é obrigatório.');
+  }
+  if (!expenseId) {
+    throw new HttpsError('invalid-argument', 'ID da despesa compartilhada é obrigatório.');
+  }
+  if (!Number.isSafeInteger(amountCents) || amountCents <= 0) {
+    throw new HttpsError('invalid-argument', 'O valor utilizado deve ser um inteiro positivo em centavos.');
+  }
+  if (!idemKey) {
+    throw new HttpsError('invalid-argument', 'Chave de idempotência é obrigatória.');
+  }
+
+  const usageId = serverGenerateCustodyUsageDocId(transferId, expenseId, idemKey);
+
+  return await db.runTransaction(async (tx) => {
+    const transferRef = db.collection('transfers').doc(transferId);
+    const transferSnap = await tx.get(transferRef);
+    if (!transferSnap.exists) {
+      throw new HttpsError('not-found', 'Transferência sob custódia não encontrada.');
+    }
+    const transfer = transferSnap.data();
+
+    if (transfer.custodianUid !== cleanCaller) {
+      throw new HttpsError('permission-denied', 'Somente o custodiante legítimo pode alocar fundos sob sua custódia.');
+    }
+
+    const usageRef = transferRef.collection('usages').doc(usageId);
+    const usageSnap = await tx.get(usageRef);
+    if (usageSnap.exists) {
+      return {
+        transfer,
+        usage: usageSnap.data(),
+        isIdempotentReplay: true,
+      };
+    }
+
+    if (transfer.custodyStatus !== 'available' && transfer.custodyStatus !== 'partially_used') {
+      throw new HttpsError('failed-precondition', `A transferência está com status "${transfer.custodyStatus}" e não permite utilização.`);
+    }
+
+    if (amountCents > transfer.availableBalanceCents) {
+      throw new HttpsError(
+        'invalid-argument',
+        `O valor solicitado (${amountCents} centavos) excede o saldo em custódia disponível (${transfer.availableBalanceCents} centavos).`
+      );
+    }
+
+    // Se vinculada a um espaço, valida que a despesa existe
+    let spaceData = null;
+    if (transfer.spaceId) {
+      const expSnap = await tx.get(db.collection('spaces').doc(transfer.spaceId).collection('shared_expenses').doc(expenseId));
+      if (!expSnap.exists) {
+        throw new HttpsError('not-found', 'Despesa compartilhada não encontrada.');
+      }
+      const spaceSnap = await tx.get(db.collection('spaces').doc(transfer.spaceId));
+      spaceData = spaceSnap.exists ? spaceSnap.data() : null;
+    }
+
+    const now = new Date().toISOString();
+    const newAvailable = transfer.availableBalanceCents - amountCents;
+    const newUsed = (transfer.usedAmountCents || 0) + amountCents;
+
+    let newStatus = 'partially_used';
+    if (newAvailable === 0) {
+      newStatus = (transfer.returnedAmountCents || 0) > 0 ? 'settled_by_mixed' : 'settled_by_usage';
+    }
+
+    const updatedTransfer = {
+      ...transfer,
+      availableBalanceCents: newAvailable,
+      usedAmountCents: newUsed,
+      custodyStatus: newStatus,
+      updatedAt: now,
+    };
+    tx.update(transferRef, {
+      availableBalanceCents: newAvailable,
+      usedAmountCents: newUsed,
+      custodyStatus: newStatus,
+      updatedAt: now,
+    });
+
+    const usageDoc = {
+      id: usageId,
+      transferId,
+      spaceId: transfer.spaceId || null,
+      expenseId,
+      amountCents,
+      usedByUid: cleanCaller,
+      beneficiaryUid: transfer.senderUid,
+      notes: notes || null,
+      idempotencyKey: idemKey,
+      createdAt: now,
+    };
+    tx.set(usageRef, usageDoc);
+
+    // Registra evento de auditoria
+    const eventId = serverGenerateCustodyEventDocId(transferId, 'expense_consumed', idemKey);
+    const eventRef = transferRef.collection('events').doc(eventId);
+    tx.set(eventRef, {
+      id: eventId,
+      transferId,
+      eventType: 'expense_consumed',
+      amountCents,
+      targetExpenseId: expenseId,
+      performedByUid: cleanCaller,
+      justification: notes || null,
+      clientTransactionUuid: usageId,
+      idempotencyKey: idemKey,
+      timestamp: now,
+    });
+
+    // Notificação e auditoria do espaço
+    if (transfer.spaceId && spaceData) {
+      const auditId = `audit_cust_use_${usageId}`;
+      tx.set(db.collection('spaces').doc(transfer.spaceId).collection('audit').doc(auditId), {
+        id: auditId,
+        spaceId: transfer.spaceId,
+        eventType: 'custody_consumed',
+        performedByUid: cleanCaller,
+        performedByName: 'Custodiante',
+        targetUid: transfer.senderUid,
+        details: { transferId, expenseId, amountCents, remainingAvailableCents: newAvailable },
+        timestamp: now,
+      });
+
+      const notifId = `notif_cust_use_${usageId}`;
+      tx.set(db.collection('users').doc(transfer.senderUid).collection('notifications').doc(notifId), {
+        id: notifId,
+        userId: transfer.senderUid,
+        spaceId: transfer.spaceId,
+        spaceName: spaceData.name || 'Espaço Compartilhado',
+        type: 'custody_consumed',
+        title: 'Recursos sob custódia utilizados em despesa',
+        message: `R$ ${(amountCents / 100).toFixed(2)} dos seus fundos sob custódia foram utilizados pelo custodiante para cobrir despesa compartilhada. Saldo restante: R$ ${(newAvailable / 100).toFixed(2)}.`,
+        read: false,
+        originEventId: usageId,
+        createdAt: now,
+      }, { merge: true });
+    }
+
+    return {
+      transfer: updatedTransfer,
+      usage: usageDoc,
+      isIdempotentReplay: false,
+    };
+  });
+}
+
+/**
+ * Devolução de fundos sob custódia (Custody Return):
+ * Transfere atomicamente o saldo não utilizado de volta para a conta do remetente original.
+ */
+export async function executeServerSideReturnCustodyFunds(db, callerUid, payload) {
+  if (!callerUid || typeof callerUid !== 'string' || !callerUid.trim()) {
+    throw new HttpsError('unauthenticated', 'Autenticação obrigatória para devolução de custódia.');
+  }
+
+  const cleanCaller = callerUid.trim();
+  const transferId = (payload.transferId || '').trim();
+  const cleanSourceAcc = (payload.sourceAccountId || '').trim();
+  const cleanDestAcc = (payload.destinationAccountId || '').trim();
+  const amountCents = Number(payload.amountCents);
+  const justification = payload.justification ? String(payload.justification).trim() : null;
+  const idemKey = (payload.idempotencyKey || '').trim();
+
+  if (!transferId) {
+    throw new HttpsError('invalid-argument', 'ID da transferência é obrigatório.');
+  }
+  if (!cleanSourceAcc) {
+    throw new HttpsError('invalid-argument', 'Conta bancária de saída do custodiante é obrigatória.');
+  }
+  if (!cleanDestAcc) {
+    throw new HttpsError('invalid-argument', 'Conta bancária de destino do remetente é obrigatória.');
+  }
+  if (!Number.isSafeInteger(amountCents) || amountCents <= 0) {
+    throw new HttpsError('invalid-argument', 'O valor de devolução deve ser um inteiro positivo em centavos.');
+  }
+  if (!idemKey) {
+    throw new HttpsError('invalid-argument', 'Chave de idempotência é obrigatória.');
+  }
+
+  const returnId = serverGenerateCustodyReturnDocId(transferId, idemKey);
+
+  return await db.runTransaction(async (tx) => {
+    const transferRef = db.collection('transfers').doc(transferId);
+    const transferSnap = await tx.get(transferRef);
+    if (!transferSnap.exists) {
+      throw new HttpsError('not-found', 'Transferência sob custódia não encontrada.');
+    }
+    const transfer = transferSnap.data();
+
+    if (transfer.custodianUid !== cleanCaller) {
+      throw new HttpsError('permission-denied', 'Somente o custodiante legítimo pode autorizar a devolução dos recursos em custódia.');
+    }
+
+    const returnRef = transferRef.collection('returns').doc(returnId);
+    const returnSnap = await tx.get(returnRef);
+    if (returnSnap.exists) {
+      const existingRet = returnSnap.data();
+      const outMovSnap = await tx.get(
+        db.collection('accounts').doc(cleanSourceAcc).collection('movements').doc(existingRet.sourceMovementId)
+      );
+      const inMovSnap = await tx.get(
+        db.collection('accounts').doc(cleanDestAcc).collection('movements').doc(existingRet.destinationMovementId)
+      );
+      return {
+        transfer,
+        returnRecord: existingRet,
+        sourceMovement: outMovSnap.exists ? outMovSnap.data() : null,
+        destinationMovement: inMovSnap.exists ? inMovSnap.data() : null,
+        isIdempotentReplay: true,
+      };
+    }
+
+    if (amountCents > transfer.availableBalanceCents) {
+      throw new HttpsError(
+        'invalid-argument',
+        `O valor de devolução (${amountCents} centavos) excede o saldo disponível sob custódia (${transfer.availableBalanceCents} centavos).`
+      );
+    }
+
+    // Valida conta do custodiante (saída)
+    const srcAccRef = db.collection('accounts').doc(cleanSourceAcc);
+    const srcAccSnap = await tx.get(srcAccRef);
+    if (!srcAccSnap.exists || srcAccSnap.data().userId !== cleanCaller) {
+      throw new HttpsError('permission-denied', 'Conta de saída não encontrada ou não pertence ao custodiante.');
+    }
+    const srcAcc = srcAccSnap.data();
+    if (isAccountArchivedServer(srcAcc)) {
+      throw new HttpsError('failed-precondition', 'A conta de saída do custodiante está arquivada.');
+    }
+    if (isCreditAccountServer(srcAcc)) {
+      throw new HttpsError('invalid-argument', 'Devoluções de custódia não podem sair de conta de cartão de crédito.');
+    }
+
+    // Valida conta do remetente original (entrada)
+    const dstAccRef = db.collection('accounts').doc(cleanDestAcc);
+    const dstAccSnap = await tx.get(dstAccRef);
+    if (!dstAccSnap.exists || dstAccSnap.data().userId !== transfer.senderUid) {
+      throw new HttpsError('permission-denied', 'Conta de destino não encontrada ou não pertence ao remetente original.');
+    }
+    const dstAcc = dstAccSnap.data();
+    if (isAccountArchivedServer(dstAcc)) {
+      throw new HttpsError('failed-precondition', 'A conta de destino do remetente está arquivada.');
+    }
+    if (isCreditAccountServer(dstAcc)) {
+      throw new HttpsError('invalid-argument', 'Devoluções de custódia não podem ser recebidas diretamente em conta de cartão.');
+    }
+
+    let spaceData = null;
+    if (transfer.spaceId) {
+      const spaceSnap = await tx.get(db.collection('spaces').doc(transfer.spaceId));
+      if (spaceSnap.exists) {
+        spaceData = spaceSnap.data();
+      }
+    }
+
+    const now = new Date().toISOString();
+    const effectiveDate = now.slice(0, 10);
+
+    // 1. Movimento de saída do custodiante
+    const outMovId = serverGenerateMovementDocId(cleanSourceAcc, `${idemKey}_ret_out`);
+    const outMovRef = srcAccRef.collection('movements').doc(outMovId);
+    const sourceMovement = serverBuildFinancialMovement({
+      id: outMovId,
+      accountId: cleanSourceAcc,
+      userId: cleanCaller,
+      direction: 'outflow',
+      amountCents,
+      effectiveDate,
+      originType: 'custody_return_out',
+      originId: returnId,
+      description: `Devolução de custódia para ${transfer.senderUid}`,
+      notes: justification || `Devolução de recursos não utilizados da custódia #${transferId}`,
+      authorUid: cleanCaller,
+      idempotencyKey: `${idemKey}_ret_out`,
+    });
+    tx.set(outMovRef, sourceMovement);
+    tx.update(srcAccRef, {
+      projectedBalanceCents: (srcAcc.projectedBalanceCents || 0) - amountCents,
+      updatedAt: now,
+    });
+
+    // 2. Movimento de entrada no remetente
+    const inMovId = serverGenerateMovementDocId(cleanDestAcc, `${idemKey}_ret_in`);
+    const inMovRef = dstAccRef.collection('movements').doc(inMovId);
+    const destinationMovement = serverBuildFinancialMovement({
+      id: inMovId,
+      accountId: cleanDestAcc,
+      userId: transfer.senderUid,
+      direction: 'inflow',
+      amountCents,
+      effectiveDate,
+      originType: 'custody_return_in',
+      originId: returnId,
+      description: `Devolução de custódia de ${cleanCaller}`,
+      notes: justification || `Ressarcimento de saldo não utilizado da custódia #${transferId}`,
+      authorUid: cleanCaller,
+      idempotencyKey: `${idemKey}_ret_in`,
+    });
+    tx.set(inMovRef, destinationMovement);
+    tx.update(dstAccRef, {
+      projectedBalanceCents: (dstAcc.projectedBalanceCents || 0) + amountCents,
+      updatedAt: now,
+    });
+
+    // 3. Atualiza saldos da custódia
+    const newAvailable = transfer.availableBalanceCents - amountCents;
+    const newReturned = (transfer.returnedAmountCents || 0) + amountCents;
+
+    let newStatus = 'partial_return_confirmed';
+    if (newAvailable === 0) {
+      newStatus = (transfer.usedAmountCents || 0) > 0 ? 'settled_by_mixed' : 'settled_by_return';
+    }
+
+    const updatedTransfer = {
+      ...transfer,
+      availableBalanceCents: newAvailable,
+      returnedAmountCents: newReturned,
+      custodyStatus: newStatus,
+      updatedAt: now,
+    };
+    tx.update(transferRef, {
+      availableBalanceCents: newAvailable,
+      returnedAmountCents: newReturned,
+      custodyStatus: newStatus,
+      updatedAt: now,
+    });
+
+    // 4. Registro canônico de devolução
+    const returnRecord = {
+      id: returnId,
+      transferId,
+      spaceId: transfer.spaceId || null,
+      amountCents,
+      returnedByUid: cleanCaller,
+      receivedByUid: transfer.senderUid,
+      sourceAccountId: cleanSourceAcc,
+      destinationAccountId: cleanDestAcc,
+      sourceMovementId: outMovId,
+      destinationMovementId: inMovId,
+      justification: justification || null,
+      idempotencyKey: idemKey,
+      createdAt: now,
+    };
+    tx.set(returnRef, returnRecord);
+
+    // 5. Registra evento de auditoria
+    const eventId = serverGenerateCustodyEventDocId(transferId, 'return_confirmed', idemKey);
+    const eventRef = transferRef.collection('events').doc(eventId);
+    tx.set(eventRef, {
+      id: eventId,
+      transferId,
+      eventType: 'return_confirmed',
+      amountCents,
+      affectedAccountId: cleanSourceAcc,
+      financialMovementId: outMovId,
+      performedByUid: cleanCaller,
+      justification: justification || null,
+      clientTransactionUuid: returnId,
+      idempotencyKey: idemKey,
+      timestamp: now,
+    });
+
+    // 6. Notificação e auditoria no espaço
+    if (transfer.spaceId) {
+      const auditId = `audit_cust_return_${returnId}`;
+      tx.set(db.collection('spaces').doc(transfer.spaceId).collection('audit').doc(auditId), {
+        id: auditId,
+        spaceId: transfer.spaceId,
+        eventType: 'custody_return_confirmed',
+        performedByUid: cleanCaller,
+        performedByName: 'Custodiante',
+        targetUid: transfer.senderUid,
+        details: { transferId, returnId, amountCents, remainingAvailableCents: newAvailable },
+        timestamp: now,
+      });
+
+      const notifId = `notif_cust_return_${returnId}`;
+      tx.set(db.collection('users').doc(transfer.senderUid).collection('notifications').doc(notifId), {
+        id: notifId,
+        userId: transfer.senderUid,
+        spaceId: transfer.spaceId,
+        spaceName: spaceData?.name || 'Espaço Compartilhado',
+        type: 'custody_return_confirmed',
+        title: 'Devolução de fundos em custódia confirmada',
+        message: `O custodiante devolveu R$ ${(amountCents / 100).toFixed(2)} para sua conta bancária.`,
+        read: false,
+        originEventId: returnId,
+        createdAt: now,
+      }, { merge: true });
+    }
+
+    return {
+      transfer: updatedTransfer,
+      returnRecord,
+      sourceMovement,
+      destinationMovement,
+      isIdempotentReplay: false,
+    };
+  });
+}
+
+export const createCustodyTransferOfficial = onCall(
+  { region: 'us-central1' },
+  async (request) => {
+    return await executeServerSideCreateCustodyTransfer(
+      getAdminDb(),
+      request.auth?.uid,
+      request.data
+    );
+  }
+);
+
+export const confirmCustodyReceiptOfficial = onCall(
+  { region: 'us-central1' },
+  async (request) => {
+    return await executeServerSideConfirmCustodyReceipt(
+      getAdminDb(),
+      request.auth?.uid,
+      request.data
+    );
+  }
+);
+
+export const useCustodyFundsInExpenseOfficial = onCall(
+  { region: 'us-central1' },
+  async (request) => {
+    return await executeServerSideUseCustodyFundsInExpense(
+      getAdminDb(),
+      request.auth?.uid,
+      request.data
+    );
+  }
+);
+
+export const returnCustodyFundsOfficial = onCall(
+  { region: 'us-central1' },
+  async (request) => {
+    return await executeServerSideReturnCustodyFunds(
+      getAdminDb(),
+      request.auth?.uid,
+      request.data
+    );
+  }
+);
+
 
 
 

@@ -400,3 +400,46 @@ export function generateRestitutionReceiptDocId(restitutionId: string, idempoten
   return `restit_rec_${cleanSlug ? `${cleanSlug}_` : ''}${hash.slice(0, 32)}`;
 }
 
+export function generateCustodyTransferDocId(senderUid: string, idempotencyKey: string): string {
+  const cleanUid = (senderUid || '').trim();
+  const cleanKey = (idempotencyKey || '').trim();
+  const cleanSlug = cleanKey.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 24);
+  const hash = sha256Hex(`cust_xfer:${cleanUid}:${cleanKey}`);
+  return `cust_${cleanSlug ? `${cleanSlug}_` : ''}${hash.slice(0, 32)}`;
+}
+
+export function generateCustodyEventDocId(
+  transferId: string,
+  eventType: string,
+  idempotencyKey: string
+): string {
+  const cleanXfer = (transferId || '').trim();
+  const cleanEvt = (eventType || '').trim();
+  const cleanKey = (idempotencyKey || '').trim();
+  const cleanSlug = cleanKey.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 20);
+  const hash = sha256Hex(`cust_evt:${cleanXfer}:${cleanEvt}:${cleanKey}`);
+  return `cevt_${cleanSlug ? `${cleanSlug}_` : ''}${hash.slice(0, 32)}`;
+}
+
+export function generateCustodyUsageDocId(
+  transferId: string,
+  expenseId: string,
+  idempotencyKey: string
+): string {
+  const cleanXfer = (transferId || '').trim();
+  const cleanExp = (expenseId || '').trim();
+  const cleanKey = (idempotencyKey || '').trim();
+  const cleanSlug = cleanKey.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 20);
+  const hash = sha256Hex(`cust_use:${cleanXfer}:${cleanExp}:${cleanKey}`);
+  return `cuse_${cleanSlug ? `${cleanSlug}_` : ''}${hash.slice(0, 32)}`;
+}
+
+export function generateCustodyReturnDocId(transferId: string, idempotencyKey: string): string {
+  const cleanXfer = (transferId || '').trim();
+  const cleanKey = (idempotencyKey || '').trim();
+  const cleanSlug = cleanKey.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 20);
+  const hash = sha256Hex(`cust_ret:${cleanXfer}:${cleanKey}`);
+  return `cret_${cleanSlug ? `${cleanSlug}_` : ''}${hash.slice(0, 32)}`;
+}
+
+

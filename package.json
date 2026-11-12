@@ -13,9 +13,9 @@
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test src/utils/financeEngine.test.ts src/services/authService.test.ts src/services/movementLedger.test.ts src/services/personalFinance.test.ts src/services/sharedSpaces.test.ts src/services/sharedFinance.test.ts",
+    "test": "tsx --test src/utils/financeEngine.test.ts src/services/authService.test.ts src/services/movementLedger.test.ts src/services/personalFinance.test.ts src/services/sharedSpaces.test.ts src/services/sharedFinance.test.ts src/services/custodyService.test.ts",
     "test:rules": "firebase emulators:exec --only firestore --project demo-projeto-beta-v3 \"tsx --test src/services/firestore.rules.test.ts\"",
-    "test:emulator": "firebase emulators:exec --only auth,firestore,storage,functions --project demo-projeto-beta-v3 \"tsx --test --test-concurrency=1 --test-force-exit src/services/firestore.rules.test.ts src/services/phase34.emulator.test.ts src/services/phase5.emulator.test.ts src/services/phase6.emulator.test.ts\""
+    "test:emulator": "firebase emulators:exec --only auth,firestore,storage,functions --project demo-projeto-beta-v3 \"tsx --test --test-concurrency=1 --test-force-exit src/services/firestore.rules.test.ts src/services/phase34.emulator.test.ts src/services/phase5.emulator.test.ts src/services/phase6.emulator.test.ts src/services/phase7.emulator.test.ts\""
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
