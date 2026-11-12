@@ -1806,6 +1806,25 @@ export async function getRestitutionReversals(
   return result;
 }
 
+export async function getRestitutionReceipts(
+  spaceId: string,
+  expenseId: string,
+  restitutionId: string,
+  isDemo = false
+): Promise<ExpenseRestitutionReceipt[]> {
+  if (isDemo) {
+    const list = loadDemoRestitutionReceipts();
+    return list.filter((r) => r.restitutionId === restitutionId);
+  }
+
+  const snap = await getDocs(
+    collection(db, 'spaces', spaceId, 'shared_expenses', expenseId, 'restitutions', restitutionId, 'receipts')
+  );
+  const result: ExpenseRestitutionReceipt[] = [];
+  snap.forEach((d) => result.push({ ...(d.data() as ExpenseRestitutionReceipt), id: d.id }));
+  return result;
+}
+
 // ==============================================================================
 // 7. REEMBOLSOS E DEVOLUÇÕES DE FORNECEDORES (SUPPLIER REFUNDS)
 // ==============================================================================

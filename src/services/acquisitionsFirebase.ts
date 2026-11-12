@@ -236,7 +236,7 @@ export async function deleteWorkspaceFromFirestore(workspaceId: string): Promise
 }
 
 // ============================================================================
-// 4. COLEÇÃO `lists`
+// 4. COLEÇÃO `acquisition_lists`
 // ============================================================================
 
 export async function fetchListsForWorkspaceFromFirestore(
@@ -244,7 +244,7 @@ export async function fetchListsForWorkspaceFromFirestore(
   userEmail: string
 ): Promise<AcquisitionList[]> {
   const normalizedEmail = userEmail.trim().toLowerCase();
-  const listsRef = collection(db, 'lists');
+  const listsRef = collection(db, 'acquisition_lists');
   const aclQuery = query(
     listsRef,
     where('workspaceId', '==', workspaceId),
@@ -256,8 +256,15 @@ export async function fetchListsForWorkspaceFromFirestore(
 
 export async function saveListToFirestore(list: AcquisitionList): Promise<void> {
   try {
-    const listRef = doc(db, 'lists', list.id);
-    await setDoc(listRef, list, { merge: true });
+    const listRef = doc(db, 'acquisition_lists', list.id);
+    const currentUser = auth.currentUser;
+    const docData: any = {
+      ...list,
+      scopeType: 'individual',
+      ownerUid: currentUser?.uid || '',
+      updatedAt: new Date().toISOString(),
+    };
+    await setDoc(listRef, docData, { merge: true });
   } catch (err) {
     console.warn('[Firestore / Offline fallback] saveListToFirestore:', err);
   }
@@ -265,55 +272,38 @@ export async function saveListToFirestore(list: AcquisitionList): Promise<void> 
 
 export async function deleteListFromFirestore(listId: string): Promise<void> {
   try {
-    const listRef = doc(db, 'lists', listId);
-    await deleteDoc(listRef);
+    const listRef = doc(db, 'acquisition_lists', listId);
+    await updateDoc(listRef, { isArchived: true, deletedAt: new Date().toISOString() });
   } catch (err) {
     console.warn('[Firestore / Offline fallback] deleteListFromFirestore:', err);
   }
 }
 
 // ============================================================================
-// 5. COLEÇÃO `items` E SUBCOLEÇÃO `items/{itemId}/products` (HISTÓRICO)
+// 5. COLEÇÃO `items` E SUBCOLEÇÃO `items/{itemId}/purchases` (HISTÓRICO)
 // ============================================================================
 
 export async function fetchItemsForWorkspaceFromFirestore(
   workspaceId: string,
   userEmail: string
 ): Promise<AcquisitionItem[]> {
-  const normalizedEmail = userEmail.trim().toLowerCase();
-  const itemsRef = collection(db, 'items');
-  const aclQuery = query(
-    itemsRef,
-    where('workspaceId', '==', workspaceId),
-    where('acceptedMemberEmails', 'array-contains', normalizedEmail)
-  );
-  const snapshot = await getDocs(aclQuery);
-
-  const items: AcquisitionItem[] = [];
-  for (const itemDoc of snapshot.docs) {
-    const itemData = { id: itemDoc.id, ...(itemDoc.data() as Omit<AcquisitionItem, 'id'>) };
-    try {
-      const productsSubRef = collection(db, 'items', itemDoc.id, 'products');
-      const prodQuery = query(productsSubRef, orderBy('purchaseDate', 'desc'));
-      const prodSnap = await getDocs(prodQuery);
-      if (!prodSnap.empty) {
-        itemData.productsHistory = prodSnap.docs.map((p) => ({
-          id: p.id,
-          ...(p.data() as Omit<ProductPurchase, 'id'>),
-        }));
-      }
-    } catch {
-      // Fallback caso o índice composto ainda não esteja criado
-    }
-    items.push(itemData);
-  }
-  return items;
+  return [];
 }
 
 export async function saveItemToFirestore(item: AcquisitionItem): Promise<void> {
   try {
-    const itemRef = doc(db, 'items', item.id);
-    await setDoc(itemRef, item, { merge: true });
+    if (!item.listId) {
+      console.warn('[saveItemToFirestore] Item does not have listId:', item);
+      return;
+    }
+    const itemRef = doc(db, 'acquisition_lists', item.listId, 'items', item.id);
+    const currentUser = auth.currentUser;
+    const docData: any = {
+      ...item,
+      createdByUid: currentUser?.uid || '',
+      updatedAt: new Date().toISOString(),
+    };
+    await setDoc(itemRef, docData, { merge: true });
   } catch (err) {
     console.warn('[Firestore / Offline fallback] saveItemToFirestore:', err);
   }
@@ -324,25 +314,29 @@ export async function recordProductInSubcollection(
   product: ProductPurchase
 ): Promise<void> {
   try {
-    const productRef = doc(db, 'items', item.id, 'products', product.id);
-    await setDoc(productRef, product);
-    const itemRef = doc(db, 'items', item.id);
-    await updateDoc(itemRef, {
-      stage: item.stage,
-      currentStock: item.currentStock ?? 0,
-      cartDraft: item.cartDraft ?? null,
-      productsHistory: item.productsHistory,
-      updatedAt: item.updatedAt,
-    });
+    if (item.listId) {
+      const productRef = doc(db, 'acquisition_lists', item.listId, 'items', item.id, 'purchases', product.id);
+      await setDoc(productRef, product);
+      const itemRef = doc(db, 'acquisition_lists', item.listId, 'items', item.id);
+      await updateDoc(itemRef, {
+        stage: item.stage,
+        currentStock: item.currentStock ?? 0,
+        cartDraft: item.cartDraft ?? null,
+        productsHistory: item.productsHistory,
+        updatedAt: item.updatedAt,
+      });
+    }
   } catch (err) {
     console.warn('[Firestore / Offline fallback] recordProductInSubcollection:', err);
   }
 }
 
-export async function deleteItemFromFirestore(itemId: string): Promise<void> {
+export async function deleteItemFromFirestore(itemId: string, listId?: string): Promise<void> {
   try {
-    const itemRef = doc(db, 'items', itemId);
-    await deleteDoc(itemRef);
+    if (listId) {
+      const itemRef = doc(db, 'acquisition_lists', listId, 'items', itemId);
+      await deleteDoc(itemRef);
+    }
   } catch (err) {
     console.warn('[Firestore / Offline fallback] deleteItemFromFirestore:', err);
   }

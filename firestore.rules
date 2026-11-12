@@ -522,6 +522,16 @@ service cloud.firestore {
             );
             allow create, update, delete: if false;
           }
+
+          match /reversals/{reversalId} {
+            allow read: if isSpaceMember(spaceId) || (
+              isSpaceHistoricalMember(spaceId) && (
+                resource.data.debtorUid == request.auth.uid ||
+                resource.data.creditorUid == request.auth.uid
+              )
+            );
+            allow create, update, delete: if false;
+          }
         }
       }
 

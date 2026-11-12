@@ -12,6 +12,7 @@ import {
   ExpensePaymentDeclaration,
   ExpensePaymentRejection,
   ExpenseRestitutionObligation,
+  ExpenseRestitutionReceipt,
   PaymentDeclarationMethod,
   SharedExpense,
   Space,
@@ -27,6 +28,7 @@ import {
   getExpenseLiabilities,
   getExpensePaymentDeclarations,
   getExpensePaymentRejections,
+  getRestitutionReceipts,
   getExpenseSupplierRefunds,
   getSharedExpenses,
   getSpaceApprovalRevocations,
@@ -36,15 +38,18 @@ import {
   getSpaceRestitutions,
   rejectExpensePayment,
   recordSupplierRefund,
+  reverseRestitutionReceipt,
   revokeExpensePaymentApproval,
   SpaceFinancialSummary,
 } from '../../services/sharedFinanceService';
 import {
   confirmCustodyReceipt,
+  confirmCustodyReturnReceipt,
   createCustodyTransfer,
+  declareCustodyReturn,
+  getCustodyReturns,
   getSpaceCustodyBalances,
   getSpaceCustodyTransfers,
-  returnCustodyFunds,
 } from '../../services/custodyService';
 import { calculateExpenseSplit, SplitParticipant } from '../../utils/splitEngine';
 import { formatCentsToBRL, parseBRLToCents } from '../../utils/movementLedger';
@@ -171,11 +176,23 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
   const [custodyConfirmAmountInput, setCustodyConfirmAmountInput] = useState('');
   const [custodyConfirmNotes, setCustodyConfirmNotes] = useState('');
 
-  // Formulário: Devolver Custódia
+  // Formulário: Declarar Devolução de Custódia (Etapa 1: Custodiante)
   const [custodyReturnSourceAccountId, setCustodyReturnSourceAccountId] = useState('');
-  const [custodyReturnDestAccountId, setCustodyReturnDestAccountId] = useState('');
   const [custodyReturnAmountInput, setCustodyReturnAmountInput] = useState('');
   const [custodyReturnJustification, setCustodyReturnJustification] = useState('');
+
+  // Formulário: Confirmar Recebimento de Devolução de Custódia (Etapa 2: Remetente)
+  const [isConfirmCustodyReturnModalOpen, setIsConfirmCustodyReturnModalOpen] = useState(false);
+  const [selectedCustodyReturnRecord, setSelectedCustodyReturnRecord] = useState<CustodyReturn | null>(null);
+  const [custodyConfirmReturnDestAccountId, setCustodyConfirmReturnDestAccountId] = useState('');
+  const [custodyConfirmReturnNotes, setCustodyConfirmReturnNotes] = useState('');
+
+  // Formulário: Estorno de Recebimento de Restituição (Credor)
+  const [isReverseRestitutionModalOpen, setIsReverseRestitutionModalOpen] = useState(false);
+  const [selectedRestitutionForReverse, setSelectedRestitutionForReverse] = useState<ExpenseRestitutionObligation | null>(null);
+  const [restitutionReceiptsList, setRestitutionReceiptsList] = useState<ExpenseRestitutionReceipt[]>([]);
+  const [selectedRestitutionReceiptId, setSelectedRestitutionReceiptId] = useState('');
+  const [restitutionReverseReason, setRestitutionReverseReason] = useState('');
 
   // Carrega todos os dados financeiros do espaço (Modo Real/Emulador e Modo Demo)
   const loadFinanceData = async () => {
@@ -574,16 +591,12 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
     }
   };
 
-  // Handler: Devolver saldo sob custódia
-  const handleReturnCustody = async (e: React.FormEvent) => {
+  // Handler: Declarar Devolução de Custódia (Etapa 1: Custodiante)
+  const handleDeclareCustodyReturn = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedCustodyTransfer) return;
     if (!custodyReturnSourceAccountId) {
       onFeedback('error', 'Selecione a sua conta de saída.');
-      return;
-    }
-    if (!custodyReturnDestAccountId) {
-      onFeedback('error', 'Selecione a conta de destino do remetente.');
       return;
     }
     const cents = parseBRLToCents(custodyReturnAmountInput);
@@ -593,27 +606,140 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
     }
     try {
       setLoading(true);
-      await returnCustodyFunds(
+      await declareCustodyReturn(
         userId,
         {
           transferId: selectedCustodyTransfer.id,
           sourceAccountId: custodyReturnSourceAccountId,
-          destinationAccountId: custodyReturnDestAccountId,
           amountCents: cents,
           justification: custodyReturnJustification.trim() || undefined,
         },
         isDemo
       );
-      onFeedback('success', 'Devolução de recursos sob custódia confirmada!');
+      onFeedback('success', 'Devolução de custódia declarada com sucesso! Aguardando confirmação do remetente.');
       setIsReturnCustodyModalOpen(false);
       setSelectedCustodyTransfer(null);
       setCustodyReturnSourceAccountId('');
-      setCustodyReturnDestAccountId('');
       setCustodyReturnAmountInput('');
       setCustodyReturnJustification('');
       await loadFinanceData();
     } catch (err: any) {
-      onFeedback('error', err.message || 'Erro ao devolver recursos sob custódia.');
+      onFeedback('error', err.message || 'Erro ao declarar devolução de custódia.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Handler: Abrir modal de confirmação de recebimento de devolução (Etapa 2: Remetente)
+  const handleOpenConfirmCustodyReturnModal = async (t: CustodyTransfer) => {
+    setSelectedCustodyTransfer(t);
+    setCustodyConfirmReturnDestAccountId('');
+    setCustodyConfirmReturnNotes('');
+    try {
+      setLoading(true);
+      const returns = await getCustodyReturns(t.id, isDemo);
+      const pending = returns.find((r) => r.status === 'pending_confirmation');
+      if (!pending) {
+        onFeedback('error', 'Nenhum registro de devolução pendente encontrado para esta transferência.');
+        return;
+      }
+      setSelectedCustodyReturnRecord(pending);
+      setIsConfirmCustodyReturnModalOpen(true);
+    } catch (err: any) {
+      onFeedback('error', err.message || 'Erro ao carregar devoluções pendentes.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Handler: Confirmar recebimento de devolução de custódia (Etapa 2: Remetente)
+  const handleConfirmCustodyReturnReceipt = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedCustodyTransfer || !selectedCustodyReturnRecord) return;
+    if (!custodyConfirmReturnDestAccountId) {
+      onFeedback('error', 'Selecione a sua conta bancária de destino.');
+      return;
+    }
+    try {
+      setLoading(true);
+      await confirmCustodyReturnReceipt(
+        userId,
+        {
+          transferId: selectedCustodyTransfer.id,
+          returnId: selectedCustodyReturnRecord.id,
+          destinationAccountId: custodyConfirmReturnDestAccountId,
+          notes: custodyConfirmReturnNotes.trim() || undefined,
+        },
+        isDemo
+      );
+      onFeedback('success', 'Recebimento de devolução de custódia confirmado com sucesso!');
+      setIsConfirmCustodyReturnModalOpen(false);
+      setSelectedCustodyTransfer(null);
+      setSelectedCustodyReturnRecord(null);
+      setCustodyConfirmReturnDestAccountId('');
+      setCustodyConfirmReturnNotes('');
+      await loadFinanceData();
+    } catch (err: any) {
+      onFeedback('error', err.message || 'Erro ao confirmar recebimento de devolução.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Handler: Abrir modal de estorno de recebimento de restituição (Credor)
+  const handleOpenReverseRestitutionModal = async (rest: ExpenseRestitutionObligation) => {
+    setSelectedRestitutionForReverse(rest);
+    setRestitutionReverseReason('');
+    try {
+      setLoading(true);
+      const receipts = await getRestitutionReceipts(space.id, rest.expenseId, rest.id, isDemo);
+      setRestitutionReceiptsList(receipts);
+      if (receipts.length > 0) {
+        setSelectedRestitutionReceiptId(receipts[receipts.length - 1].id);
+      } else {
+        setSelectedRestitutionReceiptId('');
+      }
+      setIsReverseRestitutionModalOpen(true);
+    } catch (err: any) {
+      onFeedback('error', err.message || 'Erro ao carregar recibos de restituição.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Handler: Confirmar estorno de recebimento de restituição (Credor)
+  const handleReverseRestitution = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedRestitutionForReverse) return;
+    if (!selectedRestitutionReceiptId) {
+      onFeedback('error', 'Nenhum recibo de restituição selecionado para estorno.');
+      return;
+    }
+    if (!restitutionReverseReason.trim()) {
+      onFeedback('error', 'Informe o motivo do estorno.');
+      return;
+    }
+    try {
+      setLoading(true);
+      await reverseRestitutionReceipt(
+        userId,
+        {
+          spaceId: space.id,
+          expenseId: selectedRestitutionForReverse.expenseId,
+          restitutionId: selectedRestitutionForReverse.id,
+          receiptId: selectedRestitutionReceiptId,
+          reversalReason: restitutionReverseReason.trim(),
+        },
+        isDemo
+      );
+      onFeedback('success', 'Recebimento de restituição estornado com sucesso!');
+      setIsReverseRestitutionModalOpen(false);
+      setSelectedRestitutionForReverse(null);
+      setSelectedRestitutionReceiptId('');
+      setRestitutionReverseReason('');
+      await loadFinanceData();
+    } catch (err: any) {
+      onFeedback('error', err.message || 'Erro ao estornar recebimento de restituição.');
     } finally {
       setLoading(false);
     }
@@ -1296,8 +1422,8 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
                         </div>
                       </div>
 
-                      {isCreditor && rest.status !== 'settled' && !isArchived && (
-                        <div>
+                      <div className="flex items-center gap-2">
+                        {isCreditor && rest.status !== 'settled' && !isArchived && (
                           <button
                             onClick={() => {
                               setSelectedRestitutionForConfirm(rest);
@@ -1310,8 +1436,17 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
                           >
                             Confirmar Recebimento
                           </button>
-                        </div>
-                      )}
+                        )}
+
+                        {isCreditor && (rest.restitutedAmountCents || 0) > 0 && !isArchived && (
+                          <button
+                            onClick={() => handleOpenReverseRestitutionModal(rest)}
+                            className="px-3 py-1.5 bg-rose-50 border border-rose-200 text-rose-700 hover:bg-rose-100 rounded-xl text-xs font-bold whitespace-nowrap shadow-xs"
+                          >
+                            Estornar Recebimento
+                          </button>
+                        )}
+                      </div>
                     </div>
                   );
                 })}
@@ -1442,6 +1577,8 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
                           className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
                             t.custodyStatus === 'pending_receipt'
                               ? 'bg-amber-100 text-amber-800'
+                              : t.custodyStatus === 'return_pending_confirmation'
+                              ? 'bg-amber-100 text-amber-800'
                               : t.custodyStatus === 'available'
                               ? 'bg-emerald-100 text-emerald-800'
                               : t.custodyStatus === 'partially_used'
@@ -1450,6 +1587,7 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
                           }`}
                         >
                           {t.custodyStatus === 'pending_receipt' && 'Aguardando Confirmação'}
+                          {t.custodyStatus === 'return_pending_confirmation' && 'Devolução Aguardando Confirmação'}
                           {t.custodyStatus === 'available' && 'Disponível'}
                           {t.custodyStatus === 'partially_used' && 'Parcialmente Utilizado'}
                           {t.custodyStatus === 'fully_used' && 'Totalmente Utilizado'}
@@ -1468,11 +1606,14 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
                         <strong className="text-emerald-700">{formatCentsToBRL(t.availableBalanceCents)}</strong> • Utilizado:{' '}
                         {formatCentsToBRL(t.usedAmountCents)} • Devolvido:{' '}
                         {formatCentsToBRL(t.returnedAmountCents)}
+                        {(t.reservedForReturnCents || 0) > 0 && (
+                          <span className="text-amber-700 font-semibold"> • Em devolução: {formatCentsToBRL(t.reservedForReturnCents || 0)}</span>
+                        )}
                       </p>
                     </div>
 
                     <div className="flex items-center gap-2">
-                      {/* Botão de confirmação exclusivo para o custodiante */}
+                      {/* Botão de confirmação inicial exclusivo para o custodiante */}
                       {isCustodian && t.custodyStatus === 'pending_receipt' && !isArchived && (
                         <button
                           onClick={() => {
@@ -1488,7 +1629,7 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
                         </button>
                       )}
 
-                      {/* Botão de devolução exclusivo para o custodiante com saldo disponível */}
+                      {/* Botão de declaração de devolução exclusivo para o custodiante com saldo disponível */}
                       {isCustodian && t.availableBalanceCents > 0 && t.custodyStatus !== 'pending_receipt' && !isArchived && (
                         <button
                           onClick={() => {
@@ -1500,7 +1641,17 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
                           }}
                           className="px-3 py-1.5 bg-indigo-50 border border-indigo-200 text-indigo-700 hover:bg-indigo-100 rounded-xl text-xs font-bold whitespace-nowrap shadow-xs"
                         >
-                          Devolver Recursos
+                          Declarar Devolução
+                        </button>
+                      )}
+
+                      {/* Botão de confirmação de recebimento da devolução exclusivo para o remetente original */}
+                      {userId === t.senderUid && t.custodyStatus === 'return_pending_confirmation' && !isArchived && (
+                        <button
+                          onClick={() => handleOpenConfirmCustodyReturnModal(t)}
+                          className="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold whitespace-nowrap shadow-xs"
+                        >
+                          Confirmar Recebimento de Devolução
                         </button>
                       )}
                     </div>
@@ -2493,13 +2644,13 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
       )}
 
       {/* ======================================================================== */}
-      {/* MODAL 10: DEVOLVER RECURSOS SOB CUSTÓDIA                                  */}
+      {/* MODAL 10: DECLARAR DEVOLUÇÃO DE RECURSOS SOB CUSTÓDIA                     */}
       {/* ======================================================================== */}
       {isReturnCustodyModalOpen && selectedCustodyTransfer && (
         <div className="fixed inset-0 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-xl space-y-4">
             <div className="flex items-center justify-between border-b border-gray-100 pb-3">
-              <h3 className="text-base font-bold text-gray-900">Devolver Recursos sob Custódia</h3>
+              <h3 className="text-base font-bold text-gray-900">Declarar Devolução de Custódia</h3>
               <button
                 onClick={() => setIsReturnCustodyModalOpen(false)}
                 className="text-gray-400 hover:text-gray-600"
@@ -2508,9 +2659,9 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
               </button>
             </div>
 
-            <form onSubmit={handleReturnCustody} className="space-y-3 text-xs">
+            <form onSubmit={handleDeclareCustodyReturn} className="space-y-3 text-xs">
               <div className="bg-indigo-50 border border-indigo-200 text-indigo-900 p-3 rounded-xl text-xs space-y-1">
-                <strong>Devolução de Saldo Não Utilizado:</strong> O valor será debitado da sua conta de saída e creditado na conta de destino do remetente original, liquidando o saldo sob custódia.
+                <strong>Devolução de Saldo Não Utilizado (Etapa 1):</strong> Ao declarar a devolução, o valor será reservado e ficará aguardando a confirmação de recebimento pelo remetente original.
               </div>
 
               <div>
@@ -2542,20 +2693,6 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
               </div>
 
               <div>
-                <label className="font-bold text-gray-700 block mb-1">
-                  Conta de Destino do Remetente *
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={custodyReturnDestAccountId}
-                  onChange={(e) => setCustodyReturnDestAccountId(e.target.value)}
-                  placeholder="ID da conta bancária de destino do remetente"
-                  className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 text-xs"
-                />
-              </div>
-
-              <div>
                 <label className="font-bold text-gray-700 block mb-1">Valor da Devolução (R$) *</label>
                 <input
                   type="text"
@@ -2567,9 +2704,8 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
               </div>
 
               <div>
-                <label className="font-bold text-gray-700 block mb-1">Justificativa da Devolução *</label>
+                <label className="font-bold text-gray-700 block mb-1">Justificativa da Devolução (Opcional)</label>
                 <textarea
-                  required
                   rows={2}
                   value={custodyReturnJustification}
                   onChange={(e) => setCustodyReturnJustification(e.target.value)}
@@ -2588,9 +2724,179 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold hover:bg-indigo-700"
+                  disabled={loading}
+                  className="px-4 py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold hover:bg-indigo-700 disabled:opacity-50"
                 >
-                  Confirmar Devolução
+                  {loading ? 'Declarando...' : 'Declarar Devolução'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ======================================================================== */}
+      {/* MODAL 11: CONFIRMAR RECEBIMENTO DE DEVOLUÇÃO DE CUSTÓDIA                  */}
+      {/* ======================================================================== */}
+      {isConfirmCustodyReturnModalOpen && selectedCustodyTransfer && selectedCustodyReturnRecord && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-xl space-y-4">
+            <div className="flex items-center justify-between border-b border-gray-100 pb-3">
+              <h3 className="text-base font-bold text-gray-900">Confirmar Recebimento de Devolução</h3>
+              <button
+                onClick={() => setIsConfirmCustodyReturnModalOpen(false)}
+                className="text-gray-400 hover:text-gray-600"
+              >
+                <i className="ph ph-x text-lg" />
+              </button>
+            </div>
+
+            <form onSubmit={handleConfirmCustodyReturnReceipt} className="space-y-3 text-xs">
+              <div className="bg-emerald-50 border border-emerald-200 text-emerald-900 p-3 rounded-xl text-xs space-y-1">
+                <strong>Confirmação de Crédito (Etapa 2):</strong> O custodiante declarou a devolução dos recursos. Ao confirmar, o valor será creditado na sua conta bancária e baixado da custódia.
+              </div>
+
+              <div>
+                <span className="text-gray-500 block">Valor Devolvido Declarado:</span>
+                <strong className="text-emerald-700 text-sm">
+                  {formatCentsToBRL(selectedCustodyReturnRecord.amountCents)}
+                </strong>
+                {selectedCustodyReturnRecord.justification && (
+                  <p className="text-[11px] text-gray-500 mt-1 italic">
+                    Justificativa: {selectedCustodyReturnRecord.justification}
+                  </p>
+                )}
+              </div>
+
+              <div>
+                <label className="font-bold text-gray-700 block mb-1">
+                  Sua Conta Bancária de Destino *
+                </label>
+                <select
+                  required
+                  value={custodyConfirmReturnDestAccountId}
+                  onChange={(e) => setCustodyConfirmReturnDestAccountId(e.target.value)}
+                  className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 text-xs font-semibold"
+                >
+                  <option value="">Selecione onde o dinheiro entrou...</option>
+                  {accounts
+                    .filter((a) => !a.isArchived && a.type !== 'credit')
+                    .map((a) => (
+                      <option key={a.id} value={a.id}>
+                        {a.name} ({a.type})
+                      </option>
+                    ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="font-bold text-gray-700 block mb-1">Observações (Opcional)</label>
+                <input
+                  type="text"
+                  value={custodyConfirmReturnNotes}
+                  onChange={(e) => setCustodyConfirmReturnNotes(e.target.value)}
+                  placeholder="Ex: Recebido via Pix no Santander"
+                  className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 text-xs"
+                />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2 border-t border-gray-100">
+                <button
+                  type="button"
+                  onClick={() => setIsConfirmCustodyReturnModalOpen(false)}
+                  className="px-4 py-2 border border-gray-200 text-gray-700 rounded-xl text-xs font-bold hover:bg-gray-50"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={loading}
+                  className="px-4 py-2 bg-emerald-600 text-white rounded-xl text-xs font-bold hover:bg-emerald-700 disabled:opacity-50"
+                >
+                  {loading ? 'Confirmando...' : 'Confirmar e Creditar Saldo'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ======================================================================== */}
+      {/* MODAL 12: ESTORNAR RECEBIMENTO DE RESTITUIÇÃO                            */}
+      {/* ======================================================================== */}
+      {isReverseRestitutionModalOpen && selectedRestitutionForReverse && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-xl space-y-4">
+            <div className="flex items-center justify-between border-b border-gray-100 pb-3">
+              <h3 className="text-base font-bold text-gray-900">Estornar Recebimento de Restituição</h3>
+              <button
+                onClick={() => setIsReverseRestitutionModalOpen(false)}
+                className="text-gray-400 hover:text-gray-600"
+              >
+                <i className="ph ph-x text-lg" />
+              </button>
+            </div>
+
+            <form onSubmit={handleReverseRestitution} className="space-y-3 text-xs">
+              <div className="bg-amber-50 border border-amber-200 text-amber-900 p-3 rounded-xl text-xs space-y-1">
+                <strong>Atenção:</strong> O estorno irá registrar um movimento financeiro compensatório de saída e restaurará o saldo pendente de restituição do devedor.
+              </div>
+
+              <div>
+                <span className="text-gray-500 block">Total Já Restituído:</span>
+                <strong className="text-gray-900 text-sm">
+                  {formatCentsToBRL(selectedRestitutionForReverse.restitutedAmountCents)}
+                </strong>
+              </div>
+
+              {restitutionReceiptsList.length > 1 && (
+                <div>
+                  <label className="font-bold text-gray-700 block mb-1">
+                    Recibo a Estornar *
+                  </label>
+                  <select
+                    required
+                    value={selectedRestitutionReceiptId}
+                    onChange={(e) => setSelectedRestitutionReceiptId(e.target.value)}
+                    className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 text-xs font-semibold"
+                  >
+                    {restitutionReceiptsList.map((rc) => (
+                      <option key={rc.id} value={rc.id}>
+                        {formatCentsToBRL(rc.amountCents)} ({new Date(rc.createdAt).toLocaleDateString()}) - {rc.id}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              <div>
+                <label className="font-bold text-gray-700 block mb-1">
+                  Motivo do Estorno *
+                </label>
+                <textarea
+                  required
+                  rows={2}
+                  value={restitutionReverseReason}
+                  onChange={(e) => setRestitutionReverseReason(e.target.value)}
+                  placeholder="Ex: Confirmação indevida; transferência Pix não identificada no extrato."
+                  className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 text-xs"
+                />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2 border-t border-gray-100">
+                <button
+                  type="button"
+                  onClick={() => setIsReverseRestitutionModalOpen(false)}
+                  className="px-4 py-2 border border-gray-200 text-gray-700 rounded-xl text-xs font-bold hover:bg-gray-50"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={loading}
+                  className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold shadow-xs disabled:opacity-50"
+                >
+                  {loading ? 'Estornando...' : 'Confirmar Estorno'}
                 </button>
               </div>
             </form>

@@ -701,8 +701,9 @@ export const AcquisitionsModuleView: React.FC<AcquisitionsModuleViewProps> = ({
   };
 
   const handleDeleteItem = (itemId: string) => {
+    const itemToDelete = items.find((i) => i.id === itemId);
     setItems((prev) => prev.filter((i) => i.id !== itemId));
-    deleteItemFromFirestore(itemId);
+    deleteItemFromFirestore(itemId, itemToDelete?.listId);
   };
 
   const handleMoveItemStage = (item: AcquisitionItem, targetStage: ItemStage) => {
