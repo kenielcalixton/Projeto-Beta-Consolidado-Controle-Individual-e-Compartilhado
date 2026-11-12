@@ -50,6 +50,15 @@ export const ALLOWED_GOVERNANCE_EVENTS = new Set([
   'dissolution_requested',
   'author_destination_decided',
   'dissolution_cancelled',
+  'shared_expense_created',
+  'payment_declaration_submitted',
+  'payment_approved',
+  'payment_rejected',
+  'payment_approval_revoked',
+  'supplier_refund_recorded',
+  'restitution_created',
+  'restitution_declared',
+  'restitution_receipt_confirmed',
 ]);
 
 /**
@@ -3171,6 +3180,29 @@ export function serverGenerateSupplierRefundDocId(expenseId, key) {
   return `supref_${cleanSlug ? `${cleanSlug}_` : ''}${hash.slice(0, 32)}`;
 }
 
+export function serverGenerateRestitutionDocId(revocationId) {
+  const cleanRevoc = String(revocationId || '').trim();
+  const cleanSlug = cleanRevoc.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 24);
+  const hash = crypto.createHash('sha256').update(`restit_canonical:${cleanRevoc}`).digest('hex');
+  return `restit_${cleanSlug ? `${cleanSlug}_` : ''}${hash.slice(0, 32)}`;
+}
+
+export function serverGenerateRestitutionDeclarationDocId(restitutionId, key) {
+  const cleanRestit = String(restitutionId || '').trim();
+  const cleanKey = String(key || '').trim();
+  const cleanSlug = cleanKey.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 24);
+  const hash = crypto.createHash('sha256').update(`restit_decl:${cleanRestit}:${cleanKey}`).digest('hex');
+  return `restit_decl_${cleanSlug ? `${cleanSlug}_` : ''}${hash.slice(0, 32)}`;
+}
+
+export function serverGenerateRestitutionReceiptDocId(restitutionId, key) {
+  const cleanRestit = String(restitutionId || '').trim();
+  const cleanKey = String(key || '').trim();
+  const cleanSlug = cleanKey.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 24);
+  const hash = crypto.createHash('sha256').update(`restit_rec_${cleanRestit}:${cleanKey}`).digest('hex');
+  return `restit_rec_${cleanSlug ? `${cleanSlug}_` : ''}${hash.slice(0, 32)}`;
+}
+
 export async function executeServerSideCreateSharedExpense(db, callerUid, payload) {
   if (!callerUid) {
     throw new HttpsError('unauthenticated', 'Autenticação obrigatória.');
@@ -3889,12 +3921,15 @@ export async function executeServerSideRevokeExpensePaymentApproval(db, callerUi
   const finalKey = idempotencyKey?.trim() || `idem_revoc_${cleanApprovalId}`;
   const revocationId = serverGenerateApprovalRevocationDocId(cleanApprovalId);
   const revocationRef = expenseRef.collection('approval_revocations').doc(revocationId);
+  const restitutionId = serverGenerateRestitutionDocId(revocationId);
+  const restitutionRef = expenseRef.collection('restitutions').doc(restitutionId);
 
   return await db.runTransaction(async (tx) => {
-    const [expSnap, apprSnap, revocSnap] = await Promise.all([
+    const [expSnap, apprSnap, revocSnap, restitSnap] = await Promise.all([
       tx.get(expenseRef),
       tx.get(approvalRef),
       tx.get(revocationRef),
+      tx.get(restitutionRef),
     ]);
 
     if (!expSnap.exists) {
@@ -3957,6 +3992,7 @@ export async function executeServerSideRevokeExpensePaymentApproval(db, callerUi
         revocation: existingRev,
         liability: liab,
         compensatoryMovement: revMovSnap && revMovSnap.exists ? revMovSnap.data() : null,
+        restitution: restitSnap && restitSnap.exists ? restitSnap.data() : null,
       };
     }
 
@@ -4040,11 +4076,32 @@ export async function executeServerSideRevokeExpensePaymentApproval(db, callerUi
     };
 
     tx.set(revocationRef, revocation);
-    // REGRA DE IMUTABILIDADE ESTRITA (FRENTE A):
+    // REGRA DE IMUTABILIDADE ESTRITA:
     // O documento original em payment_approvals/{approvalId} NUNCA sofre update ou delete!
     // O estado revogado é derivado exclusivamente da existência deste evento em approval_revocations/{revocationId}.
 
-    // Restaura saldo da obrigação preservando pagamentos parciais anteriores e ajustes de reembolso de fornecedor (Frentes B e D)
+    // ETAPA 1: Obrigação Formal e Independente de Restituição
+    // O valor da obrigação independe do saldo atual da conta e é recomposto conforme recebimentos confirmados
+    const restitution = {
+      id: restitutionId,
+      spaceId: cleanSpaceId,
+      expenseId: cleanExpenseId,
+      liabilityId: approval.liabilityId || approval.memberUid,
+      approvalId: cleanApprovalId,
+      revocationId,
+      debtorUid: beneficiaryUid, // Bob (quem recebeu os fundos indevidamente e deve restituir)
+      creditorUid: approval.memberUid, // Charlie (o participante credor legítimo que teve sua aprovação revogada)
+      amountToRestoreCents: approval.amountCents,
+      restitutedAmountCents: 0,
+      remainingAmountCents: approval.amountCents,
+      status: 'pending',
+      reason: cleanReason,
+      createdAt: now,
+      updatedAt: now,
+    };
+    tx.set(restitutionRef, restitution);
+
+    // Restaura saldo da obrigação preservando pagamentos parciais anteriores e ajustes de reembolso de fornecedor
     const currentPaid = liab.paidAmountCents || 0;
     const restoredPaid = Math.max(0, currentPaid - approval.amountCents);
     const original = liab.originalAmountCents ?? liab.assignedShareAmountCents;
@@ -4068,7 +4125,7 @@ export async function executeServerSideRevokeExpensePaymentApproval(db, callerUi
     };
     tx.set(liabRef, updatedLiability);
 
-    // Registro de evento determinístico na trilha de auditoria do espaço
+    // Registro de evento determinístico na trilha de auditoria do espaço (revogação)
     const auditId = `audit_revoc_${revocationId}`;
     const auditRef = spaceRef.collection('audit').doc(auditId);
     tx.set(auditRef, {
@@ -4082,12 +4139,34 @@ export async function executeServerSideRevokeExpensePaymentApproval(db, callerUi
         expenseId: cleanExpenseId,
         approvalId: cleanApprovalId,
         revocationId,
+        restitutionId,
         declarationId: approval.declarationId,
         beneficiaryUid,
         revokedAmountCents: approval.amountCents,
         compensatoryMovementId: compensatoryMovement?.id || null,
         requiresRestitution,
         restitutionPendingCents,
+        reason: cleanReason,
+      },
+      timestamp: now,
+    });
+
+    // Auditoria de restituição gerada
+    const restitAuditId = `audit_restit_${restitutionId}`;
+    tx.set(spaceRef.collection('audit').doc(restitAuditId), {
+      id: restitAuditId,
+      spaceId: cleanSpaceId,
+      eventType: 'restitution_created',
+      performedByUid: cleanUid,
+      performedByName: 'Responsável Financeiro',
+      targetUid: beneficiaryUid,
+      details: {
+        expenseId: cleanExpenseId,
+        restitutionId,
+        revocationId,
+        debtorUid: beneficiaryUid,
+        creditorUid: approval.memberUid,
+        amountToRestoreCents: approval.amountCents,
         reason: cleanReason,
       },
       timestamp: now,
@@ -4103,14 +4182,14 @@ export async function executeServerSideRevokeExpensePaymentApproval(db, callerUi
       spaceName: spaceData.name || 'Espaço Compartilhado',
       type: 'payment_approval_revoked',
       title: 'Aprovação de pagamento revogada',
-      message: `A aprovação do pagamento em "${expense.title}" foi cancelada pelo responsável. Motivo: ${cleanReason}`,
+      message: `A aprovação do pagamento em "${expense.title}" foi cancelada pelo responsável. Uma obrigação de restituição de R$ ${(approval.amountCents / 100).toFixed(2)} foi aberta em seu favor. Motivo: ${cleanReason}`,
       read: false,
       originEventId: revocationId,
       createdAt: now,
     }, { merge: true });
 
-    // Se o beneficiário do crédito é diferente do responsável que revogou, notifica-o sobre o estorno contábil
-    if (beneficiaryUid && beneficiaryUid !== cleanUid) {
+    // Notifica o beneficiário sobre o estorno contábil e sobre a obrigação de restituição
+    if (beneficiaryUid) {
       const benNotifId = `notif_revoc_ben_${revocationId}`;
       const benNotifRef = db.collection('users').doc(beneficiaryUid).collection('notifications').doc(benNotifId);
       tx.set(benNotifRef, {
@@ -4119,15 +4198,15 @@ export async function executeServerSideRevokeExpensePaymentApproval(db, callerUi
         spaceId: cleanSpaceId,
         spaceName: spaceData.name || 'Espaço Compartilhado',
         type: 'payment_approval_revoked',
-        title: 'Reembolso estornado contabilmente',
-        message: `O crédito de reembolso referente a "${expense.title}" foi estornado contabilmente pelo responsável. Motivo: ${cleanReason}`,
+        title: 'Reembolso estornado / Restituição gerada',
+        message: `O crédito referente a "${expense.title}" foi revogado pelo responsável financeiro. Uma obrigação de restituição de R$ ${(approval.amountCents / 100).toFixed(2)} foi gerada para recomposição dos fundos. Motivo: ${cleanReason}`,
         read: false,
-        originEventId: revocationId,
+        originEventId: restitutionId,
         createdAt: now,
       }, { merge: true });
     }
 
-    return { revocation, liability: updatedLiability, compensatoryMovement };
+    return { revocation, liability: updatedLiability, compensatoryMovement, restitution };
   });
 }
 
@@ -4337,6 +4416,276 @@ export const recordSharedRefundOfficial = onCall(
   { region: 'us-central1' },
   async (request) => {
     return await executeServerSideRecordSharedRefund(
+      getAdminDb(),
+      request.auth?.uid,
+      request.data
+    );
+  }
+);
+
+export async function executeServerSideDeclareRestitutionPayment(db, callerUid, payload) {
+  if (!callerUid) throw new HttpsError('unauthenticated', 'Autenticação obrigatória.');
+  const cleanUid = callerUid.trim();
+  const { spaceId, expenseId, restitutionId, amountCents, paymentDate, paymentProofUrl, notes, idempotencyKey } = payload || {};
+  if (!spaceId || !expenseId || !restitutionId || !amountCents || typeof amountCents !== 'number' || amountCents <= 0) {
+    throw new HttpsError('invalid-argument', 'Parâmetros inválidos para declaração de restituição.');
+  }
+  const cleanSpaceId = String(spaceId).trim();
+  const cleanExpenseId = String(expenseId).trim();
+  const cleanRestitId = String(restitutionId).trim();
+  const finalKey = (idempotencyKey || `decl_rst_${cleanRestitId}_${amountCents}_${paymentDate || 'today'}`).trim();
+  const declId = serverGenerateRestitutionDeclarationDocId(cleanRestitId, finalKey);
+
+  const spaceRef = db.collection('spaces').doc(cleanSpaceId);
+  const expenseRef = spaceRef.collection('shared_expenses').doc(cleanExpenseId);
+  const restitRef = expenseRef.collection('restitutions').doc(cleanRestitId);
+  const declRef = restitRef.collection('declarations').doc(declId);
+
+  return await db.runTransaction(async (tx) => {
+    const [spaceSnap, restitSnap, declSnap] = await Promise.all([
+      tx.get(spaceRef),
+      tx.get(restitRef),
+      tx.get(declRef),
+    ]);
+
+    if (!spaceSnap.exists) throw new HttpsError('not-found', 'Espaço não encontrado.');
+    const spaceData = spaceSnap.data();
+    if (spaceData.spaceStatus === 'archived' || spaceData.spaceStatus === 'dissolved') {
+      throw new HttpsError('failed-precondition', 'Espaço arquivado ou dissolvido.');
+    }
+    if (!restitSnap.exists) throw new HttpsError('not-found', 'Obrigação de restituição não encontrada.');
+    const restitution = restitSnap.data();
+
+    // Somente o devedor da obrigação de restituição pode declarar o pagamento
+    if (restitution.debtorUid !== cleanUid) {
+      throw new HttpsError('permission-denied', 'Somente o devedor da restituição pode declarar o pagamento.');
+    }
+
+    if (declSnap.exists) {
+      return { declaration: declSnap.data(), restitution, isIdempotentReplay: true };
+    }
+
+    if (amountCents > restitution.remainingAmountCents) {
+      throw new HttpsError('failed-precondition', `Valor declarado (${amountCents} centavos) excede o saldo pendente da restituição (${restitution.remainingAmountCents} centavos).`);
+    }
+
+    const now = new Date().toISOString();
+    const declaration = {
+      id: declId,
+      restitutionId: cleanRestitId,
+      spaceId: cleanSpaceId,
+      expenseId: cleanExpenseId,
+      debtorUid: cleanUid,
+      amountCents,
+      paymentDate: paymentDate || now.split('T')[0],
+      paymentProofUrl: paymentProofUrl || null,
+      notes: notes ? String(notes).trim() : null,
+      idempotencyKey: finalKey,
+      createdAt: now,
+    };
+    tx.set(declRef, declaration);
+
+    // Auditoria
+    const auditId = `audit_rst_decl_${declId}`;
+    tx.set(spaceRef.collection('audit').doc(auditId), {
+      id: auditId,
+      spaceId: cleanSpaceId,
+      eventType: 'restitution_declared',
+      performedByUid: cleanUid,
+      performedByName: 'Devedor da Restituição',
+      targetUid: restitution.creditorUid,
+      details: { restitutionId: cleanRestitId, declarationId: declId, amountCents },
+      timestamp: now,
+    });
+
+    // Notificação ao credor
+    const notifId = `notif_rst_decl_${declId}`;
+    tx.set(db.collection('users').doc(restitution.creditorUid).collection('notifications').doc(notifId), {
+      id: notifId,
+      userId: restitution.creditorUid,
+      spaceId: cleanSpaceId,
+      spaceName: spaceData.name || 'Espaço Compartilhado',
+      type: 'restitution_declared',
+      title: 'Devolução de restituição declarada',
+      message: `Uma devolução de R$ ${(amountCents / 100).toFixed(2)} foi declarada. Confirme o recebimento na sua conta bancária.`,
+      read: false,
+      originEventId: declId,
+      createdAt: now,
+    }, { merge: true });
+
+    return { declaration, restitution };
+  });
+}
+
+export async function executeServerSideConfirmRestitutionReceipt(db, callerUid, payload) {
+  if (!callerUid) throw new HttpsError('unauthenticated', 'Autenticação obrigatória.');
+  const cleanUid = callerUid.trim();
+  const {
+    spaceId,
+    expenseId,
+    restitutionId,
+    declarationId,
+    amountCents,
+    destinationAccountId,
+    notes,
+    idempotencyKey,
+  } = payload || {};
+
+  if (!spaceId || !expenseId || !restitutionId || !destinationAccountId || !amountCents || typeof amountCents !== 'number' || amountCents <= 0) {
+    throw new HttpsError('invalid-argument', 'Parâmetros inválidos para confirmação de recebimento de restituição.');
+  }
+
+  const cleanSpaceId = String(spaceId).trim();
+  const cleanExpenseId = String(expenseId).trim();
+  const cleanRestitId = String(restitutionId).trim();
+  const cleanAccId = String(destinationAccountId).trim();
+  const finalKey = (idempotencyKey || `rec_rst_${cleanRestitId}_${amountCents}_${declarationId || 'direct'}`).trim();
+  const receiptId = serverGenerateRestitutionReceiptDocId(cleanRestitId, finalKey);
+
+  const spaceRef = db.collection('spaces').doc(cleanSpaceId);
+  const expenseRef = spaceRef.collection('shared_expenses').doc(cleanExpenseId);
+  const restitRef = expenseRef.collection('restitutions').doc(cleanRestitId);
+  const receiptRef = restitRef.collection('receipts').doc(receiptId);
+  const accRef = db.collection('accounts').doc(cleanAccId);
+  const movId = serverGenerateMovementDocId(finalKey);
+  const movRef = accRef.collection('movements').doc(movId);
+
+  return await db.runTransaction(async (tx) => {
+    const [spaceSnap, restitSnap, receiptSnap, accSnap, movSnap] = await Promise.all([
+      tx.get(spaceRef),
+      tx.get(restitRef),
+      tx.get(receiptRef),
+      tx.get(accRef),
+      tx.get(movRef),
+    ]);
+
+    if (!spaceSnap.exists) throw new HttpsError('not-found', 'Espaço não encontrado.');
+    if (!restitSnap.exists) throw new HttpsError('not-found', 'Obrigação de restituição não encontrada.');
+    const restitution = restitSnap.data();
+
+    // REGRA DE SEGURANÇA E AUTORIDADE: Somente o credor legítimo pode confirmar o recebimento
+    if (restitution.creditorUid !== cleanUid) {
+      throw new HttpsError('permission-denied', 'Somente o credor legítimo da restituição pode confirmar o recebimento.');
+    }
+
+    if (!accSnap.exists) throw new HttpsError('not-found', 'Conta bancária informada não encontrada.');
+    const accData = accSnap.data();
+    if (accData.userId !== cleanUid) {
+      throw new HttpsError('permission-denied', 'A conta de destino deve pertencer ao titular autenticado.');
+    }
+    if (accData.isArchived) {
+      throw new HttpsError('failed-precondition', 'A conta de destino está arquivada.');
+    }
+
+    if (receiptSnap.exists) {
+      return { receipt: receiptSnap.data(), restitution, movement: movSnap.exists ? movSnap.data() : null, isIdempotentReplay: true };
+    }
+
+    if (amountCents > restitution.remainingAmountCents) {
+      throw new HttpsError('failed-precondition', `Valor a confirmar (${amountCents} centavos) excede o saldo pendente (${restitution.remainingAmountCents} centavos).`);
+    }
+
+    const now = new Date().toISOString();
+
+    // 1. Criação do movimento financeiro oficial de entrada (inflow)
+    const movement = {
+      id: movId,
+      accountId: cleanAccId,
+      userId: cleanUid,
+      direction: 'inflow',
+      amountCents,
+      effectiveDate: now.split('T')[0],
+      registeredAt: now,
+      originType: 'shared_settlement',
+      originId: receiptId,
+      confirmationStatus: 'cleared',
+      idempotencyKey: finalKey,
+      description: `Recebimento de restituição de cota compartilhada (${cleanRestitId})`,
+      notes: notes ? String(notes).trim() : 'Confirmação oficial de restituição pelo credor.',
+      authorUid: cleanUid,
+    };
+    tx.set(movRef, movement);
+    tx.update(accRef, { projectedBalanceCents: (accData.projectedBalanceCents || 0) + amountCents });
+
+    // 2. Criação do recibo imutável (append-only)
+    const receipt = {
+      id: receiptId,
+      restitutionId: cleanRestitId,
+      spaceId: cleanSpaceId,
+      expenseId: cleanExpenseId,
+      declarationId: declarationId ? String(declarationId).trim() : null,
+      creditorUid: cleanUid,
+      debtorUid: restitution.debtorUid,
+      amountCents,
+      destinationAccountId: cleanAccId,
+      financialMovementId: movId,
+      confirmedAt: now,
+      notes: notes ? String(notes).trim() : null,
+      idempotencyKey: finalKey,
+      createdAt: now,
+    };
+    tx.set(receiptRef, receipt);
+
+    // 3. Atualização da obrigação de restituição
+    const newRestituted = (restitution.restitutedAmountCents || 0) + amountCents;
+    const newRemaining = Math.max(0, restitution.amountToRestoreCents - newRestituted);
+    const newStatus = newRemaining === 0 ? 'settled' : 'partial';
+    const updatedRestitution = {
+      ...restitution,
+      restitutedAmountCents: newRestituted,
+      remainingAmountCents: newRemaining,
+      status: newStatus,
+      updatedAt: now,
+    };
+    tx.set(restitRef, updatedRestitution);
+
+    // 4. Auditoria
+    const auditId = `audit_rst_rec_${receiptId}`;
+    tx.set(spaceRef.collection('audit').doc(auditId), {
+      id: auditId,
+      spaceId: cleanSpaceId,
+      eventType: 'restitution_receipt_confirmed',
+      performedByUid: cleanUid,
+      performedByName: 'Credor da Restituição',
+      targetUid: restitution.debtorUid,
+      details: { restitutionId: cleanRestitId, receiptId, amountCents, remainingAmountCents: newRemaining, status: newStatus },
+      timestamp: now,
+    });
+
+    // 5. Notificação ao devedor
+    const notifId = `notif_rst_rec_${receiptId}`;
+    tx.set(db.collection('users').doc(restitution.debtorUid).collection('notifications').doc(notifId), {
+      id: notifId,
+      userId: restitution.debtorUid,
+      spaceId: cleanSpaceId,
+      spaceName: spaceSnap.data().name || 'Espaço Compartilhado',
+      type: 'restitution_receipt_confirmed',
+      title: 'Restituição confirmada',
+      message: `O credor confirmou o recebimento de R$ ${(amountCents / 100).toFixed(2)}. Saldo restante: R$ ${(newRemaining / 100).toFixed(2)}.`,
+      read: false,
+      originEventId: receiptId,
+      createdAt: now,
+    }, { merge: true });
+
+    return { receipt, restitution: updatedRestitution, movement };
+  });
+}
+
+export const declareRestitutionPaymentOfficial = onCall(
+  { region: 'us-central1' },
+  async (request) => {
+    return await executeServerSideDeclareRestitutionPayment(
+      getAdminDb(),
+      request.auth?.uid,
+      request.data
+    );
+  }
+);
+
+export const confirmRestitutionReceiptOfficial = onCall(
+  { region: 'us-central1' },
+  async (request) => {
+    return await executeServerSideConfirmRestitutionReceipt(
       getAdminDb(),
       request.auth?.uid,
       request.data

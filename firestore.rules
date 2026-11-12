@@ -474,6 +474,35 @@ service cloud.firestore {
           allow create: if false; // Escrita exclusiva via Cloud Functions autoritativas (Admin SDK)
           allow update, delete: if false; // Imutabilidade estrita: eventos de revogação nunca sofrem update/delete
         }
+
+        match /restitutions/{restitutionId} {
+          // Leitura: membros do espaço ou participantes diretamente envolvidos na restituição
+          allow read: if isSpaceMember(spaceId) || (
+            isSpaceHistoricalMember(spaceId) && (
+              resource.data.debtorUid == request.auth.uid ||
+              resource.data.creditorUid == request.auth.uid
+            )
+          );
+          // Modificação restrita ao backend confiável com Admin SDK
+          allow create, update, delete: if false;
+
+          match /declarations/{declarationId} {
+            allow read: if isSpaceMember(spaceId) || (
+              isSpaceHistoricalMember(spaceId) && resource.data.debtorUid == request.auth.uid
+            );
+            allow create, update, delete: if false;
+          }
+
+          match /receipts/{receiptId} {
+            allow read: if isSpaceMember(spaceId) || (
+              isSpaceHistoricalMember(spaceId) && (
+                resource.data.debtorUid == request.auth.uid ||
+                resource.data.creditorUid == request.auth.uid
+              )
+            );
+            allow create, update, delete: if false;
+          }
+        }
       }
 
       // 4.5 Liquidações Bilaterais de Dívidas

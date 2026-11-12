@@ -56,6 +56,8 @@ export type FinancialMovementOriginType =
   | 'settlement_outflow'
   | 'supplier_refund'
   | 'shared_reimbursement'
+  | 'restitution_inflow'
+  | 'restitution_outflow'
   | 'manual_adjustment';
 
 /**
@@ -776,7 +778,10 @@ export type SpaceAuditEventType =
   | 'payment_approved'
   | 'payment_rejected'
   | 'payment_approval_revoked'
-  | 'supplier_refund_recorded';
+  | 'supplier_refund_recorded'
+  | 'restitution_created'
+  | 'restitution_declared'
+  | 'restitution_receipt_confirmed';
 
 /**
  * Evento imutável de governança e auditoria do espaço.
@@ -812,6 +817,9 @@ export type SpaceNotificationType =
   | 'payment_correction_requested'
   | 'payment_approval_revoked'
   | 'supplier_refund_confirmed'
+  | 'restitution_created'
+  | 'restitution_declared'
+  | 'restitution_receipt_confirmed'
   | 'liability_settled';
 
 /**
@@ -1017,6 +1025,73 @@ export interface ExpenseApprovalRevocation {
   reason: string;
   revokedByUid: string;
   revokedAt: ISO8601String;
+  idempotencyKey: string;
+  createdAt: ISO8601String;
+}
+
+export type ExpenseRestitutionStatus = 'pending' | 'partial' | 'settled';
+
+/**
+ * Obrigação de restituição financeira independente vinculada a uma revogação de aprovação.
+ * O valor da obrigação independe do saldo atual da conta e é recomposto conforme recebimentos confirmados.
+ * Caminho Firestore: spaces/{spaceId}/shared_expenses/{expenseId}/restitutions/{restitutionId}
+ */
+export interface ExpenseRestitutionObligation {
+  id: string;
+  spaceId: string;
+  expenseId: string;
+  liabilityId: string;
+  approvalId: string;
+  revocationId: string;
+  /** Quem recebeu fundos da aprovação original e tem o dever de restituir */
+  debtorUid: string;
+  /** Quem tem direito ao crédito/ressarcimento da restituição */
+  creditorUid: string;
+  amountToRestoreCents: CentsInteger;
+  restitutedAmountCents: CentsInteger;
+  remainingAmountCents: CentsInteger;
+  status: ExpenseRestitutionStatus;
+  reason: string;
+  createdAt: ISO8601String;
+  updatedAt: ISO8601String;
+}
+
+/**
+ * Declaração unilateral de devolução/restituição de valores pelo devedor da obrigação.
+ * Caminho Firestore: spaces/{spaceId}/shared_expenses/{expenseId}/restitutions/{restitutionId}/declarations/{declarationId}
+ */
+export interface ExpenseRestitutionDeclaration {
+  id: string;
+  restitutionId: string;
+  spaceId: string;
+  expenseId: string;
+  debtorUid: string;
+  amountCents: CentsInteger;
+  paymentDate: DateString;
+  paymentProofUrl?: string;
+  notes?: string;
+  idempotencyKey: string;
+  createdAt: ISO8601String;
+}
+
+/**
+ * Confirmação de recebimento real da restituição pelo credor legítimo (reconhece entrada financeira).
+ * Imutável após criação (append-only).
+ * Caminho Firestore: spaces/{spaceId}/shared_expenses/{expenseId}/restitutions/{restitutionId}/receipts/{receiptId}
+ */
+export interface ExpenseRestitutionReceipt {
+  id: string;
+  restitutionId: string;
+  spaceId: string;
+  expenseId: string;
+  declarationId?: string;
+  creditorUid: string;
+  debtorUid: string;
+  amountCents: CentsInteger;
+  destinationAccountId: string;
+  financialMovementId: string;
+  confirmedAt: ISO8601String;
+  notes?: string;
   idempotencyKey: string;
   createdAt: ISO8601String;
 }

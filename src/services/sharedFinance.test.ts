@@ -6,10 +6,13 @@ import {
 } from '../utils/splitEngine';
 import {
   approveExpensePayment,
+  confirmRestitutionReceipt,
   createSharedExpense,
   declareExpensePayment,
+  declareRestitutionPayment,
   getExpenseLiabilities,
   getExpensePaymentDeclarations,
+  getExpenseRestitutions,
   getSharedExpenses,
   getSpaceFinancialSummary,
   getSpacePendingDeclarations,
@@ -32,6 +35,7 @@ import {
 } from './sharedFinanceService';
 import { createAccount, getUserAccounts } from './accountService';
 import { formatCentsToBRL, parseBRLToCents } from '../utils/movementLedger';
+import { universalStorage } from '../utils/universalStorage';
 
 function resetSharedDemoStorage() {
   saveDemoSharedExpenses([]);
@@ -1028,5 +1032,220 @@ test('FASE 6 — Rateios e Reembolsos Compartilhados (Arquitetura v3.1)', async 
         ),
       /Conflito de idempotência/
     );
+  });
+
+  await t.test('20. ETAPA 1: Obrigação Formal de Restituição Independente com liquidação parcial e integral', async () => {
+    // Cenário:
+    // 1. Despesa de R$ 100,00 onde Alice é responsible e Bob é quem pagou (beneficiário)
+    // 2. Charlie declara R$ 100,00 e Alice aprova creditando na conta de Bob
+    // 3. Alice revoga a aprovação -> Gera obrigação formal de restituição onde Bob deve devolver R$ 100,00 para Charlie
+    // 4. Bob declara devolução de R$ 40,00
+    // 5. Tentativa de Bob confirmar por si mesmo falha (autoridade exclusiva do credor legítimo Charlie)
+    // 6. Charlie confirma recebimento de R$ 40,00 -> Restituição vai para status 'partial' com saldo restante de R$ 60,00 e gera movimento inflow na conta de Charlie
+    // 7. Charlie confirma recebimento restante de R$ 60,00 -> Restituição vai para status 'settled'
+    const spaceId = 'space_restit_test';
+    universalStorage.setItem('mpf_v3_demo_shared_expenses', '[]');
+    universalStorage.setItem('mpf_v3_demo_shared_liabilities', '[]');
+    universalStorage.setItem('mpf_v3_demo_payment_declarations', '[]');
+    universalStorage.setItem('mpf_v3_demo_payment_approvals', '[]');
+    universalStorage.setItem('mpf_v3_demo_approval_revocations', '[]');
+    universalStorage.setItem('mpf_v3_demo_restitutions', '[]');
+    universalStorage.setItem('mpf_v3_demo_restitution_declarations', '[]');
+    universalStorage.setItem('mpf_v3_demo_restitution_receipts', '[]');
+    universalStorage.setItem('mpf_v3_demo_movements', '[]');
+
+    // Setup de contas de Bob e Charlie
+    const accounts = [
+      {
+        id: 'acc_bob_restit',
+        userId: 'bob_beneficiary',
+        name: 'Conta do Bob',
+        type: 'checking',
+        projectedBalanceCents: 10000,
+        isArchived: false,
+      },
+      {
+        id: 'acc_charlie_restit',
+        userId: 'charlie_creditor',
+        name: 'Conta do Charlie',
+        type: 'checking',
+        projectedBalanceCents: 5000,
+        isArchived: false,
+      },
+    ];
+    universalStorage.setItem('mpf_v3_demo_accounts', JSON.stringify(accounts));
+
+    // 1. Criação da despesa
+    const { expense } = await createSharedExpense(
+      spaceId,
+      {
+        spaceId,
+        title: 'Jantar de Equipe Restituição',
+        totalOriginalAmountCents: 10000,
+        competenceMonth: '2026-11',
+        competenceDate: '2026-11-14',
+        categoryId: 'cat_food',
+        categoryName: 'Alimentação',
+        createdByUid: 'alice_resp',
+        responsibleUid: 'alice_resp',
+        payerUid: 'bob_beneficiary',
+        splitMethod: 'equal',
+        participants: [{ uid: 'charlie_creditor', name: 'Charlie' }],
+        idempotencyKey: 'idem_exp_restit_test',
+      },
+      true
+    );
+
+    // 2. Charlie declara pagamento e Alice aprova
+    const declaration = await declareExpensePayment(
+      {
+        spaceId,
+        expenseId: expense.id,
+        memberUid: 'charlie_creditor',
+        memberName: 'Charlie',
+        amountCents: 10000,
+        paymentMethod: 'pix',
+        paymentDate: '2026-11-14',
+        idempotencyKey: 'idem_decl_charlie_restit',
+      },
+      true
+    );
+
+    const { approval } = await approveExpensePayment(
+      {
+        spaceId,
+        expenseId: expense.id,
+        declarationId: declaration.id,
+        approverUid: 'alice_resp',
+        destinationAccountId: 'acc_bob_restit',
+        idempotencyKey: 'idem_appr_charlie_restit',
+      },
+      true
+    );
+
+    // 3. Revogação pelo responsável Alice
+    const { revocation, restitution } = await revokeExpensePaymentApproval(
+      {
+        spaceId,
+        expenseId: expense.id,
+        approvalId: approval.id,
+        revokerUid: 'alice_resp',
+        reason: 'Comprovante inválido / desacordo comercial',
+        idempotencyKey: 'idem_revoc_rst_01',
+      },
+      true
+    );
+
+    assert.ok(revocation);
+    assert.ok(restitution);
+    assert.equal(restitution.debtorUid, 'bob_beneficiary');
+    assert.equal(restitution.creditorUid, 'charlie_creditor');
+    assert.equal(restitution.amountToRestoreCents, 10000);
+    assert.equal(restitution.restitutedAmountCents, 0);
+    assert.equal(restitution.remainingAmountCents, 10000);
+    assert.equal(restitution.status, 'pending');
+
+    // 4. Bob declara devolução parcial de R$ 40,00 (4000 centavos)
+    const { declaration: rstDecl } = await declareRestitutionPayment(
+      {
+        spaceId,
+        expenseId: expense.id,
+        restitutionId: restitution.id,
+        debtorUid: 'bob_beneficiary',
+        amountCents: 4000,
+        paymentDate: '2026-11-15',
+        notes: 'PIX parcial de R$ 40,00 devolvido a Charlie',
+        idempotencyKey: 'idem_rst_decl_40',
+      },
+      true
+    );
+    assert.ok(rstDecl);
+    assert.equal(rstDecl.amountCents, 4000);
+
+    // 5. Tentativa do devedor Bob confirmar por si mesmo deve ser rejeitada
+    await assert.rejects(
+      async () =>
+        confirmRestitutionReceipt(
+          {
+            spaceId,
+            expenseId: expense.id,
+            restitutionId: restitution.id,
+            declarationId: rstDecl.id,
+            creditorUid: 'bob_beneficiary', // Bob tentando confirmar a própria devolução
+            amountCents: 4000,
+            destinationAccountId: 'acc_bob_restit',
+            idempotencyKey: 'idem_rst_rec_bob_invalid',
+          },
+          true
+        ),
+      /Somente o credor legítimo da restituição/
+    );
+
+    // 6. Charlie (credor legítimo) confirma recebimento da 1ª parcela de R$ 40,00
+    const rec1 = await confirmRestitutionReceipt(
+      {
+        spaceId,
+        expenseId: expense.id,
+        restitutionId: restitution.id,
+        declarationId: rstDecl.id,
+        creditorUid: 'charlie_creditor',
+        amountCents: 4000,
+        destinationAccountId: 'acc_charlie_restit',
+        notes: 'Recebimento de R$ 40,00 confirmado na minha conta',
+        idempotencyKey: 'idem_rst_rec_40',
+      },
+      true
+    );
+
+    assert.equal(rec1.restitution.restitutedAmountCents, 4000);
+    assert.equal(rec1.restitution.remainingAmountCents, 6000);
+    assert.equal(rec1.restitution.status, 'partial');
+    assert.equal(rec1.movement?.direction, 'inflow');
+    assert.equal(rec1.movement?.amountCents, 4000);
+
+    // Saldo da conta de Charlie deve ter subido de 5000 para 9000
+    const accsAfter1 = JSON.parse(universalStorage.getItem('mpf_v3_demo_accounts') || '[]');
+    const charlieAcc1 = accsAfter1.find((a: any) => a.id === 'acc_charlie_restit');
+    assert.equal(charlieAcc1.projectedBalanceCents, 9000);
+
+    // 7. Charlie confirma recebimento da 2ª parcela (quitação total de R$ 60,00)
+    const rec2 = await confirmRestitutionReceipt(
+      {
+        spaceId,
+        expenseId: expense.id,
+        restitutionId: restitution.id,
+        creditorUid: 'charlie_creditor',
+        amountCents: 6000,
+        destinationAccountId: 'acc_charlie_restit',
+        notes: 'Recebimento de R$ 60,00 final confirmado',
+        idempotencyKey: 'idem_rst_rec_60',
+      },
+      true
+    );
+
+    assert.equal(rec2.restitution.restitutedAmountCents, 10000);
+    assert.equal(rec2.restitution.remainingAmountCents, 0);
+    assert.equal(rec2.restitution.status, 'settled');
+
+    // Saldo da conta de Charlie deve ser 9000 + 6000 = 15000
+    const accsAfter2 = JSON.parse(universalStorage.getItem('mpf_v3_demo_accounts') || '[]');
+    const charlieAcc2 = accsAfter2.find((a: any) => a.id === 'acc_charlie_restit');
+    assert.equal(charlieAcc2.projectedBalanceCents, 15000);
+
+    // 8. Reenvio idempotente da 2ª confirmação retorna o mesmo registro sem duplicar
+    const replayRec2 = await confirmRestitutionReceipt(
+      {
+        spaceId,
+        expenseId: expense.id,
+        restitutionId: restitution.id,
+        creditorUid: 'charlie_creditor',
+        amountCents: 6000,
+        destinationAccountId: 'acc_charlie_restit',
+        notes: 'Recebimento de R$ 60,00 final confirmado',
+        idempotencyKey: 'idem_rst_rec_60',
+      },
+      true
+    );
+    assert.equal(replayRec2.receipt.id, rec2.receipt.id);
   });
 });

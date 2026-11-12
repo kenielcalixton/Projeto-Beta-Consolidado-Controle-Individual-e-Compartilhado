@@ -8,6 +8,7 @@ import {
   ExpensePaymentApproval,
   ExpensePaymentDeclaration,
   ExpensePaymentRejection,
+  ExpenseRestitutionObligation,
   PaymentDeclarationMethod,
   SharedExpense,
   Space,
@@ -17,6 +18,7 @@ import {
 } from '../../types/financeV3';
 import {
   approveExpensePayment,
+  confirmRestitutionReceipt,
   createSharedExpense,
   declareExpensePayment,
   getExpenseLiabilities,
@@ -28,6 +30,7 @@ import {
   getSpaceFinancialSummary,
   getSpacePaymentApprovals,
   getSpacePendingDeclarations,
+  getSpaceRestitutions,
   rejectExpensePayment,
   recordSupplierRefund,
   revokeExpensePaymentApproval,
@@ -72,6 +75,7 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
   const [allApprovals, setAllApprovals] = useState<ExpensePaymentApproval[]>([]);
   const [allRevocations, setAllRevocations] = useState<ExpenseApprovalRevocation[]>([]);
   const [allRejections, setAllRejections] = useState<ExpensePaymentRejection[]>([]);
+  const [allRestitutions, setAllRestitutions] = useState<ExpenseRestitutionObligation[]>([]);
   const [refunds, setRefunds] = useState<SupplierRefundEvent[]>([]);
   const [summary, setSummary] = useState<SpaceFinancialSummary | null>(null);
 
@@ -82,6 +86,11 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
   const [isRejectModalOpen, setIsRejectModalOpen] = useState(false);
   const [isRevokeModalOpen, setIsRevokeModalOpen] = useState(false);
   const [isRefundModalOpen, setIsRefundModalOpen] = useState(false);
+  const [isConfirmRestitutionModalOpen, setIsConfirmRestitutionModalOpen] = useState(false);
+  const [selectedRestitutionForConfirm, setSelectedRestitutionForConfirm] =
+    useState<ExpenseRestitutionObligation | null>(null);
+  const [restitutionConfirmAccountId, setRestitutionConfirmAccountId] = useState('');
+  const [restitutionConfirmAmountInput, setRestitutionConfirmAmountInput] = useState('');
 
   // Formulário: Nova Despesa
   const [expTitle, setExpTitle] = useState('');
@@ -136,7 +145,7 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
   const loadFinanceData = async () => {
     try {
       setLoading(true);
-      const [mems, accs, exps, summ, pDecls, apps, revocs] = await Promise.all([
+      const [mems, accs, exps, summ, pDecls, apps, revocs, restits] = await Promise.all([
         getSpaceMembers(space.id, userId, isDemo).catch(() => []),
         getUserAccounts(userId, false, isDemo).catch(() => []),
         getSharedExpenses(space.id, userId, isDemo).catch(() => []),
@@ -144,6 +153,7 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
         getSpacePendingDeclarations(space.id, userId, isDemo).catch(() => []),
         getSpacePaymentApprovals(space.id, userId, isDemo).catch(() => []),
         getSpaceApprovalRevocations(space.id, userId, isDemo).catch(() => []),
+        getSpaceRestitutions(space.id, isDemo).catch(() => []),
       ]);
 
       setMembers(mems);
@@ -153,6 +163,7 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
       setPendingDeclarations(pDecls);
       setAllApprovals(apps);
       setAllRevocations(revocs);
+      setAllRestitutions(restits);
 
       // Carrega obrigações e rejeições de cada despesa
       const liabs: Record<string, ExpenseLiability[]> = {};
@@ -394,6 +405,45 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
       await loadFinanceData();
     } catch (err: any) {
       onFeedback('error', err.message);
+    }
+  };
+
+  // Handler: Confirmar recebimento real de restituição pelo credor legítimo
+  const handleConfirmRestitution = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedRestitutionForConfirm) return;
+    if (!restitutionConfirmAccountId) {
+      onFeedback('error', 'Selecione a conta bancária de destino.');
+      return;
+    }
+    const cents = parseBRLToCents(restitutionConfirmAmountInput);
+    if (!cents || cents <= 0) {
+      onFeedback('error', 'Informe um valor válido em centavos.');
+      return;
+    }
+    try {
+      setLoading(true);
+      await confirmRestitutionReceipt(
+        {
+          spaceId: space.id,
+          expenseId: selectedRestitutionForConfirm.expenseId,
+          restitutionId: selectedRestitutionForConfirm.id,
+          creditorUid: userId,
+          amountCents: cents,
+          destinationAccountId: restitutionConfirmAccountId,
+        },
+        isDemo
+      );
+      onFeedback('success', 'Recebimento de restituição confirmado e creditado na sua conta com sucesso!');
+      setIsConfirmRestitutionModalOpen(false);
+      setSelectedRestitutionForConfirm(null);
+      setRestitutionConfirmAccountId('');
+      setRestitutionConfirmAmountInput('');
+      await loadFinanceData();
+    } catch (err: any) {
+      onFeedback('error', err.message || 'Erro ao confirmar restituição.');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -1010,6 +1060,86 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
                       <div className="text-rose-700 text-[11px]">
                         Justificativa: <strong>{rej.reason}</strong>
                       </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Obrigações Formais de Restituição Financeira (Etapa 1) */}
+          {allRestitutions.length > 0 && (
+            <div className="pt-4 border-t border-gray-100 space-y-3">
+              <h4 className="text-xs font-bold text-gray-700 uppercase tracking-wider">
+                Obrigações de Restituição Financeira ({allRestitutions.length})
+              </h4>
+              <div className="space-y-2">
+                {allRestitutions.map((rest) => {
+                  const exp = expenses.find((e) => e.id === rest.expenseId);
+                  const isCreditor = rest.creditorUid === userId;
+                  const debtorMember = members.find((m) => m.uid === rest.debtorUid);
+                  const creditorMember = members.find((m) => m.uid === rest.creditorUid);
+
+                  return (
+                    <div
+                      key={rest.id}
+                      className="border border-amber-200 bg-amber-50/20 rounded-xl p-3 text-xs space-y-1.5 flex flex-col md:flex-row md:items-center justify-between gap-3"
+                    >
+                      <div className="space-y-1">
+                        <div className="font-bold text-gray-900 flex items-center gap-2">
+                          <span>Restituição #{rest.id.slice(0, 16)}...</span>
+                          <span
+                            className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${
+                              rest.status === 'settled'
+                                ? 'bg-emerald-100 text-emerald-800'
+                                : rest.status === 'partial'
+                                ? 'bg-amber-100 text-amber-800'
+                                : 'bg-rose-100 text-rose-800'
+                            }`}
+                          >
+                            {rest.status === 'settled'
+                              ? 'Liquidada'
+                              : rest.status === 'partial'
+                              ? 'Parcialmente Paga'
+                              : 'Pendente de Recomposição'}
+                          </span>
+                        </div>
+                        <div className="text-gray-600 text-[11px]">
+                          Despesa: <strong>{exp?.title || rest.expenseId}</strong> • Total a Recompor:{' '}
+                          <strong>{formatCentsToBRL(rest.amountToRestoreCents)}</strong> • Já Restituído:{' '}
+                          <strong className="text-emerald-700">{formatCentsToBRL(rest.restitutedAmountCents)}</strong> •
+                          Saldo Restante:{' '}
+                          <strong className="text-rose-700">{formatCentsToBRL(rest.remainingAmountCents)}</strong>
+                        </div>
+                        <div className="text-gray-500 text-[11px] flex flex-wrap gap-3">
+                          <span>
+                            Devedor da Restituição:{' '}
+                            <strong>{debtorMember?.displayName || rest.debtorUid}</strong>
+                          </span>
+                          <span>
+                            Credor do Ressarcimento:{' '}
+                            <strong>{creditorMember?.displayName || rest.creditorUid}</strong>
+                          </span>
+                          <span>Motivo: {rest.reason}</span>
+                        </div>
+                      </div>
+
+                      {isCreditor && rest.status !== 'settled' && !isArchived && (
+                        <div>
+                          <button
+                            onClick={() => {
+                              setSelectedRestitutionForConfirm(rest);
+                              setRestitutionConfirmAmountInput(
+                                (rest.remainingAmountCents / 100).toFixed(2).replace('.', ',')
+                              );
+                              setIsConfirmRestitutionModalOpen(true);
+                            }}
+                            className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold whitespace-nowrap shadow-xs"
+                          >
+                            Confirmar Recebimento
+                          </button>
+                        </div>
+                      )}
                     </div>
                   );
                 })}
@@ -1751,6 +1881,87 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
                 </button>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ======================================================================== */}
+      {/* MODAL 7: CONFIRMAR RECEBIMENTO DE RESTITUIÇÃO                            */}
+      {/* ======================================================================== */}
+      {isConfirmRestitutionModalOpen && selectedRestitutionForConfirm && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-xl space-y-4">
+            <div className="flex items-center justify-between border-b border-gray-100 pb-3">
+              <h3 className="text-base font-bold text-gray-900">Confirmar Restituição Financeira</h3>
+              <button
+                onClick={() => setIsConfirmRestitutionModalOpen(false)}
+                className="text-gray-400 hover:text-gray-600"
+              >
+                <i className="ph ph-x text-lg" />
+              </button>
+            </div>
+
+            <form onSubmit={handleConfirmRestitution} className="space-y-3 text-xs">
+              <div className="bg-emerald-50 border border-emerald-200 text-emerald-900 p-3 rounded-xl text-xs space-y-1">
+                <strong>Confirmação Oficial de Entrada:</strong> Ao confirmar, o valor recebido gerará uma entrada financeira oficial (movimento <code>inflow</code>) no livro-razão da sua conta bancária selecionada e abaterá o saldo pendente da restituição.
+              </div>
+
+              <div>
+                <span className="text-gray-500 block">Saldo Pendente:</span>
+                <strong className="text-gray-900 text-sm">
+                  {formatCentsToBRL(selectedRestitutionForConfirm.remainingAmountCents)}
+                </strong>
+              </div>
+
+              <div>
+                <label className="font-bold text-gray-700 block mb-1">Valor Recebido (R$) *</label>
+                <input
+                  type="text"
+                  required
+                  value={restitutionConfirmAmountInput}
+                  onChange={(e) => setRestitutionConfirmAmountInput(e.target.value)}
+                  placeholder="Ex: 50,00"
+                  className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 text-xs font-bold"
+                />
+              </div>
+
+              <div>
+                <label className="font-bold text-gray-700 block mb-1">
+                  Conta Bancária de Destino *
+                </label>
+                <select
+                  required
+                  value={restitutionConfirmAccountId}
+                  onChange={(e) => setRestitutionConfirmAccountId(e.target.value)}
+                  className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 text-xs font-semibold"
+                >
+                  <option value="">Selecione a conta para crédito...</option>
+                  {accounts
+                    .filter((a) => !a.isArchived)
+                    .map((a) => (
+                      <option key={a.id} value={a.id}>
+                        {a.name} ({a.type})
+                      </option>
+                    ))}
+                </select>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2 border-t border-gray-100">
+                <button
+                  type="button"
+                  onClick={() => setIsConfirmRestitutionModalOpen(false)}
+                  className="px-4 py-2 border border-gray-200 text-gray-700 rounded-xl text-xs font-bold hover:bg-gray-50"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 bg-emerald-600 text-white rounded-xl text-xs font-bold hover:bg-emerald-700"
+                >
+                  Confirmar e Creditar
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

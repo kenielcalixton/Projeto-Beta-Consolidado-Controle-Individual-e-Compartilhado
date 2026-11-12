@@ -18,6 +18,10 @@ import {
   ExpensePaymentApproval,
   ExpensePaymentDeclaration,
   ExpensePaymentRejection,
+  ExpenseRestitutionDeclaration,
+  ExpenseRestitutionObligation,
+  ExpenseRestitutionReceipt,
+  ExpenseRestitutionStatus,
   FinancialMovement,
   ISO8601String,
   PaymentDeclarationMethod,
@@ -36,6 +40,9 @@ import {
   generatePaymentApprovalDocId,
   generatePaymentDeclarationDocId,
   generatePaymentRejectionDocId,
+  generateRestitutionDeclarationDocId,
+  generateRestitutionDocId,
+  generateRestitutionReceiptDocId,
   generateSharedExpenseDocId,
   generateSupplierRefundDocId,
   validatePositiveCents,
@@ -82,6 +89,48 @@ export const DEMO_PAYMENT_APPROVALS_KEY = 'mpf_v3_demo_payment_approvals';
 export const DEMO_PAYMENT_REJECTIONS_KEY = 'mpf_v3_demo_payment_rejections';
 export const DEMO_APPROVAL_REVOCATIONS_KEY = 'mpf_v3_demo_approval_revocations';
 export const DEMO_SUPPLIER_REFUNDS_KEY = 'mpf_v3_demo_supplier_refunds';
+export const DEMO_RESTITUTIONS_KEY = 'mpf_v3_demo_restitutions';
+export const DEMO_RESTITUTION_DECLARATIONS_KEY = 'mpf_v3_demo_restitution_declarations';
+export const DEMO_RESTITUTION_RECEIPTS_KEY = 'mpf_v3_demo_restitution_receipts';
+
+export function loadDemoRestitutions(): ExpenseRestitutionObligation[] {
+  try {
+    const raw = universalStorage.getItem(DEMO_RESTITUTIONS_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveDemoRestitutions(data: ExpenseRestitutionObligation[]): void {
+  universalStorage.setItem(DEMO_RESTITUTIONS_KEY, JSON.stringify(data));
+}
+
+export function loadDemoRestitutionDeclarations(): ExpenseRestitutionDeclaration[] {
+  try {
+    const raw = universalStorage.getItem(DEMO_RESTITUTION_DECLARATIONS_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveDemoRestitutionDeclarations(data: ExpenseRestitutionDeclaration[]): void {
+  universalStorage.setItem(DEMO_RESTITUTION_DECLARATIONS_KEY, JSON.stringify(data));
+}
+
+export function loadDemoRestitutionReceipts(): ExpenseRestitutionReceipt[] {
+  try {
+    const raw = universalStorage.getItem(DEMO_RESTITUTION_RECEIPTS_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveDemoRestitutionReceipts(data: ExpenseRestitutionReceipt[]): void {
+  universalStorage.setItem(DEMO_RESTITUTION_RECEIPTS_KEY, JSON.stringify(data));
+}
 
 export function loadDemoPaymentRejections(): ExpensePaymentRejection[] {
   try {
@@ -1135,6 +1184,7 @@ export async function revokeExpensePaymentApproval(
   revocation: ExpenseApprovalRevocation;
   liability: ExpenseLiability;
   compensatoryMovement?: FinancialMovement;
+  restitution?: ExpenseRestitutionObligation;
 }> {
   if (!input.reason || !input.reason.trim()) {
     throw new Error('O motivo da revogação da aprovação é obrigatório.');
@@ -1151,6 +1201,7 @@ export async function revokeExpensePaymentApproval(
         revocation: ExpenseApprovalRevocation;
         liability: ExpenseLiability;
         compensatoryMovement?: FinancialMovement;
+        restitution?: ExpenseRestitutionObligation;
       }
     >(functions, 'revokeExpensePaymentApprovalOfficial');
 
@@ -1196,7 +1247,9 @@ export async function revokeExpensePaymentApproval(
       }
       const liabs = loadDemoSharedLiabilities();
       const liab = liabs.find((l) => l.expenseId === input.expenseId && l.memberUid === approval.memberUid)!;
-      return { revocation: existing, liability: liab };
+      const allRestits = loadDemoRestitutions();
+      const restit = allRestits.find((r) => r.revocationId === existing.id);
+      return { revocation: existing, liability: liab, restitution: restit };
     }
 
     if (approval.isRevoked) {
@@ -1265,11 +1318,30 @@ export async function revokeExpensePaymentApproval(
     revocations.push(revocation);
     saveDemoApprovalRevocations(revocations);
 
-    // REGRA DE IMUTABILIDADE ESTRITA (FRENTE A):
-    // O registro original em `payment_approvals` NUNCA sofre mutação (não escrevemos `isRevoked = true` no storage).
-    // O estado revogado é derivado exclusivamente da presença de `revocation` em `approval_revocations`.
+    // ETAPA 1: Obrigação Formal de Restituição Independente
+    const restitutionId = generateRestitutionDocId(revocationId);
+    const demoRestitutions = loadDemoRestitutions();
+    const restitution: ExpenseRestitutionObligation = {
+      id: restitutionId,
+      spaceId: input.spaceId,
+      expenseId: input.expenseId,
+      liabilityId: approval.liabilityId || approval.memberUid,
+      approvalId: input.approvalId,
+      revocationId,
+      debtorUid: beneficiaryUid,
+      creditorUid: approval.memberUid,
+      amountToRestoreCents: approval.amountCents,
+      restitutedAmountCents: 0,
+      remainingAmountCents: approval.amountCents,
+      status: 'pending',
+      reason: input.reason.trim(),
+      createdAt: now,
+      updatedAt: now,
+    };
+    demoRestitutions.push(restitution);
+    saveDemoRestitutions(demoRestitutions);
 
-    // Restaura o saldo da obrigação preservando pagamentos parciais anteriores e ajustes de reembolso comercial (Frentes B e D)
+    // Restaura o saldo da obrigação preservando pagamentos parciais anteriores e ajustes de reembolso comercial
     const currentPaid = liability.paidAmountCents || 0;
     const restoredPaid = Math.max(0, currentPaid - approval.amountCents);
     const original = liability.originalAmountCents ?? liability.assignedShareAmountCents;
@@ -1301,12 +1373,34 @@ export async function revokeExpensePaymentApproval(
           expenseId: input.expenseId,
           approvalId: input.approvalId,
           revocationId,
+          restitutionId,
           declarationId: approval.declarationId,
           beneficiaryUid,
           revokedAmountCents: approval.amountCents,
           compensatoryMovementId: compensatoryMovement?.id || null,
           requiresRestitution,
           restitutionPendingCents,
+          reason: input.reason.trim(),
+        },
+      },
+      true
+    ).catch(() => {});
+
+    recordSpaceAuditEvent(
+      {
+        spaceId: input.spaceId,
+        eventType: 'restitution_created',
+        performedByUid: input.revokerUid,
+        performedByName: 'Responsável Financeiro',
+        targetUid: beneficiaryUid,
+        eventId: `audit_restit_${restitutionId}`,
+        details: {
+          expenseId: input.expenseId,
+          restitutionId,
+          revocationId,
+          debtorUid: beneficiaryUid,
+          creditorUid: approval.memberUid,
+          amountToRestoreCents: approval.amountCents,
           reason: input.reason.trim(),
         },
       },
@@ -1321,28 +1415,250 @@ export async function revokeExpensePaymentApproval(
         spaceName: 'Espaço Compartilhado',
         type: 'payment_approval_revoked',
         title: 'Aprovação de pagamento revogada',
-        message: `A aprovação do pagamento em "${expense.title}" foi cancelada pelo responsável. Motivo: ${input.reason.trim()}`,
+        message: `A aprovação do pagamento em "${expense.title}" foi cancelada pelo responsável. Uma obrigação de restituição de R$ ${(approval.amountCents / 100).toFixed(2)} foi aberta em seu favor. Motivo: ${input.reason.trim()}`,
         originEventId: revocationId,
       },
       true
     ).catch(() => {});
 
-    if (beneficiaryUid && beneficiaryUid !== input.revokerUid) {
+    if (beneficiaryUid) {
       sendSpaceNotification(
         {
           userId: beneficiaryUid,
           spaceId: input.spaceId,
           spaceName: 'Espaço Compartilhado',
           type: 'payment_approval_revoked',
-          title: 'Reembolso estornado contabilmente',
-          message: `O crédito de reembolso referente a "${expense.title}" foi estornado contabilmente pelo responsável. Motivo: ${input.reason.trim()}`,
-          originEventId: revocationId,
+          title: 'Reembolso estornado / Restituição gerada',
+          message: `O crédito referente a "${expense.title}" foi revogado. Você possui uma obrigação de restituição de R$ ${(approval.amountCents / 100).toFixed(2)} a recompor. Motivo: ${input.reason.trim()}`,
+          originEventId: restitutionId,
         },
         true
       ).catch(() => {});
     }
 
-    return { revocation, liability, compensatoryMovement };
+    return { revocation, liability, compensatoryMovement, restitution };
+  });
+}
+
+// ==============================================================================
+// 6.2 OBRIGAÇÕES DE RESTITUIÇÃO FINANCEIRA (ETAPA 1)
+// ==============================================================================
+
+export async function getExpenseRestitutions(
+  spaceId: string,
+  expenseId: string,
+  isDemo = false
+): Promise<ExpenseRestitutionObligation[]> {
+  if (!isDemo) {
+    try {
+      const snap = await getDocs(
+        collection(db, 'spaces', spaceId, 'shared_expenses', expenseId, 'restitutions')
+      );
+      return snap.docs.map((d) => d.data() as ExpenseRestitutionObligation);
+    } catch {
+      return [];
+    }
+  }
+  const all = loadDemoRestitutions();
+  return all.filter((r) => r.spaceId === spaceId && r.expenseId === expenseId);
+}
+
+export async function getSpaceRestitutions(
+  spaceId: string,
+  isDemo = false
+): Promise<ExpenseRestitutionObligation[]> {
+  if (!isDemo) {
+    const expenses = await getSharedExpenses(spaceId, '', false);
+    const results: ExpenseRestitutionObligation[] = [];
+    for (const exp of expenses) {
+      const list = await getExpenseRestitutions(spaceId, exp.id, false);
+      results.push(...list);
+    }
+    return results;
+  }
+  const all = loadDemoRestitutions();
+  return all.filter((r) => r.spaceId === spaceId);
+}
+
+export interface DeclareRestitutionPaymentInput {
+  spaceId: string;
+  expenseId: string;
+  restitutionId: string;
+  debtorUid: string;
+  amountCents: CentsInteger;
+  paymentDate?: DateString;
+  paymentProofUrl?: string;
+  notes?: string;
+  idempotencyKey?: string;
+}
+
+export async function declareRestitutionPayment(
+  input: DeclareRestitutionPaymentInput,
+  isDemo = false
+): Promise<{ declaration: ExpenseRestitutionDeclaration; restitution: ExpenseRestitutionObligation }> {
+  if (!validatePositiveCents(input.amountCents)) {
+    throw new Error('Valor da declaração de restituição deve ser estritamente positivo em centavos.');
+  }
+
+  const idempotencyKey =
+    input.idempotencyKey?.trim() ||
+    `decl_rst_${input.restitutionId}_${input.amountCents}_${input.paymentDate || 'today'}`;
+
+  if (!isDemo) {
+    const callable = httpsCallable<
+      DeclareRestitutionPaymentInput & { idempotencyKey: string },
+      { declaration: ExpenseRestitutionDeclaration; restitution: ExpenseRestitutionObligation }
+    >(functions, 'declareRestitutionPaymentOfficial');
+    const res = await callable({ ...input, idempotencyKey });
+    return res.data;
+  }
+
+  return withDemoLock(async () => {
+    const restitutions = loadDemoRestitutions();
+    const restitution = restitutions.find((r) => r.id === input.restitutionId);
+    if (!restitution) throw new Error(`Obrigação de restituição "${input.restitutionId}" não encontrada.`);
+    if (restitution.debtorUid !== input.debtorUid) {
+      throw new Error('Somente o devedor da obrigação pode declarar pagamento de restituição.');
+    }
+
+    const declId = generateRestitutionDeclarationDocId(input.restitutionId, idempotencyKey);
+    const declarations = loadDemoRestitutionDeclarations();
+    const existing = declarations.find((d) => d.id === declId);
+    if (existing) {
+      return { declaration: existing, restitution };
+    }
+
+    if (input.amountCents > restitution.remainingAmountCents) {
+      throw new Error(`Valor declarado (${input.amountCents}) excede o saldo pendente (${restitution.remainingAmountCents}).`);
+    }
+
+    const now = new Date().toISOString();
+    const declaration: ExpenseRestitutionDeclaration = {
+      id: declId,
+      restitutionId: input.restitutionId,
+      spaceId: input.spaceId,
+      expenseId: input.expenseId,
+      debtorUid: input.debtorUid,
+      amountCents: input.amountCents,
+      paymentDate: input.paymentDate || now.split('T')[0],
+      paymentProofUrl: input.paymentProofUrl,
+      notes: input.notes?.trim(),
+      idempotencyKey,
+      createdAt: now,
+    };
+    declarations.push(declaration);
+    saveDemoRestitutionDeclarations(declarations);
+
+    return { declaration, restitution };
+  });
+}
+
+export interface ConfirmRestitutionReceiptInput {
+  spaceId: string;
+  expenseId: string;
+  restitutionId: string;
+  declarationId?: string;
+  creditorUid: string;
+  amountCents: CentsInteger;
+  destinationAccountId: string;
+  notes?: string;
+  idempotencyKey?: string;
+}
+
+export async function confirmRestitutionReceipt(
+  input: ConfirmRestitutionReceiptInput,
+  isDemo = false
+): Promise<{
+  receipt: ExpenseRestitutionReceipt;
+  restitution: ExpenseRestitutionObligation;
+  movement?: FinancialMovement;
+}> {
+  if (!validatePositiveCents(input.amountCents)) {
+    throw new Error('Valor do recebimento de restituição deve ser estritamente positivo em centavos.');
+  }
+
+  const idempotencyKey =
+    input.idempotencyKey?.trim() ||
+    `rec_rst_${input.restitutionId}_${input.amountCents}_${input.declarationId || 'direct'}`;
+
+  if (!isDemo) {
+    const callable = httpsCallable<
+      ConfirmRestitutionReceiptInput & { idempotencyKey: string },
+      { receipt: ExpenseRestitutionReceipt; restitution: ExpenseRestitutionObligation; movement?: FinancialMovement }
+    >(functions, 'confirmRestitutionReceiptOfficial');
+    const res = await callable({ ...input, idempotencyKey });
+    return res.data;
+  }
+
+  return withDemoLock(async () => {
+    const restitutions = loadDemoRestitutions();
+    const restitution = restitutions.find((r) => r.id === input.restitutionId);
+    if (!restitution) throw new Error(`Obrigação de restituição "${input.restitutionId}" não encontrada.`);
+    if (restitution.creditorUid !== input.creditorUid) {
+      throw new Error('Somente o credor legítimo da restituição pode confirmar o recebimento.');
+    }
+
+    const receiptId = generateRestitutionReceiptDocId(input.restitutionId, idempotencyKey);
+    const receipts = loadDemoRestitutionReceipts();
+    const existing = receipts.find((rc) => rc.id === receiptId);
+    if (existing) {
+      return { receipt: existing, restitution };
+    }
+
+    if (input.amountCents > restitution.remainingAmountCents) {
+      throw new Error(`Valor a confirmar (${input.amountCents}) excede o saldo pendente (${restitution.remainingAmountCents}).`);
+    }
+
+    const now = new Date().toISOString();
+
+    // Movimento contábil de entrada na conta do credor
+    const movResult = await recordMovement(
+      {
+        accountId: input.destinationAccountId,
+        userId: input.creditorUid,
+        authorUid: input.creditorUid,
+        direction: 'inflow',
+        amountCents: input.amountCents,
+        effectiveDate: now.split('T')[0],
+        originType: 'restitution_inflow',
+        originId: receiptId,
+        description: `Recebimento de restituição de cota compartilhada (${input.restitutionId})`,
+        notes: input.notes?.trim() || 'Confirmação oficial de restituição pelo credor.',
+        idempotencyKey,
+      },
+      true
+    );
+
+    const receipt: ExpenseRestitutionReceipt = {
+      id: receiptId,
+      restitutionId: input.restitutionId,
+      spaceId: input.spaceId,
+      expenseId: input.expenseId,
+      declarationId: input.declarationId,
+      creditorUid: input.creditorUid,
+      debtorUid: restitution.debtorUid,
+      amountCents: input.amountCents,
+      destinationAccountId: input.destinationAccountId,
+      financialMovementId: movResult.id,
+      confirmedAt: now,
+      notes: input.notes?.trim(),
+      idempotencyKey,
+      createdAt: now,
+    };
+    receipts.push(receipt);
+    saveDemoRestitutionReceipts(receipts);
+
+    const newRestituted = (restitution.restitutedAmountCents || 0) + input.amountCents;
+    const newRemaining = Math.max(0, restitution.amountToRestoreCents - newRestituted);
+    const newStatus: ExpenseRestitutionStatus = newRemaining === 0 ? 'settled' : 'partial';
+
+    restitution.restitutedAmountCents = newRestituted;
+    restitution.remainingAmountCents = newRemaining;
+    restitution.status = newStatus;
+    restitution.updatedAt = now;
+    saveDemoRestitutions(restitutions);
+
+    return { receipt, restitution, movement: movResult };
   });
 }
 

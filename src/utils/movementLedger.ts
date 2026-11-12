@@ -377,3 +377,26 @@ export function generateSupplierRefundDocId(expenseId: string, idempotencyKey: s
   return `supref_${cleanSlug ? `${cleanSlug}_` : ''}${hash.slice(0, 32)}`;
 }
 
+export function generateRestitutionDocId(revocationId: string): string {
+  const cleanRevoc = (revocationId || '').trim();
+  const cleanSlug = cleanRevoc.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 24);
+  const hash = sha256Hex(`restit_canonical:${cleanRevoc}`);
+  return `restit_${cleanSlug ? `${cleanSlug}_` : ''}${hash.slice(0, 32)}`;
+}
+
+export function generateRestitutionDeclarationDocId(restitutionId: string, idempotencyKey: string): string {
+  const cleanRestit = (restitutionId || '').trim();
+  const cleanKey = (idempotencyKey || '').trim();
+  const cleanSlug = cleanKey.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 24);
+  const hash = sha256Hex(`restit_decl:${cleanRestit}:${cleanKey}`);
+  return `restit_decl_${cleanSlug ? `${cleanSlug}_` : ''}${hash.slice(0, 32)}`;
+}
+
+export function generateRestitutionReceiptDocId(restitutionId: string, idempotencyKey: string): string {
+  const cleanRestit = (restitutionId || '').trim();
+  const cleanKey = (idempotencyKey || '').trim();
+  const cleanSlug = cleanKey.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 24);
+  const hash = sha256Hex(`restit_rec_${cleanRestit}:${cleanKey}`);
+  return `restit_rec_${cleanSlug ? `${cleanSlug}_` : ''}${hash.slice(0, 32)}`;
+}
+

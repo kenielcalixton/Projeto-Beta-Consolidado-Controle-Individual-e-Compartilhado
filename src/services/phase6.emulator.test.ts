@@ -13,10 +13,13 @@ import { acceptSpaceInvite, createSpaceInvite } from './spaceInviteService';
 import { createAccount, getUserAccounts } from './accountService';
 import {
   approveExpensePayment,
+  confirmRestitutionReceipt,
   createSharedExpense,
   declareExpensePayment,
+  declareRestitutionPayment,
   getExpenseLiabilities,
   getExpensePaymentDeclarations,
+  getExpenseRestitutions,
   getSharedExpenses,
   recordSupplierRefund,
   rejectExpensePayment,
@@ -44,6 +47,7 @@ test('FASE 6 — EMULATOR INTEGRATION: Rateios, Segregação de Autoridade vs Be
   let expenseId = '';
   let aliceAccountId = '';
   let bobAccountId = '';
+  let charlieAccountId = '';
   let charlieDeclId = '';
   let approvalId = '';
 
@@ -141,6 +145,15 @@ test('FASE 6 — EMULATOR INTEGRATION: Rateios, Segregação de Autoridade vs Be
       { uid: charlieUid, displayName: 'Charlie Admin', email: 'charlie.f6@teste.local' },
       false
     );
+    const charlieAcc = await createAccount(
+      charlieUid,
+      {
+        name: 'Conta Inter Charlie',
+        type: 'checking',
+      },
+      false
+    );
+    charlieAccountId = charlieAcc.id;
     await signOut(auth);
 
     // Valida que todos estão ativos no espaço autenticando como Alice
@@ -718,6 +731,97 @@ test('FASE 6 — EMULATOR INTEGRATION: Rateios, Segregação de Autoridade vs Be
     assert.ok(charlieNotifs.some((n) => n.type === 'payment_approved'));
     assert.ok(charlieNotifs.some((n) => n.type === 'supplier_refund_confirmed'));
     assert.ok(charlieNotifs.some((n) => n.type === 'payment_approval_revoked'));
+    await signOut(auth);
+  });
+
+  // ----------------------------------------------------------------------------
+  // 11. OBRIGAÇÃO DE RESTITUIÇÃO REAL NO FIRESTORE + CLOUD FUNCTIONS (ETAPA 1)
+  // ----------------------------------------------------------------------------
+  await t.test('11. Validação de Restituição Real no Firestore Emulator com liquidação e movimento de entrada', async () => {
+    // 11.1. Buscar a obrigação de restituição gerada pela revogação da cota de Charlie em sharedExpenseId
+    await signInWithEmailAndPassword(auth, 'alice.f6@teste.local', 'SenhaForte123!');
+    const restits = await getExpenseRestitutions(spaceId, expenseId, false);
+    assert.ok(restits.length > 0, 'Deve existir pelo menos uma restituição gerada na despesa');
+    const restitution = restits[0];
+    assert.equal(restitution.debtorUid, bobUid);
+    assert.equal(restitution.creditorUid, charlieUid);
+    assert.equal(restitution.status, 'pending');
+    await signOut(auth);
+
+    // 11.2. Bob declara pagamento de restituição de R$ 10,00 (1000 centavos)
+    await signInWithEmailAndPassword(auth, 'bob.f6@teste.local', 'SenhaForte123!');
+    const { declaration: rstDecl } = await declareRestitutionPayment(
+      {
+        spaceId,
+        expenseId,
+        restitutionId: restitution.id,
+        debtorUid: bobUid,
+        amountCents: 1000,
+        notes: 'Devolução parcial via PIX direto a Charlie',
+        idempotencyKey: 'idem_emul_rst_decl_1000',
+      },
+      false
+    );
+    assert.ok(rstDecl);
+    assert.equal(rstDecl.amountCents, 1000);
+
+    // Tentativa de Bob (devedor) confirmar o próprio recebimento deve ser rejeitada com erro
+    await assert.rejects(
+      async () =>
+        confirmRestitutionReceipt(
+          {
+            spaceId,
+            expenseId,
+            restitutionId: restitution.id,
+            declarationId: rstDecl.id,
+            creditorUid: bobUid, // Tentativa ilegítima
+            amountCents: 1000,
+            destinationAccountId: bobAccountId,
+            idempotencyKey: 'idem_emul_rst_rec_bob_fail',
+          },
+          false
+        ),
+      /(permission-denied|403|Somente o credor legítimo)/
+    );
+    await signOut(auth);
+
+    // 11.3. Charlie (credor legítimo) confirma o recebimento na sua conta
+    await signInWithEmailAndPassword(auth, 'charlie.f6@teste.local', 'SenhaForte123!');
+    const charlieAccSnapBefore = await getDoc(doc(db, 'accounts', charlieAccountId));
+    const balBefore = charlieAccSnapBefore.data()?.projectedBalanceCents || 0;
+
+    const { receipt, restitution: updatedRestit, movement } = await confirmRestitutionReceipt(
+      {
+        spaceId,
+        expenseId,
+        restitutionId: restitution.id,
+        declarationId: rstDecl.id,
+        creditorUid: charlieUid,
+        amountCents: 1000,
+        destinationAccountId: charlieAccountId,
+        notes: 'Recebimento de R$ 10,00 confirmado por Charlie',
+        idempotencyKey: 'idem_emul_rst_rec_charlie_1000',
+      },
+      false
+    );
+
+    assert.ok(receipt);
+    assert.ok(movement);
+    assert.equal(receipt.amountCents, 1000);
+    assert.equal(updatedRestit.restitutedAmountCents, 1000);
+    assert.equal(updatedRestit.remainingAmountCents, restitution.amountToRestoreCents - 1000);
+    assert.equal(updatedRestit.status, 'partial');
+
+    // Confere que o saldo da conta de Charlie no Firestore foi creditado
+    const charlieAccSnapAfter = await getDoc(doc(db, 'accounts', charlieAccountId));
+    assert.equal(charlieAccSnapAfter.data()?.projectedBalanceCents, balBefore + 1000);
+
+    // Confere que o movimento contábil de entrada foi gravado no Firestore
+    const movSnap = await getDoc(doc(db, 'accounts', charlieAccountId, 'movements', movement.id));
+    assert.ok(movSnap.exists());
+    assert.equal(movSnap.data()?.direction, 'inflow');
+    assert.equal(movSnap.data()?.amountCents, 1000);
+
     await signOut(auth);
   });
 
