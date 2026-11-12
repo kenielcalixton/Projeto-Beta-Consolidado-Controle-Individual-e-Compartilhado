@@ -1503,6 +1503,8 @@ export interface AcquisitionItem {
   minStock?: number;
   unit?: AcquisitionItemUnit;
   targetAmountCents?: CentsInteger;
+  savedAmountCents?: CentsInteger;
+  finalPaidAmountCents?: CentsInteger;
   estimatedPriceCents?: CentsInteger;
   priority?: AcquisitionItemPriority;
   inspirationUrl?: string;

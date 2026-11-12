@@ -64,6 +64,9 @@ export const ALLOWED_GOVERNANCE_EVENTS = new Set([
   'custody_consumed',
   'custody_return_requested',
   'custody_return_confirmed',
+  'acquisition_purchased',
+  'acquisition_stock_moved',
+  'acquisition_deposit_recorded',
 ]);
 
 /**
@@ -5594,6 +5597,540 @@ export const returnCustodyFundsOfficial = onCall(
   }
 );
 
+// ==============================================================================
+// FASE 8: LISTAS DE AQUISIÇÃO E COPROPRIEDADE DE BENS (ARQUITETURA V3.1)
+// ==============================================================================
 
+export function serverGenerateAcquisitionPurchaseDocId(itemId, idempotencyKey) {
+  const cleanItem = (itemId || '').trim();
+  const cleanKey = (idempotencyKey || '').trim();
+  const cleanSlug = cleanKey.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 24);
+  const hash = sha256HexServer(`acq_purch:${cleanItem}:${cleanKey}`);
+  return `pur_${cleanSlug ? `${cleanSlug}_` : ''}${hash.slice(0, 32)}`;
+}
 
+export function serverGenerateStockMovementDocId(itemId, idempotencyKey) {
+  const cleanItem = (itemId || '').trim();
+  const cleanKey = (idempotencyKey || '').trim();
+  const cleanSlug = cleanKey.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 20);
+  const hash = sha256HexServer(`acq_stock:${cleanItem}:${cleanKey}`);
+  return `smov_${cleanSlug ? `${cleanSlug}_` : ''}${hash.slice(0, 32)}`;
+}
 
+export function serverGenerateQuoteDocId(itemId, idempotencyKey) {
+  const cleanItem = (itemId || '').trim();
+  const cleanKey = (idempotencyKey || '').trim();
+  const cleanSlug = cleanKey.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 20);
+  const hash = sha256HexServer(`acq_quote:${cleanItem}:${cleanKey}`);
+  return `quot_${cleanSlug ? `${cleanSlug}_` : ''}${hash.slice(0, 32)}`;
+}
+
+export function serverGenerateDepositDocId(itemId, idempotencyKey) {
+  const cleanItem = (itemId || '').trim();
+  const cleanKey = (idempotencyKey || '').trim();
+  const cleanSlug = cleanKey.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 20);
+  const hash = sha256HexServer(`acq_dep:${cleanItem}:${cleanKey}`);
+  return `dep_${cleanSlug ? `${cleanSlug}_` : ''}${hash.slice(0, 32)}`;
+}
+
+/**
+ * Checkout de item de aquisição com registro canônico de copropriedade imutável.
+ */
+export async function executeServerSideAcquisitionCheckout(db, callerUid, payload) {
+  if (!callerUid || typeof callerUid !== 'string' || !callerUid.trim()) {
+    throw new HttpsError('unauthenticated', 'Autenticação obrigatória para checkout de aquisições.');
+  }
+
+  const cleanCaller = callerUid.trim();
+  const listId = (payload.listId || '').trim();
+  const itemId = (payload.itemId || '').trim();
+  const physicalBuyerUid = (payload.physicalBuyerUid || cleanCaller).trim();
+  const storeName = (payload.storeName || '').trim();
+  const brand = payload.brand ? String(payload.brand).trim() : null;
+  const quantity = Number(payload.quantity) || 1;
+  const unitPriceCents = Number(payload.unitPriceCents);
+  const itemsNetCents = Number(payload.itemsNetCents !== undefined ? payload.itemsNetCents : unitPriceCents * quantity);
+  const shippingCents = Number(payload.shippingCents || 0);
+  const feesCents = Number(payload.feesCents || 0);
+  const discountsCents = Number(payload.discountsCents || 0);
+  const totalPaidCents = Number(payload.totalPaidCents);
+  const purchaseDate = (payload.purchaseDate || new Date().toISOString().slice(0, 10)).trim();
+  const receiptUrl = payload.receiptUrl ? String(payload.receiptUrl).trim() : null;
+  const ownershipClassification = payload.ownershipClassification || 'individual';
+  const linkedExpenseId = (payload.linkedExpenseId || `exp_acq_${Date.now()}`).trim();
+  const linkedExpenseType = payload.linkedExpenseType || 'personal';
+  const disbursements = Array.isArray(payload.disbursements) ? payload.disbursements : [];
+  const idemKey = (payload.idempotencyKey || '').trim();
+
+  if (!listId) throw new HttpsError('invalid-argument', 'listId é obrigatório.');
+  if (!itemId) throw new HttpsError('invalid-argument', 'itemId é obrigatório.');
+  if (!storeName) throw new HttpsError('invalid-argument', 'storeName é obrigatório.');
+  if (!Number.isSafeInteger(quantity) || quantity <= 0) {
+    throw new HttpsError('invalid-argument', 'quantity deve ser um inteiro estritamente positivo.');
+  }
+  if (!Number.isSafeInteger(totalPaidCents) || totalPaidCents <= 0) {
+    throw new HttpsError('invalid-argument', 'totalPaidCents deve ser um inteiro estritamente positivo em centavos.');
+  }
+  if (itemsNetCents + shippingCents + feesCents - discountsCents !== totalPaidCents) {
+    throw new HttpsError(
+      'invalid-argument',
+      `Inconsistência contábil: itensNet (${itemsNetCents}) + frete (${shippingCents}) + taxas (${feesCents}) - descontos (${discountsCents}) != total (${totalPaidCents}).`
+    );
+  }
+  if (!disbursements.length) {
+    throw new HttpsError('invalid-argument', 'Ao menos um desembolso deve ser informado para o checkout.');
+  }
+  if (!idemKey) {
+    throw new HttpsError('invalid-argument', 'Chave de idempotência é obrigatória.');
+  }
+
+  // Validação estrita da conservação contábil dos desembolsos
+  let sumDisbursements = 0;
+  for (const d of disbursements) {
+    const dAmount = Number(d.disbursedAmountCents);
+    if (!Number.isSafeInteger(dAmount) || dAmount <= 0) {
+      throw new HttpsError('invalid-argument', 'Cada valor desembolsado deve ser um inteiro estritamente positivo em centavos.');
+    }
+    if (!d.funderUid) {
+      throw new HttpsError('invalid-argument', 'funderUid é obrigatório em cada desembolso.');
+    }
+    sumDisbursements += dAmount;
+  }
+  if (sumDisbursements !== totalPaidCents) {
+    throw new HttpsError(
+      'invalid-argument',
+      `A soma dos desembolsos (${sumDisbursements} centavos) deve ser exatamente igual ao total pago (${totalPaidCents} centavos).`
+    );
+  }
+
+  // Cálculo proporcional rigoroso da copropriedade patrimonial
+  const ownershipShares = disbursements.map((d) => {
+    const dAmount = Number(d.disbursedAmountCents);
+    const percentage = Math.round(((dAmount / totalPaidCents) * 100) * 10000) / 10000;
+    return {
+      uid: String(d.funderUid).trim(),
+      name: String(d.funderName || 'Participante').trim(),
+      disbursedAmountCents: dAmount,
+      ownershipPercentage: percentage,
+    };
+  });
+
+  const purchaseId = serverGenerateAcquisitionPurchaseDocId(itemId, idemKey);
+
+  return await db.runTransaction(async (tx) => {
+    // 1. Leituras Firestore antes de escritas
+    const listRef = db.collection('acquisition_lists').doc(listId);
+    const listSnap = await tx.get(listRef);
+    if (!listSnap.exists) {
+      throw new HttpsError('not-found', 'Lista de aquisições não encontrada.');
+    }
+    const listData = listSnap.data();
+
+    // Valida permissão do chamador
+    if (listData.scopeType === 'individual') {
+      if (listData.ownerUid !== cleanCaller) {
+        throw new HttpsError('permission-denied', 'Apenas o proprietário pode realizar checkout na lista individual.');
+      }
+    } else {
+      if (!listData.spaceId) {
+        throw new HttpsError('failed-precondition', 'Lista compartilhada sem spaceId associado.');
+      }
+      const spaceSnap = await tx.get(db.collection('spaces').doc(listData.spaceId));
+      if (!spaceSnap.exists) {
+        throw new HttpsError('not-found', 'Espaço da lista compartilhada não encontrado.');
+      }
+      const spaceData = spaceSnap.data();
+      if (!spaceData.memberUids?.includes(cleanCaller)) {
+        throw new HttpsError('permission-denied', 'Apenas membros do espaço podem realizar checkout na lista.');
+      }
+    }
+
+    const itemRef = listRef.collection('items').doc(itemId);
+    const itemSnap = await tx.get(itemRef);
+    if (!itemSnap.exists) {
+      throw new HttpsError('not-found', 'Item de aquisição não encontrado na lista.');
+    }
+    const itemData = itemSnap.data();
+
+    // Idempotência
+    const purchaseRef = itemRef.collection('purchases').doc(purchaseId);
+    const purchaseSnap = await tx.get(purchaseRef);
+    if (purchaseSnap.exists) {
+      return {
+        purchase: purchaseSnap.data(),
+        item: itemData,
+        isIdempotentReplay: true,
+      };
+    }
+
+    const now = new Date().toISOString();
+
+    // 2. Criação do registro de compra com copropriedade
+    const purchaseRecord = {
+      id: purchaseId,
+      itemId,
+      listId,
+      spaceId: listData.spaceId || null,
+      physicalBuyerUid,
+      authorUid: cleanCaller,
+      storeName,
+      brand,
+      quantity,
+      unitPriceCents,
+      itemsNetCents,
+      shippingCents,
+      feesCents,
+      discountsCents,
+      totalPaidCents,
+      purchaseDate,
+      receiptUrl,
+      ownershipClassification,
+      disbursements: disbursements.map((d) => ({
+        funderUid: String(d.funderUid).trim(),
+        funderName: String(d.funderName || '').trim(),
+        disbursedAmountCents: Number(d.disbursedAmountCents),
+        fundingSource: d.fundingSource || 'checking',
+        sourceAccountId: d.sourceAccountId || null,
+      })),
+      ownershipShares,
+      linkedExpenseId,
+      linkedExpenseType,
+      idempotencyKey: idemKey,
+      createdAt: now,
+    };
+    tx.set(purchaseRef, purchaseRecord);
+
+    // 3. Atualização de estado do item
+    let newStage = itemData.stage;
+    let newStock = itemData.currentStock || 0;
+    let finalPaidAmountCents = itemData.finalPaidAmountCents || null;
+
+    if (itemData.listType === 'recorrente') {
+      newStock += quantity;
+      newStage = 'conferido';
+
+      // Registra evento de movimentação de estoque automática
+      const smovId = serverGenerateStockMovementDocId(itemId, `${idemKey}_smov`);
+      const smovRef = itemRef.collection('stock_movements').doc(smovId);
+      tx.set(smovRef, {
+        id: smovId,
+        itemId,
+        movementType: 'purchase_inflow',
+        quantityDelta: quantity,
+        previousStock: itemData.currentStock || 0,
+        newStock,
+        authorUid: cleanCaller,
+        justification: `Entrada automática de compra efetuada em ${storeName}`,
+        createdAt: now,
+      });
+    } else if (itemData.listType === 'objetivo') {
+      newStage = 'adquirido';
+      finalPaidAmountCents = totalPaidCents;
+    } else if (itemData.listType === 'desejo') {
+      newStage = 'adquirido';
+    }
+
+    const updatedItem = {
+      ...itemData,
+      stage: newStage,
+      currentStock: newStock,
+      finalPaidAmountCents,
+      updatedAt: now,
+    };
+    tx.update(itemRef, {
+      stage: newStage,
+      currentStock: newStock,
+      finalPaidAmountCents,
+      updatedAt: now,
+    });
+
+    // 4. Auditoria no espaço se for lista compartilhada
+    if (listData.scopeType === 'shared' && listData.spaceId) {
+      const auditId = `audit_acq_pur_${purchaseId}`;
+      tx.set(db.collection('spaces').doc(listData.spaceId).collection('audit').doc(auditId), {
+        id: auditId,
+        spaceId: listData.spaceId,
+        eventType: 'acquisition_purchased',
+        performedByUid: cleanCaller,
+        performedByName: 'Participante',
+        targetUid: null,
+        details: { listId, itemId, purchaseId, totalPaidCents, quantity, storeName },
+        timestamp: now,
+      });
+    }
+
+    return {
+      purchase: purchaseRecord,
+      item: updatedItem,
+      isIdempotentReplay: false,
+    };
+  });
+}
+
+/**
+ * Movimentação de estoque de item recorrente.
+ */
+export async function executeServerSideRecordStockMovement(db, callerUid, payload) {
+  if (!callerUid || typeof callerUid !== 'string' || !callerUid.trim()) {
+    throw new HttpsError('unauthenticated', 'Autenticação obrigatória.');
+  }
+
+  const cleanCaller = callerUid.trim();
+  const listId = (payload.listId || '').trim();
+  const itemId = (payload.itemId || '').trim();
+  const movementType = payload.movementType || 'manual_adjustment';
+  const quantityDelta = Number(payload.quantityDelta);
+  const justification = payload.justification ? String(payload.justification).trim() : null;
+  const idemKey = (payload.idempotencyKey || '').trim();
+
+  if (!listId) throw new HttpsError('invalid-argument', 'listId é obrigatório.');
+  if (!itemId) throw new HttpsError('invalid-argument', 'itemId é obrigatório.');
+  if (!Number.isSafeInteger(quantityDelta) || quantityDelta === 0) {
+    throw new HttpsError('invalid-argument', 'quantityDelta deve ser um inteiro diferente de zero.');
+  }
+  if (!idemKey) throw new HttpsError('invalid-argument', 'Chave de idempotência é obrigatória.');
+
+  const smovId = serverGenerateStockMovementDocId(itemId, idemKey);
+
+  return await db.runTransaction(async (tx) => {
+    const listRef = db.collection('acquisition_lists').doc(listId);
+    const listSnap = await tx.get(listRef);
+    if (!listSnap.exists) throw new HttpsError('not-found', 'Lista não encontrada.');
+
+    const itemRef = listRef.collection('items').doc(itemId);
+    const itemSnap = await tx.get(itemRef);
+    if (!itemSnap.exists) throw new HttpsError('not-found', 'Item não encontrado.');
+    const itemData = itemSnap.data();
+
+    const smovRef = itemRef.collection('stock_movements').doc(smovId);
+    const smovSnap = await tx.get(smovRef);
+    if (smovSnap.exists) {
+      return {
+        movement: smovSnap.data(),
+        item: itemData,
+        isIdempotentReplay: true,
+      };
+    }
+
+    const previousStock = itemData.currentStock || 0;
+    const newStock = Math.max(0, previousStock + quantityDelta);
+    const now = new Date().toISOString();
+
+    const movementDoc = {
+      id: smovId,
+      itemId,
+      movementType,
+      quantityDelta,
+      previousStock,
+      newStock,
+      authorUid: cleanCaller,
+      justification,
+      createdAt: now,
+    };
+    tx.set(smovRef, movementDoc);
+
+    const updatedItem = {
+      ...itemData,
+      currentStock: newStock,
+      updatedAt: now,
+    };
+    tx.update(itemRef, {
+      currentStock: newStock,
+      updatedAt: now,
+    });
+
+    return {
+      movement: movementDoc,
+      item: updatedItem,
+      isIdempotentReplay: false,
+    };
+  });
+}
+
+/**
+ * Cotação de preço para item de objetivo.
+ */
+export async function executeServerSideRecordQuote(db, callerUid, payload) {
+  if (!callerUid || typeof callerUid !== 'string' || !callerUid.trim()) {
+    throw new HttpsError('unauthenticated', 'Autenticação obrigatória.');
+  }
+
+  const cleanCaller = callerUid.trim();
+  const listId = (payload.listId || '').trim();
+  const itemId = (payload.itemId || '').trim();
+  const storeName = (payload.storeName || '').trim();
+  const priceCents = Number(payload.priceCents);
+  const url = payload.url ? String(payload.url).trim() : null;
+  const validUntil = payload.validUntil ? String(payload.validUntil).trim() : null;
+  const idemKey = (payload.idempotencyKey || '').trim();
+
+  if (!listId || !itemId || !storeName) {
+    throw new HttpsError('invalid-argument', 'listId, itemId e storeName são obrigatórios.');
+  }
+  if (!Number.isSafeInteger(priceCents) || priceCents <= 0) {
+    throw new HttpsError('invalid-argument', 'priceCents deve ser um inteiro estritamente positivo em centavos.');
+  }
+  if (!idemKey) throw new HttpsError('invalid-argument', 'Chave de idempotência é obrigatória.');
+
+  const quoteId = serverGenerateQuoteDocId(itemId, idemKey);
+
+  return await db.runTransaction(async (tx) => {
+    const listRef = db.collection('acquisition_lists').doc(listId);
+    const listSnap = await tx.get(listRef);
+    if (!listSnap.exists) throw new HttpsError('not-found', 'Lista não encontrada.');
+
+    const itemRef = listRef.collection('items').doc(itemId);
+    const itemSnap = await tx.get(itemRef);
+    if (!itemSnap.exists) throw new HttpsError('not-found', 'Item não encontrado.');
+    const itemData = itemSnap.data();
+
+    const quoteRef = itemRef.collection('quotes').doc(quoteId);
+    const quoteSnap = await tx.get(quoteRef);
+    if (quoteSnap.exists) {
+      return { quote: quoteSnap.data(), isIdempotentReplay: true };
+    }
+
+    const now = new Date().toISOString();
+    const quoteDoc = {
+      id: quoteId,
+      itemId,
+      storeName,
+      priceCents,
+      url,
+      validUntil,
+      authorUid: cleanCaller,
+      createdAt: now,
+    };
+    tx.set(quoteRef, quoteDoc);
+
+    return { quote: quoteDoc, isIdempotentReplay: false };
+  });
+}
+
+/**
+ * Aporte de poupança (depósito) para meta de objetivo.
+ */
+export async function executeServerSideRecordDeposit(db, callerUid, payload) {
+  if (!callerUid || typeof callerUid !== 'string' || !callerUid.trim()) {
+    throw new HttpsError('unauthenticated', 'Autenticação obrigatória.');
+  }
+
+  const cleanCaller = callerUid.trim();
+  const listId = (payload.listId || '').trim();
+  const itemId = (payload.itemId || '').trim();
+  const amountCents = Number(payload.amountCents);
+  const sourceAccountId = (payload.sourceAccountId || '').trim();
+  const depositDate = (payload.depositDate || new Date().toISOString().slice(0, 10)).trim();
+  const notes = payload.notes ? String(payload.notes).trim() : null;
+  const idemKey = (payload.idempotencyKey || '').trim();
+
+  if (!listId || !itemId) {
+    throw new HttpsError('invalid-argument', 'listId e itemId são obrigatórios.');
+  }
+  if (!Number.isSafeInteger(amountCents) || amountCents <= 0) {
+    throw new HttpsError('invalid-argument', 'amountCents deve ser um inteiro estritamente positivo em centavos.');
+  }
+  if (!idemKey) throw new HttpsError('invalid-argument', 'Chave de idempotência é obrigatória.');
+
+  const depositId = serverGenerateDepositDocId(itemId, idemKey);
+
+  return await db.runTransaction(async (tx) => {
+    const listRef = db.collection('acquisition_lists').doc(listId);
+    const listSnap = await tx.get(listRef);
+    if (!listSnap.exists) throw new HttpsError('not-found', 'Lista não encontrada.');
+
+    const itemRef = listRef.collection('items').doc(itemId);
+    const itemSnap = await tx.get(itemRef);
+    if (!itemSnap.exists) throw new HttpsError('not-found', 'Item não encontrado.');
+    const itemData = itemSnap.data();
+
+    const depositRef = itemRef.collection('deposits').doc(depositId);
+    const depositSnap = await tx.get(depositRef);
+    if (depositSnap.exists) {
+      return { deposit: depositSnap.data(), item: itemData, isIdempotentReplay: true };
+    }
+
+    const now = new Date().toISOString();
+    const depositDoc = {
+      id: depositId,
+      itemId,
+      contributorUid: cleanCaller,
+      amountCents,
+      sourceAccountId: sourceAccountId || null,
+      depositDate,
+      notes,
+      createdAt: now,
+    };
+    tx.set(depositRef, depositDoc);
+
+    const newSaved = (itemData.savedAmountCents || 0) + amountCents;
+    let newStage = itemData.stage;
+    if (itemData.targetAmountCents && newSaved >= itemData.targetAmountCents) {
+      newStage = 'pronto';
+    } else if (newSaved > 0 && itemData.stage === 'pesquisa') {
+      newStage = 'poupando';
+    }
+
+    const updatedItem = {
+      ...itemData,
+      savedAmountCents: newSaved,
+      stage: newStage,
+      updatedAt: now,
+    };
+    tx.update(itemRef, {
+      savedAmountCents: newSaved,
+      stage: newStage,
+      updatedAt: now,
+    });
+
+    return { deposit: depositDoc, item: updatedItem, isIdempotentReplay: false };
+  });
+}
+
+// ------------------------------------------------------------------------------
+// CALLABLE EXPORTS FASE 8
+// ------------------------------------------------------------------------------
+
+export const acquisitionCheckoutOfficial = onCall(
+  { region: 'us-central1' },
+  async (request) => {
+    return await executeServerSideAcquisitionCheckout(
+      getAdminDb(),
+      request.auth?.uid,
+      request.data
+    );
+  }
+);
+
+export const recordStockMovementOfficial = onCall(
+  { region: 'us-central1' },
+  async (request) => {
+    return await executeServerSideRecordStockMovement(
+      getAdminDb(),
+      request.auth?.uid,
+      request.data
+    );
+  }
+);
+
+export const recordAcquisitionQuoteOfficial = onCall(
+  { region: 'us-central1' },
+  async (request) => {
+    return await executeServerSideRecordQuote(
+      getAdminDb(),
+      request.auth?.uid,
+      request.data
+    );
+  }
+);
+
+export const recordAcquisitionDepositOfficial = onCall(
+  { region: 'us-central1' },
+  async (request) => {
+    return await executeServerSideRecordDeposit(
+      getAdminDb(),
+      request.auth?.uid,
+      request.data
+    );
+  }
+);
