@@ -5,7 +5,7 @@ import {
   signInWithEmailAndPassword,
   signOut,
 } from 'firebase/auth';
-import { terminate } from 'firebase/firestore';
+import { collection, doc, getDoc, getDocs, terminate } from 'firebase/firestore';
 import { auth, db } from './firebase';
 import { LOCAL_EMULATOR_PROJECT_ID } from '../config/environment';
 import { createSpace, getSpaceById } from './spaceService';
@@ -19,6 +19,7 @@ import {
   getExpensePaymentDeclarations,
   getSharedExpenses,
   recordSupplierRefund,
+  rejectExpensePayment,
   revokeExpensePaymentApproval,
 } from './sharedFinanceService';
 
@@ -33,7 +34,7 @@ async function clearEmulatorsData(): Promise<void> {
   );
 }
 
-test('FASE 6 — EMULATOR INTEGRATION: Rateios, Validações e Reembolsos no Backend Confiável', async (t) => {
+test('FASE 6 — EMULATOR INTEGRATION: Rateios, Segregação de Autoridade vs Beneficiário, Imutabilidade e Notificações', async (t) => {
   await clearEmulatorsData();
 
   let aliceUid = '';
@@ -42,12 +43,15 @@ test('FASE 6 — EMULATOR INTEGRATION: Rateios, Validações e Reembolsos no Bac
   let spaceId = '';
   let expenseId = '';
   let aliceAccountId = '';
+  let bobAccountId = '';
+  let charlieDeclId = '';
+  let approvalId = '';
 
   // ----------------------------------------------------------------------------
   // SETUP: Criação de Usuários e Espaço no Emulator Real
   // ----------------------------------------------------------------------------
-  await t.test('1. Setup no Emulator: Registra Alice, Bob, Charlie e configura Espaço Compartilhado', async () => {
-    // 1. Alice (Criadora e Responsável Financeira)
+  await t.test('1. Setup no Emulator: Registra Alice (Validadora), Bob (Pagador/Credor) e Charlie (Membro)', async () => {
+    // 1. Alice (Criadora e Responsável pela Validação)
     const aliceCred = await createUserWithEmailAndPassword(
       auth,
       'alice.f6@teste.local',
@@ -67,7 +71,7 @@ test('FASE 6 — EMULATOR INTEGRATION: Rateios, Validações e Reembolsos no Bac
 
     const createdSpaceRes = await createSpace(
       aliceUid,
-      'Alice Credor',
+      'Alice Validadora',
       'alice.f6@teste.local',
       {
         name: 'República Fase 6',
@@ -81,7 +85,7 @@ test('FASE 6 — EMULATOR INTEGRATION: Rateios, Validações e Reembolsos no Bac
     const inviteBob = await createSpaceInvite(
       spaceId,
       aliceUid,
-      'Alice Credor',
+      'Alice Validadora',
       {
         invitedEmail: 'bob.f6@teste.local',
         invitedRole: 'member',
@@ -92,17 +96,17 @@ test('FASE 6 — EMULATOR INTEGRATION: Rateios, Validações e Reembolsos no Bac
     const inviteCharlie = await createSpaceInvite(
       spaceId,
       aliceUid,
-      'Alice Credor',
+      'Alice Validadora',
       {
         invitedEmail: 'charlie.f6@teste.local',
-        invitedRole: 'admin', // Charlie é administrador do espaço!
+        invitedRole: 'admin', // Charlie é administrador do espaço
       },
       false
     );
 
     await signOut(auth);
 
-    // 2. Bob aceita convite
+    // 2. Bob aceita convite e cria sua conta bancária oficial
     const bobCred = await createUserWithEmailAndPassword(
       auth,
       'bob.f6@teste.local',
@@ -111,9 +115,18 @@ test('FASE 6 — EMULATOR INTEGRATION: Rateios, Validações e Reembolsos no Bac
     bobUid = bobCred.user.uid;
     await acceptSpaceInvite(
       inviteBob.rawToken,
-      { uid: bobUid, displayName: 'Bob Devedor', email: 'bob.f6@teste.local' },
+      { uid: bobUid, displayName: 'Bob Credor', email: 'bob.f6@teste.local' },
       false
     );
+    const bobAcc = await createAccount(
+      bobUid,
+      {
+        name: 'Conta Nubank Bob',
+        type: 'checking',
+      },
+      false
+    );
+    bobAccountId = bobAcc.id;
     await signOut(auth);
 
     // 3. Charlie aceita convite (como admin)
@@ -128,6 +141,8 @@ test('FASE 6 — EMULATOR INTEGRATION: Rateios, Validações e Reembolsos no Bac
       { uid: charlieUid, displayName: 'Charlie Admin', email: 'charlie.f6@teste.local' },
       false
     );
+    await signOut(auth);
+
     // Valida que todos estão ativos no espaço autenticando como Alice
     await signInWithEmailAndPassword(auth, 'alice.f6@teste.local', 'SenhaForte123!');
     const loadedSpace = await getSpaceById(spaceId, aliceUid, false);
@@ -137,9 +152,9 @@ test('FASE 6 — EMULATOR INTEGRATION: Rateios, Validações e Reembolsos no Bac
   });
 
   // ----------------------------------------------------------------------------
-  // 2. CRIAÇÃO DE DESPESA COMPARTILHADA COM RATEIO EXATO VIA CLOUD FUNCTION
+  // 2. CRIAÇÃO DE DESPESA: SEGREGAÇÃO ENTRE RESPONSÁVEL (ALICE) E PAGADOR (BOB)
   // ----------------------------------------------------------------------------
-  await t.test('2. Alice cria despesa compartilhada de R$ 120,00 dividida igualmente entre os 3 membros', async () => {
+  await t.test('2. Alice cria despesa de R$ 120,00 paga por Bob: segregação entre Validadora e Credor', async () => {
     await signInWithEmailAndPassword(auth, 'alice.f6@teste.local', 'SenhaForte123!');
 
     const res = await createSharedExpense(
@@ -153,11 +168,12 @@ test('FASE 6 — EMULATOR INTEGRATION: Rateios, Validações e Reembolsos no Bac
         categoryId: 'cat_util',
         categoryName: 'Utilidades',
         createdByUid: aliceUid,
-        responsibleUid: aliceUid,
+        responsibleUid: aliceUid, // Autoridade de validação
+        payerUid: bobUid,         // Beneficiário do reembolso (desembolsou o dinheiro)
         splitMethod: 'equal',
         participants: [
-          { uid: aliceUid, name: 'Alice Credor' },
-          { uid: bobUid, name: 'Bob Devedor' },
+          { uid: aliceUid, name: 'Alice Validadora' },
+          { uid: bobUid, name: 'Bob Credor' },
           { uid: charlieUid, name: 'Charlie Admin' },
         ],
         idempotencyKey: 'idem_emul_exp_01',
@@ -168,10 +184,14 @@ test('FASE 6 — EMULATOR INTEGRATION: Rateios, Validações e Reembolsos no Bac
     assert.ok(res.expense.id);
     expenseId = res.expense.id;
     assert.equal(res.expense.totalOriginalAmountCents, 12000);
+    assert.equal(res.expense.responsibleUid, aliceUid);
+    assert.equal(res.expense.payerUid, bobUid);
     assert.equal(res.liabilities.length, 3);
 
     for (const liab of res.liabilities) {
+      assert.equal(liab.originalAmountCents, 4000);
       assert.equal(liab.assignedShareAmountCents, 4000); // R$ 40,00 cada
+      assert.equal(liab.refundAdjustmentCents, 0);
       assert.equal(liab.paidAmountCents, 0);
       assert.equal(liab.status, 'pending');
     }
@@ -182,34 +202,36 @@ test('FASE 6 — EMULATOR INTEGRATION: Rateios, Validações e Reembolsos no Bac
   // ----------------------------------------------------------------------------
   // 3. DECLARAÇÃO DE PAGAMENTO PELO DEVEDOR
   // ----------------------------------------------------------------------------
-  await t.test('3. Bob declara pagamento de R$ 40,00 via Pix; obrigação vai para in_validation', async () => {
-    await signInWithEmailAndPassword(auth, 'bob.f6@teste.local', 'SenhaForte123!');
+  await t.test('3. Charlie declara pagamento de R$ 40,00 via Pix; obrigação vai para in_validation', async () => {
+    await signInWithEmailAndPassword(auth, 'charlie.f6@teste.local', 'SenhaForte123!');
 
     const decl = await declareExpensePayment(
       {
         spaceId,
         expenseId,
-        memberUid: bobUid,
-        memberName: 'Bob Devedor',
+        memberUid: charlieUid,
+        memberName: 'Charlie Admin',
         amountCents: 4000,
         paymentDate: '2026-11-11',
         paymentMethod: 'pix',
         notes: 'Comprovante Pix #987654',
-        idempotencyKey: 'decl_emul_bob_01',
+        idempotencyKey: 'decl_emul_charlie_01',
       },
       false
     );
 
     assert.ok(decl.id);
+    charlieDeclId = decl.id;
     assert.equal(decl.status, 'pending_validation');
     assert.equal(decl.amountCents, 4000);
+    assert.equal(decl.payerUid, bobUid);
 
-    // Consulta Firestore: obrigação de Bob atualizada para in_validation sem alterar saldo pago
+    // Consulta Firestore: obrigação de Charlie atualizada para in_validation sem alterar saldo pago
     const liabs = await getExpenseLiabilities(spaceId, expenseId, false);
-    const bobLiab = liabs.find((l) => l.memberUid === bobUid)!;
-    assert.equal(bobLiab.status, 'in_validation');
-    assert.equal(bobLiab.paidAmountCents, 0);
-    assert.equal(bobLiab.remainingAmountCents, 4000);
+    const charlieLiab = liabs.find((l) => l.memberUid === charlieUid)!;
+    assert.equal(charlieLiab.status, 'in_validation');
+    assert.equal(charlieLiab.paidAmountCents, 0);
+    assert.equal(charlieLiab.remainingAmountCents, 4000);
 
     await signOut(auth);
   });
@@ -220,16 +242,13 @@ test('FASE 6 — EMULATOR INTEGRATION: Rateios, Validações e Reembolsos no Bac
   await t.test('4. Princípio da Autoridade Exclusiva: Charlie (Admin do espaço) tenta validar e é rejeitado com permission-denied', async () => {
     await signInWithEmailAndPassword(auth, 'charlie.f6@teste.local', 'SenhaForte123!');
 
-    const decls = await getExpensePaymentDeclarations(spaceId, expenseId, false);
-    const bobDecl = decls.find((d) => d.memberUid === bobUid)!;
-
     await assert.rejects(
       async () =>
         approveExpensePayment(
           {
             spaceId,
             expenseId,
-            declarationId: bobDecl.id,
+            declarationId: charlieDeclId,
             approverUid: charlieUid,
           },
           false
@@ -241,24 +260,37 @@ test('FASE 6 — EMULATOR INTEGRATION: Rateios, Validações e Reembolsos no Bac
   });
 
   // ----------------------------------------------------------------------------
-  // 5. APROVAÇÃO OFICIAL POR ALICE (RESPONSÁVEL) COM CRÉDITO BANCÁRIO REAL
+  // 5. SEGREGAÇÃO DE AUTORIDADE VS BENEFICIÁRIO & IMUTABILIDADE DA DECLARAÇÃO
   // ----------------------------------------------------------------------------
-  let approvalId = '';
-
-  await t.test('5. Alice (Responsável financeira) aprova pagamento de Bob: credita conta Nubank e quita cota', async () => {
+  await t.test('5. Alice tenta creditar sua própria conta (rejeitado); credita conta de Bob com sucesso (beneficiário legítimo)', async () => {
     await signInWithEmailAndPassword(auth, 'alice.f6@teste.local', 'SenhaForte123!');
 
-    const decls = await getExpensePaymentDeclarations(spaceId, expenseId, false);
-    const bobDecl = decls.find((d) => d.memberUid === bobUid)!;
+    // 5.1. Alice tenta creditar aliceAccountId (não é o payerUid da despesa) -> REJEITADO
+    await assert.rejects(
+      async () =>
+        approveExpensePayment(
+          {
+            spaceId,
+            expenseId,
+            declarationId: charlieDeclId,
+            approverUid: aliceUid,
+            destinationAccountId: aliceAccountId, // Conta de Alice, mas Bob é quem pagou!
+            idempotencyKey: 'appr_emul_spoofed_acc',
+          },
+          false
+        ),
+      /permission-denied|não pertence ao credor\/beneficiário/
+    );
 
+    // 5.2. Alice aprova direcionando o crédito para bobAccountId (conta do beneficiário legítimo) -> SUCESSO
     const res = await approveExpensePayment(
       {
         spaceId,
         expenseId,
-        declarationId: bobDecl.id,
+        declarationId: charlieDeclId,
         approverUid: aliceUid,
-        destinationAccountId: aliceAccountId,
-        idempotencyKey: 'appr_emul_bob_01',
+        destinationAccountId: bobAccountId,
+        idempotencyKey: 'appr_emul_charlie_01',
       },
       false
     );
@@ -267,68 +299,117 @@ test('FASE 6 — EMULATOR INTEGRATION: Rateios, Validações e Reembolsos no Bac
     approvalId = res.approval.id;
     assert.equal(res.approval.amountCents, 4000);
     assert.equal(res.approval.isRevoked, false);
+    assert.equal(res.approval.beneficiaryUid, bobUid);
     assert.equal(res.liability.status, 'paid');
     assert.equal(res.liability.paidAmountCents, 4000);
     assert.equal(res.liability.remainingAmountCents, 0);
 
-    // Verifica saldo bancário de Alice no Firestore
-    const accs = await getUserAccounts(aliceUid, false, false);
-    const aliceAcc = accs.find((a) => a.id === aliceAccountId)!;
-    assert.equal(aliceAcc.projectedBalanceCents, 4000);
+    // 5.3. Verifica saldo bancário no Firestore: Alice permaneceu em R$ 0,00
+    const aliceAccs = await getUserAccounts(aliceUid, false, false);
+    const aliceAcc = aliceAccs.find((a) => a.id === aliceAccountId)!;
+    assert.equal(aliceAcc.projectedBalanceCents, 0);
+
+    // 5.4. Imutabilidade da declaração: o documento raw de declaração NÃO é alterado
+    const rawDeclSnap = await getDoc(
+      doc(db, 'spaces', spaceId, 'shared_expenses', expenseId, 'payment_declarations', charlieDeclId)
+    );
+    assert.ok(rawDeclSnap.exists());
+    assert.equal(rawDeclSnap.data().status, 'pending_validation'); // Raw nunca é mutado
 
     // Repetição idempotente
     const replay = await approveExpensePayment(
       {
         spaceId,
         expenseId,
-        declarationId: bobDecl.id,
+        declarationId: charlieDeclId,
         approverUid: aliceUid,
-        destinationAccountId: aliceAccountId,
-        idempotencyKey: 'appr_emul_bob_01',
+        destinationAccountId: bobAccountId,
+        idempotencyKey: 'appr_emul_charlie_01',
       },
       false
     );
     assert.equal(replay.approval.id, approvalId);
 
     await signOut(auth);
+
+    // Verifica que Bob (beneficiário legítimo) recebeu o crédito de R$ 40,00 em sua conta
+    await signInWithEmailAndPassword(auth, 'bob.f6@teste.local', 'SenhaForte123!');
+    const bobAccs = await getUserAccounts(bobUid, false, false);
+    const bobAcc = bobAccs.find((a) => a.id === bobAccountId)!;
+    assert.equal(bobAcc.projectedBalanceCents, 4000);
+    await signOut(auth);
   });
 
   // ----------------------------------------------------------------------------
-  // 6. REVOGAÇÃO DE APROVAÇÃO (HISTÓRICO IMUTÁVEL E ESTORNO CONTÁBIL)
+  // 6. HISTÓRICO IMUTÁVEL DE REJEIÇÃO (SUBCOLEÇÃO PAYMENT_REJECTIONS)
   // ----------------------------------------------------------------------------
-  await t.test('6. Alice revoga aprovação de Bob: gera compensação contábil, debita conta e reabre cota de Bob', async () => {
+  let aliceDeclId = '';
+
+  await t.test('6. Alice rejeita declaração: gera evento append-only em payment_rejections sem mutar documento original', async () => {
+    // 6.1. Alice declara pagamento da sua cota (R$ 40,00)
     await signInWithEmailAndPassword(auth, 'alice.f6@teste.local', 'SenhaForte123!');
 
-    const revRes = await revokeExpensePaymentApproval(
+    const decl = await declareExpensePayment(
       {
         spaceId,
         expenseId,
-        approvalId,
-        revokerUid: aliceUid,
-        reason: 'Cheque sem fundos compensado indevidamente',
-        idempotencyKey: 'revoc_emul_bob_01',
+        memberUid: aliceUid,
+        memberName: 'Alice Validadora',
+        amountCents: 4000,
+        paymentDate: '2026-11-11',
+        paymentMethod: 'pix',
+        notes: 'Declaração para teste de rejeição',
+        idempotencyKey: 'decl_emul_alice_01',
+      },
+      false
+    );
+    aliceDeclId = decl.id;
+
+    // 6.2. Alice rejeita a própria declaração com motivo obrigatório
+    const rejRes = await rejectExpensePayment(
+      {
+        spaceId,
+        expenseId,
+        declarationId: aliceDeclId,
+        rejecterUid: aliceUid,
+        rejectionReason: 'Comprovante ilegível ou incorreto',
+        idempotencyKey: 'rej_emul_alice_01',
       },
       false
     );
 
-    assert.ok(revRes.revocation.id);
-    assert.equal(revRes.revocation.revokedAmountCents, 4000);
-    assert.equal(revRes.liability.status, 'pending');
-    assert.equal(revRes.liability.paidAmountCents, 0);
-    assert.equal(revRes.liability.remainingAmountCents, 4000);
+    assert.ok(rejRes.rejection.id);
+    assert.equal(rejRes.rejection.declarationId, aliceDeclId);
+    assert.equal(rejRes.rejection.rejectionReason || rejRes.rejection.reason, 'Comprovante ilegível ou incorreto');
+    assert.equal(rejRes.rejection.rejectedByUid, aliceUid);
+    assert.equal(rejRes.liability.status, 'pending');
 
-    // Saldo bancário de Alice volta para 0
-    const accs = await getUserAccounts(aliceUid, false, false);
-    const aliceAcc = accs.find((a) => a.id === aliceAccountId)!;
-    assert.equal(aliceAcc.projectedBalanceCents, 0);
+    // 6.3. Verifica no Firestore: documento criado em payment_rejections e declaração raw inalterada
+    const rejSnap = await getDoc(
+      doc(db, 'spaces', spaceId, 'shared_expenses', expenseId, 'payment_rejections', rejRes.rejection.id)
+    );
+    assert.ok(rejSnap.exists());
+    assert.equal(rejSnap.data().rejectionReason || rejSnap.data().reason, 'Comprovante ilegível ou incorreto');
+
+    const rawDeclSnap = await getDoc(
+      doc(db, 'spaces', spaceId, 'shared_expenses', expenseId, 'payment_declarations', aliceDeclId)
+    );
+    assert.ok(rawDeclSnap.exists());
+    assert.equal(rawDeclSnap.data().status, 'pending_validation'); // Raw nunca é mutado
+
+    // Consulta derivada pelo serviço
+    const decls = await getExpensePaymentDeclarations(spaceId, expenseId, false);
+    const aliceDeclDerived = decls.find((d) => d.id === aliceDeclId)!;
+    assert.equal(aliceDeclDerived.status, 'rejected');
+    assert.equal(aliceDeclDerived.rejectionReason, 'Comprovante ilegível ou incorreto');
 
     await signOut(auth);
   });
 
   // ----------------------------------------------------------------------------
-  // 7. REEMBOLSO DE FORNECEDOR (SUPPLIER REFUND)
+  // 7. REEMBOLSO DE FORNECEDOR (SUPPLIER REFUND): PRESERVAÇÃO E CREDIT NOTE
   // ----------------------------------------------------------------------------
-  await t.test('7. Reembolso comercial do fornecedor ajusta proporcionalmente as cotas', async () => {
+  await t.test('7. Reembolso comercial do fornecedor: preserva originalAmountCents e calcula creditNoteCents para Charlie', async () => {
     await signInWithEmailAndPassword(auth, 'alice.f6@teste.local', 'SenhaForte123!');
 
     const refund = await recordSupplierRefund(
@@ -336,7 +417,7 @@ test('FASE 6 — EMULATOR INTEGRATION: Rateios, Validações e Reembolsos no Bac
         spaceId,
         expenseId,
         refundType: 'partial_refund',
-        amountRefundedCents: 3000, // R$ 30,00 devolvidos pela companhia elétrica
+        amountRefundedCents: 3000, // R$ 30,00 devolvidos pela companhia elétrica (R$ 10,00 para cada um dos 3)
         recipientUid: aliceUid,
         date: '2026-11-12',
         justification: 'Devolução de cobrança indevida por bandeira tarifária',
@@ -350,11 +431,95 @@ test('FASE 6 — EMULATOR INTEGRATION: Rateios, Validações e Reembolsos no Bac
 
     const liabs = await getExpenseLiabilities(spaceId, expenseId, false);
     for (const l of liabs) {
+      // PRESERVAÇÃO ESTRITA: Cota original nunca é reduzida
+      assert.equal(l.originalAmountCents, 4000);
       assert.equal(l.assignedShareAmountCents, 4000);
-      assert.equal(l.adjustedShareAmountCents, 3000); // 4000 - 1000 = 3000 cada
-      assert.equal(l.remainingAmountCents, 3000);
+      assert.equal(l.refundAdjustmentCents, 1000);
+      assert.equal(l.adjustedShareAmountCents, 3000); // 4000 - 1000 = 3000
+
+      if (l.memberUid === charlieUid) {
+        // Charlie já havia pago 4000. Sua cota ajustada é 3000. Logo, possui creditNote de 1000!
+        assert.equal(l.paidAmountCents, 4000);
+        assert.equal(l.remainingAmountCents, 0);
+        assert.equal(l.creditNoteCents, 1000);
+        assert.equal(l.status, 'paid');
+      } else {
+        assert.equal(l.paidAmountCents, 0);
+        assert.equal(l.remainingAmountCents, 3000);
+        assert.equal(l.creditNoteCents, 0);
+      }
     }
 
+    await signOut(auth);
+  });
+
+  // ----------------------------------------------------------------------------
+  // 8. REVOGAÇÃO DE APROVAÇÃO (ESTORNO CONTÁBIL NO BENEFICIÁRIO)
+  // ----------------------------------------------------------------------------
+  await t.test('8. Alice revoga aprovação de Charlie: estorna crédito bancário de Bob e reabre cota de Charlie', async () => {
+    await signInWithEmailAndPassword(auth, 'alice.f6@teste.local', 'SenhaForte123!');
+
+    const revRes = await revokeExpensePaymentApproval(
+      {
+        spaceId,
+        expenseId,
+        approvalId,
+        revokerUid: aliceUid,
+        reason: 'Estorno administrativo para reprocessamento',
+        idempotencyKey: 'revoc_emul_charlie_01',
+      },
+      false
+    );
+
+    assert.ok(revRes.revocation.id);
+    assert.equal(revRes.revocation.revokedAmountCents, 4000);
+    assert.equal(revRes.liability.status, 'pending');
+    assert.equal(revRes.liability.paidAmountCents, 0);
+    assert.equal(revRes.liability.remainingAmountCents, 3000); // Saldo devedor ajustado (pós-refund)
+    assert.equal(revRes.liability.creditNoteCents, 0);
+
+    await signOut(auth);
+
+    // Saldo bancário de Bob volta para 0 (estorno compensatório)
+    await signInWithEmailAndPassword(auth, 'bob.f6@teste.local', 'SenhaForte123!');
+    const bobAccs = await getUserAccounts(bobUid, false, false);
+    const bobAcc = bobAccs.find((a) => a.id === bobAccountId)!;
+    assert.equal(bobAcc.projectedBalanceCents, 0);
+    await signOut(auth);
+  });
+
+  // ----------------------------------------------------------------------------
+  // 9. AUDITORIA DE NOTIFICAÇÕES NO FIRESTORE
+  // ----------------------------------------------------------------------------
+  await t.test('9. Validação de Notificações no Firestore para Alice, Bob e Charlie', async () => {
+    // 9.1. Notificações de Alice (Validadora)
+    await signInWithEmailAndPassword(auth, 'alice.f6@teste.local', 'SenhaForte123!');
+    const aliceNotifsSnap = await getDocs(collection(db, 'users', aliceUid, 'notifications'));
+    const aliceNotifs = aliceNotifsSnap.docs.map((d) => d.data());
+    assert.ok(aliceNotifs.length > 0);
+    assert.ok(aliceNotifs.some((n) => n.type === 'shared_expense_assigned'));
+    assert.ok(aliceNotifs.some((n) => n.type === 'payment_declaration_submitted'));
+    await signOut(auth);
+
+    // 9.2. Notificações de Bob (Credor)
+    await signInWithEmailAndPassword(auth, 'bob.f6@teste.local', 'SenhaForte123!');
+    const bobNotifsSnap = await getDocs(collection(db, 'users', bobUid, 'notifications'));
+    const bobNotifs = bobNotifsSnap.docs.map((d) => d.data());
+    assert.ok(bobNotifs.length > 0);
+    assert.ok(bobNotifs.some((n) => n.type === 'shared_expense_assigned'));
+    assert.ok(bobNotifs.some((n) => n.type === 'payment_approved'));
+    assert.ok(bobNotifs.some((n) => n.type === 'payment_approval_revoked'));
+    await signOut(auth);
+
+    // 9.3. Notificações de Charlie (Membro devedor)
+    await signInWithEmailAndPassword(auth, 'charlie.f6@teste.local', 'SenhaForte123!');
+    const charlieNotifsSnap = await getDocs(collection(db, 'users', charlieUid, 'notifications'));
+    const charlieNotifs = charlieNotifsSnap.docs.map((d) => d.data());
+    assert.ok(charlieNotifs.length > 0);
+    assert.ok(charlieNotifs.some((n) => n.type === 'shared_expense_assigned'));
+    assert.ok(charlieNotifs.some((n) => n.type === 'payment_approved'));
+    assert.ok(charlieNotifs.some((n) => n.type === 'supplier_refund_confirmed'));
+    assert.ok(charlieNotifs.some((n) => n.type === 'payment_approval_revoked'));
     await signOut(auth);
   });
 

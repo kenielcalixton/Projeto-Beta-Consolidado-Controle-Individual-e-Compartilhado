@@ -16,6 +16,7 @@ import {
   query,
   setDoc,
   updateDoc,
+  deleteDoc,
   where,
 } from 'firebase/firestore';
 
@@ -980,6 +981,133 @@ test('FIRESTORE SECURITY RULES — Validação Real no Firestore Emulator (Fase 
           approvalId: 'appr_hack',
           reason: 'Burlar auditoria',
         }
+      )
+    );
+
+    // 9.7. Imutabilidade estrita de declarações: update e delete são ESTRITAMENTE BLOQUEADOS para clientes
+    await assertFails(
+      updateDoc(
+        doc(
+          bobDb,
+          'spaces',
+          'space_f6',
+          'shared_expenses',
+          'exp_test_1',
+          'payment_declarations',
+          'decl_bob_valid'
+        ),
+        {
+          status: 'approved',
+          amountCents: 99999,
+        }
+      )
+    );
+    await assertFails(
+      deleteDoc(
+        doc(
+          bobDb,
+          'spaces',
+          'space_f6',
+          'shared_expenses',
+          'exp_test_1',
+          'payment_declarations',
+          'decl_bob_valid'
+        )
+      )
+    );
+
+    // 9.8. Escrita direta em payment_rejections pelo cliente é ESTRITAMENTE BLOQUEADA (Cloud Functions exclusive)
+    await assertFails(
+      setDoc(
+        doc(
+          aliceDb,
+          'spaces',
+          'space_f6',
+          'shared_expenses',
+          'exp_test_1',
+          'payment_rejections',
+          'rej_hack'
+        ),
+        {
+          id: 'rej_hack',
+          declarationId: 'decl_bob_valid',
+          reason: 'Forjar rejeição direta',
+        }
+      )
+    );
+
+    // 9.9. Validação de valor: declaração com valor <= 0 é bloqueada
+    await assertFails(
+      setDoc(
+        doc(
+          bobDb,
+          'spaces',
+          'space_f6',
+          'shared_expenses',
+          'exp_test_1',
+          'payment_declarations',
+          'decl_bob_zero'
+        ),
+        {
+          id: 'decl_bob_zero',
+          expenseId: 'exp_test_1',
+          spaceId: 'space_f6',
+          memberUid: 'uid_bob',
+          amountCents: 0,
+          paymentDate: '2026-11-11',
+          status: 'pending_validation',
+        }
+      )
+    );
+
+    // 9.10. Leitura de payment_rejections: membros leem, não membros são bloqueados
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      const adminDb = context.firestore();
+      await setDoc(
+        doc(
+          adminDb,
+          'spaces',
+          'space_f6',
+          'shared_expenses',
+          'exp_test_1',
+          'payment_rejections',
+          'rej_official_1'
+        ),
+        {
+          id: 'rej_official_1',
+          declarationId: 'decl_bob_valid',
+          expenseId: 'exp_test_1',
+          spaceId: 'space_f6',
+          rejectionReason: 'Comprovante ilegível',
+          rejectedByUid: 'uid_alice',
+        }
+      );
+    });
+
+    await assertSucceeds(
+      getDoc(
+        doc(
+          bobDb,
+          'spaces',
+          'space_f6',
+          'shared_expenses',
+          'exp_test_1',
+          'payment_rejections',
+          'rej_official_1'
+        )
+      )
+    );
+    await assertFails(
+      getDoc(
+        doc(
+          eveDb,
+          'spaces',
+          'space_f6',
+          'shared_expenses',
+          'exp_test_1',
+          'payment_rejections',
+          'rej_official_1'
+        )
       )
     );
   });

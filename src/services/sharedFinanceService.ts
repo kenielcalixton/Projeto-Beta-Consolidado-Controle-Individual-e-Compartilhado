@@ -17,9 +17,11 @@ import {
   ExpenseLiabilitySplitMethod,
   ExpensePaymentApproval,
   ExpensePaymentDeclaration,
+  ExpensePaymentRejection,
   FinancialMovement,
   ISO8601String,
   PaymentDeclarationMethod,
+  PaymentDeclarationStatus,
   SharedExpense,
   SharedExpenseCommitmentStatus,
   SharedExpenseOriginType,
@@ -33,11 +35,13 @@ import {
   generateApprovalRevocationDocId,
   generatePaymentApprovalDocId,
   generatePaymentDeclarationDocId,
+  generatePaymentRejectionDocId,
   generateSharedExpenseDocId,
   generateSupplierRefundDocId,
   validatePositiveCents,
 } from '../utils/movementLedger';
 import { recordMovement, reverseMovement, withDemoLock } from './ledgerService';
+import { sendSpaceNotification } from './spaceNotificationService';
 import { universalStorage } from '../utils/universalStorage';
 
 /**
@@ -49,6 +53,7 @@ import { universalStorage } from '../utils/universalStorage';
  * - Obrigações: spaces/{spaceId}/shared_expenses/{expenseId}/liabilities/{memberUid}
  * - Declarações: spaces/{spaceId}/shared_expenses/{expenseId}/payment_declarations/{declarationId}
  * - Aprovações: spaces/{spaceId}/shared_expenses/{expenseId}/payment_approvals/{approvalId}
+ * - Rejeições: spaces/{spaceId}/shared_expenses/{expenseId}/payment_rejections/{rejectionId}
  * - Revogações: spaces/{spaceId}/shared_expenses/{expenseId}/approval_revocations/{revocationId}
  * - Reembolsos: spaces/{spaceId}/shared_expenses/{expenseId}/refunds/{refundId}
  *
@@ -56,7 +61,7 @@ import { universalStorage } from '../utils/universalStorage';
  * 1. Segregação Absoluta de Papéis:
  *    - createdByUid: Autor do cadastro
  *    - responsibleUid: Responsável financeiro e credor legítimo para validações
- *    - payerUid: Quem desembolsou ao fornecedor comercial
+ *    - payerUid: Quem desembolsou ao fornecedor comercial (beneficiário do reembolso)
  * 2. Princípio da Autoridade Exclusiva de Validação:
  *    - SOMENTE o responsibleUid da despesa tem competência para aprovar, rejeitar ou revogar pagamentos.
  *    - Administradores e proprietários do espaço NÃO possuem autoridade universal de aprovação.
@@ -64,9 +69,9 @@ import { universalStorage } from '../utils/universalStorage';
  *    - A soma das cotas de rateio é exatamente igual ao total da despesa (algoritmo de Maior Resto).
  * 4. Declaração vs Aprovação:
  *    - Declarações pendentes NÃO alteram o saldo oficial da obrigação nem registram créditos na conta.
- *    - Somente a aprovação do credor reconhece a quitação e gera o FinancialMovement na conta bancária.
+ *    - Somente a aprovação do credor reconhece a quitação e gera o FinancialMovement na conta bancária do beneficiário (payerUid).
  * 5. Histórico Imutável e Append-Only:
- *    - Aprovações nunca são deletadas ou alteradas retroativamente.
+ *    - Declarações, aprovações e rejeições nunca são sobrescritas ou alteradas retroativamente.
  *    - Revogações são novos eventos compensatórios que restabelecem o saldo da cota e estornam movimentos.
  */
 
@@ -74,8 +79,22 @@ export const DEMO_SHARED_EXPENSES_KEY = 'mpf_v3_demo_shared_expenses';
 export const DEMO_SHARED_LIABILITIES_KEY = 'mpf_v3_demo_shared_liabilities';
 export const DEMO_PAYMENT_DECLARATIONS_KEY = 'mpf_v3_demo_payment_declarations';
 export const DEMO_PAYMENT_APPROVALS_KEY = 'mpf_v3_demo_payment_approvals';
+export const DEMO_PAYMENT_REJECTIONS_KEY = 'mpf_v3_demo_payment_rejections';
 export const DEMO_APPROVAL_REVOCATIONS_KEY = 'mpf_v3_demo_approval_revocations';
 export const DEMO_SUPPLIER_REFUNDS_KEY = 'mpf_v3_demo_supplier_refunds';
+
+export function loadDemoPaymentRejections(): ExpensePaymentRejection[] {
+  try {
+    const raw = universalStorage.getItem(DEMO_PAYMENT_REJECTIONS_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveDemoPaymentRejections(data: ExpensePaymentRejection[]): void {
+  universalStorage.setItem(DEMO_PAYMENT_REJECTIONS_KEY, JSON.stringify(data));
+}
 
 // ==============================================================================
 // HELPERS DE ARMAZENAMENTO DEMO
@@ -281,9 +300,12 @@ export async function createSharedExpense(
       memberUid: cs.memberUid,
       memberName: cs.memberName,
       assignedShareAmountCents: cs.assignedShareAmountCents,
+      originalAmountCents: cs.assignedShareAmountCents,
+      refundAdjustmentCents: 0,
       adjustedShareAmountCents: cs.adjustedShareAmountCents,
       paidAmountCents: 0,
       remainingAmountCents: cs.adjustedShareAmountCents,
+      creditNoteCents: 0,
       status: 'pending',
       splitMethod: cs.splitMethod,
       splitRatio: cs.splitRatio,
@@ -296,6 +318,24 @@ export async function createSharedExpense(
     const allLiabs = loadDemoSharedLiabilities();
     allLiabs.push(...newLiabilities);
     saveDemoSharedLiabilities(allLiabs);
+
+    // Notificações em modo demo para participantes
+    for (const cs of calculatedSplits) {
+      if (cs.memberUid !== input.createdByUid) {
+        sendSpaceNotification(
+          {
+            userId: cs.memberUid,
+            spaceId,
+            spaceName: 'Espaço Compartilhado',
+            type: 'shared_expense_assigned',
+            title: 'Nova despesa compartilhada',
+            message: `Você possui uma cota de R$ ${(cs.assignedShareAmountCents / 100).toFixed(2)} referente a "${input.title}".`,
+            originEventId: expenseId,
+          },
+          true
+        ).catch(() => {});
+      }
+    }
 
     return { expense: newExpense, liabilities: newLiabilities };
   });
@@ -460,6 +500,7 @@ export async function declareExpensePayment(
       memberUid: input.memberUid,
       memberName: input.memberName,
       responsibleUid: expense.responsibleUid,
+      payerUid: expense.payerUid || expense.responsibleUid,
       amountCents: input.amountCents,
       paymentDate: input.paymentDate,
       paymentMethod: input.paymentMethod || 'pix',
@@ -479,6 +520,20 @@ export async function declareExpensePayment(
     liability.status = 'in_validation';
     saveDemoSharedLiabilities(liabilities);
 
+    // Notificação em modo demo ao responsável financeiro
+    sendSpaceNotification(
+      {
+        userId: expense.responsibleUid,
+        spaceId: input.spaceId,
+        spaceName: 'Espaço Compartilhado',
+        type: 'payment_declaration_submitted',
+        title: 'Nova declaração de pagamento',
+        message: `${input.memberName} declarou o pagamento de R$ ${(input.amountCents / 100).toFixed(2)} referente à cota de "${expense.title}".`,
+        originEventId: declId,
+      },
+      true
+    ).catch(() => {});
+
     return newDecl;
   });
 }
@@ -489,20 +544,54 @@ export async function getExpensePaymentDeclarations(
   isDemo = false
 ): Promise<ExpensePaymentDeclaration[]> {
   if (!isDemo) {
-    const colRef = collection(
-      db,
-      'spaces',
-      spaceId,
-      'shared_expenses',
-      expenseId,
-      'payment_declarations'
-    );
-    const snap = await getDocs(colRef);
-    return snap.docs.map((d) => d.data() as ExpensePaymentDeclaration);
+    const colRef = collection(db, 'spaces', spaceId, 'shared_expenses', expenseId, 'payment_declarations');
+    const apprRef = collection(db, 'spaces', spaceId, 'shared_expenses', expenseId, 'payment_approvals');
+    const rejRef = collection(db, 'spaces', spaceId, 'shared_expenses', expenseId, 'payment_rejections');
+    const revocRef = collection(db, 'spaces', spaceId, 'shared_expenses', expenseId, 'approval_revocations');
+
+    const [declSnap, apprSnap, rejSnap, revocSnap] = await Promise.all([
+      getDocs(colRef),
+      getDocs(apprRef),
+      getDocs(rejRef),
+      getDocs(revocRef),
+    ]);
+
+    const approvals = apprSnap.docs.map((d) => d.data() as ExpensePaymentApproval);
+    const rejections = rejSnap.docs.map((d) => d.data() as ExpensePaymentRejection);
+    const revocations = revocSnap.docs.map((d) => d.data() as ExpenseApprovalRevocation);
+
+    return declSnap.docs.map((d) => {
+      const decl = d.data() as ExpensePaymentDeclaration;
+      const rej = rejections.find((r) => r.declarationId === decl.id);
+      if (rej) {
+        return { ...decl, status: 'rejected' as const, rejectionReason: rej.reason };
+      }
+      const appr = approvals.find((a) => a.declarationId === decl.id);
+      if (appr) {
+        const hasRevoc = revocations.some((rev) => rev.approvalId === appr.id) || appr.isRevoked;
+        return { ...decl, status: (hasRevoc ? 'cancelled' : 'approved') as PaymentDeclarationStatus };
+      }
+      return { ...decl, status: 'pending_validation' as const };
+    });
   }
 
-  const all = loadDemoPaymentDeclarations();
-  return all.filter((d) => d.spaceId === spaceId && d.expenseId === expenseId);
+  const allDecls = loadDemoPaymentDeclarations().filter((d) => d.spaceId === spaceId && d.expenseId === expenseId);
+  const approvals = loadDemoPaymentApprovals().filter((a) => a.spaceId === spaceId && a.expenseId === expenseId);
+  const rejections = loadDemoPaymentRejections().filter((r) => r.spaceId === spaceId && r.expenseId === expenseId);
+  const revocations = loadDemoApprovalRevocations().filter((rev) => rev.spaceId === spaceId && rev.expenseId === expenseId);
+
+  return allDecls.map((decl) => {
+    const rej = rejections.find((r) => r.declarationId === decl.id);
+    if (rej) {
+      return { ...decl, status: 'rejected', rejectionReason: rej.reason };
+    }
+    const appr = approvals.find((a) => a.declarationId === decl.id);
+    if (appr) {
+      const hasRevoc = revocations.some((rev) => rev.approvalId === appr.id) || appr.isRevoked;
+      return { ...decl, status: hasRevoc ? 'cancelled' : 'approved' };
+    }
+    return { ...decl, status: 'pending_validation' };
+  });
 }
 
 export async function getSpacePendingDeclarations(
@@ -614,15 +703,16 @@ export async function approveExpensePayment(
       throw new Error('Obrigação do membro não encontrada.');
     }
 
+    const beneficiaryUid = expense.payerUid || expense.responsibleUid;
     const now = new Date().toISOString();
     let financialMovement: FinancialMovement | undefined;
 
-    // Se uma conta de destino foi fornecida, registra o crédito contábil real para o responsável
+    // Se uma conta de destino foi fornecida, registra o crédito contábil real para o beneficiário (payerUid)
     if (input.destinationAccountId) {
       financialMovement = await recordMovement(
         {
           accountId: input.destinationAccountId,
-          userId: expense.responsibleUid,
+          userId: beneficiaryUid,
           direction: 'inflow',
           amountCents: decl.amountCents,
           effectiveDate: decl.paymentDate,
@@ -642,8 +732,10 @@ export async function approveExpensePayment(
       expenseId: input.expenseId,
       spaceId: input.spaceId,
       declarationId: input.declarationId,
+      liabilityId: decl.memberUid,
       memberUid: decl.memberUid,
       responsibleUid: expense.responsibleUid,
+      beneficiaryUid,
       amountCents: decl.amountCents,
       destinationAccountId: input.destinationAccountId,
       financialMovementId: financialMovement?.id,
@@ -657,9 +749,7 @@ export async function approveExpensePayment(
     approvals.push(approval);
     saveDemoPaymentApprovals(approvals);
 
-    decl.status = 'approved';
-    decl.updatedAt = now;
-    saveDemoPaymentDeclarations(declarations);
+    // REGRA DE IMUTABILIDADE: O documento da declaração original NÃO é alterado em disco/storage!
 
     // Atualiza saldo da obrigação
     const currentPaid = liability.paidAmountCents || 0;
@@ -667,8 +757,53 @@ export async function approveExpensePayment(
     const remaining = liability.adjustedShareAmountCents - newPaid;
     liability.paidAmountCents = newPaid;
     liability.remainingAmountCents = Math.max(0, remaining);
-    liability.status = remaining <= 0 ? 'paid' : 'partially_paid';
+    const newStatus = remaining <= 0 ? 'paid' : 'partially_paid';
+    liability.status = newStatus;
     saveDemoSharedLiabilities(liabilities);
+
+    // Notificação ao devedor
+    sendSpaceNotification(
+      {
+        userId: decl.memberUid,
+        spaceId: input.spaceId,
+        spaceName: 'Espaço Compartilhado',
+        type: 'payment_approved',
+        title: 'Pagamento aprovado!',
+        message: `Seu pagamento de R$ ${(decl.amountCents / 100).toFixed(2)} referente a "${expense.title}" foi aprovado pelo responsável.`,
+        originEventId: approvalId,
+      },
+      true
+    ).catch(() => {});
+
+    if (newStatus === 'paid') {
+      sendSpaceNotification(
+        {
+          userId: decl.memberUid,
+          spaceId: input.spaceId,
+          spaceName: 'Espaço Compartilhado',
+          type: 'liability_settled',
+          title: 'Cota quitada integralmente!',
+          message: `Sua participação na despesa "${expense.title}" foi totalmente liquidada.`,
+          originEventId: approvalId,
+        },
+        true
+      ).catch(() => {});
+    }
+
+    if (beneficiaryUid !== input.approverUid) {
+      sendSpaceNotification(
+        {
+          userId: beneficiaryUid,
+          spaceId: input.spaceId,
+          spaceName: 'Espaço Compartilhado',
+          type: 'payment_approved',
+          title: 'Reembolso creditado',
+          message: `Foi aprovado o reembolso de R$ ${(decl.amountCents / 100).toFixed(2)} de ${decl.memberName} referente a "${expense.title}".`,
+          originEventId: approvalId,
+        },
+        true
+      ).catch(() => {});
+    }
 
     return { approval, liability, movement: financialMovement };
   });
@@ -684,12 +819,14 @@ export interface RejectExpensePaymentInput {
   declarationId: string;
   rejecterUid: string;
   rejectionReason: string;
+  idempotencyKey?: string;
 }
 
 export async function rejectExpensePayment(
   input: RejectExpensePaymentInput,
   isDemo = false
 ): Promise<{
+  rejection: ExpensePaymentRejection;
   declaration: ExpensePaymentDeclaration;
   liability: ExpenseLiability;
 }> {
@@ -700,7 +837,7 @@ export async function rejectExpensePayment(
   if (!isDemo) {
     const callable = httpsCallable<
       RejectExpensePaymentInput & { decision: 'rejected' },
-      { declaration: ExpensePaymentDeclaration; liability: ExpenseLiability }
+      { rejection: ExpensePaymentRejection; declaration: ExpensePaymentDeclaration; liability: ExpenseLiability }
     >(functions, 'validateExpensePaymentOfficial');
 
     const res = await callable({
@@ -738,17 +875,54 @@ export async function rejectExpensePayment(
     }
 
     const now = new Date().toISOString();
-    decl.status = 'rejected';
-    decl.rejectionReason = input.rejectionReason.trim();
-    decl.updatedAt = now;
-    saveDemoPaymentDeclarations(declarations);
+    const rejections = loadDemoPaymentRejections();
+    const rejectionId = generatePaymentRejectionDocId(input.declarationId, `idem_rej_${input.declarationId}_${Date.now()}`);
+    const rejection: ExpensePaymentRejection = {
+      id: rejectionId,
+      expenseId: input.expenseId,
+      spaceId: input.spaceId,
+      declarationId: input.declarationId,
+      liabilityId: decl.memberUid,
+      memberUid: decl.memberUid,
+      responsibleUid: expense.responsibleUid,
+      amountCents: decl.amountCents,
+      reason: input.rejectionReason.trim(),
+      rejectionReason: input.rejectionReason.trim(),
+      rejectedByUid: input.rejecterUid,
+      rejectedAt: now,
+      idempotencyKey: `idem_rej_${input.declarationId}`,
+      createdAt: now,
+    };
+
+    rejections.push(rejection);
+    saveDemoPaymentRejections(rejections);
+
+    // REGRA DE IMUTABILIDADE: O documento da declaração original NÃO é alterado em disco!
 
     // Restabelece o status da obrigação sem alterar valores pagos
     const currentPaid = liability.paidAmountCents || 0;
     liability.status = currentPaid > 0 ? 'partially_paid' : 'pending';
     saveDemoSharedLiabilities(liabilities);
 
-    return { declaration: decl, liability };
+    // Notificação ao devedor
+    sendSpaceNotification(
+      {
+        userId: decl.memberUid,
+        spaceId: input.spaceId,
+        spaceName: 'Espaço Compartilhado',
+        type: 'payment_rejected',
+        title: 'Pagamento de rateio recusado',
+        message: `O pagamento de R$ ${(decl.amountCents / 100).toFixed(2)} em "${expense.title}" foi recusado pelo responsável. Motivo: ${input.rejectionReason.trim()}`,
+        originEventId: rejectionId,
+      },
+      true
+    ).catch(() => {});
+
+    return {
+      rejection,
+      declaration: { ...decl, status: 'rejected', rejectionReason: input.rejectionReason.trim() },
+      liability,
+    };
   });
 }
 
@@ -858,8 +1032,10 @@ export async function revokeExpensePaymentApproval(
       spaceId: input.spaceId,
       approvalId: input.approvalId,
       declarationId: approval.declarationId,
+      liabilityId: approval.liabilityId || approval.memberUid,
       memberUid: approval.memberUid,
       responsibleUid: expense.responsibleUid,
+      beneficiaryUid: approval.beneficiaryUid || expense.payerUid || expense.responsibleUid,
       revokedAmountCents: approval.amountCents,
       compensatoryMovementId: compensatoryMovement?.id,
       reason: input.reason.trim(),
@@ -884,8 +1060,39 @@ export async function revokeExpensePaymentApproval(
     const remaining = liability.adjustedShareAmountCents - restoredPaid;
     liability.paidAmountCents = restoredPaid;
     liability.remainingAmountCents = remaining;
+    liability.creditNoteCents = Math.max(0, restoredPaid - liability.adjustedShareAmountCents);
     liability.status = restoredPaid === 0 ? 'pending' : 'partially_paid';
     saveDemoSharedLiabilities(liabilities);
+
+    // Notificações
+    sendSpaceNotification(
+      {
+        userId: approval.memberUid,
+        spaceId: input.spaceId,
+        spaceName: 'Espaço Compartilhado',
+        type: 'payment_approval_revoked',
+        title: 'Aprovação de pagamento revogada',
+        message: `A aprovação do pagamento em "${expense.title}" foi cancelada pelo responsável. Motivo: ${input.reason.trim()}`,
+        originEventId: revocationId,
+      },
+      true
+    ).catch(() => {});
+
+    const beneficiaryUid = approval.beneficiaryUid || expense.payerUid;
+    if (beneficiaryUid && beneficiaryUid !== input.revokerUid) {
+      sendSpaceNotification(
+        {
+          userId: beneficiaryUid,
+          spaceId: input.spaceId,
+          spaceName: 'Espaço Compartilhado',
+          type: 'payment_approval_revoked',
+          title: 'Reembolso estornado',
+          message: `O crédito de reembolso referente a "${expense.title}" foi estornado pelo responsável. Motivo: ${input.reason.trim()}`,
+          originEventId: revocationId,
+        },
+        true
+      ).catch(() => {});
+    }
 
     return { revocation, liability, compensatoryMovement };
   });
@@ -959,19 +1166,66 @@ export async function recordSupplierRefund(
     refunds.push(event);
     saveDemoSupplierRefunds(refunds);
 
-    // Ajusta proporcionalmente as cotas das obrigações se for reembolso
+    // Ajusta proporcionalmente as cotas das obrigações se for reembolso com Maior Resto
     if (input.amountRefundedCents > 0) {
       const expenses = loadDemoSharedExpenses();
       const expense = expenses.find((e) => e.id === input.expenseId);
       if (expense && expense.totalOriginalAmountCents > 0) {
         const liabilities = loadDemoSharedLiabilities();
         const expenseLiabs = liabilities.filter((l) => l.expenseId === input.expenseId);
-        for (const liab of expenseLiabs) {
-          const ratio = liab.assignedShareAmountCents / expense.totalOriginalAmountCents;
-          const reduction = Math.round(input.amountRefundedCents * ratio);
-          liab.adjustedShareAmountCents = Math.max(0, liab.assignedShareAmountCents - reduction);
+
+        let allocatedReduction = 0;
+        const reductions = expenseLiabs.map((liab) => {
+          const orig = liab.originalAmountCents || liab.assignedShareAmountCents || 0;
+          const exact = (input.amountRefundedCents * orig) / expense.totalOriginalAmountCents;
+          const floor = Math.floor(exact);
+          const remainder = exact - floor;
+          allocatedReduction += floor;
+          return { liab, floor, remainder, reduction: floor };
+        });
+
+        let remainderToDistribute = input.amountRefundedCents - allocatedReduction;
+        reductions.sort((a, b) => b.remainder - a.remainder);
+        for (let i = 0; i < remainderToDistribute; i++) {
+          reductions[i].reduction += 1;
+        }
+
+        for (const red of reductions) {
+          const { liab, reduction } = red;
+          const original = liab.originalAmountCents || liab.assignedShareAmountCents;
+          const prevRefund = liab.refundAdjustmentCents || 0;
+          const newRefund = prevRefund + reduction;
+          const newAdjusted = Math.max(0, original - newRefund);
           const paid = liab.paidAmountCents || 0;
-          liab.remainingAmountCents = Math.max(0, liab.adjustedShareAmountCents - paid);
+
+          let remaining = 0;
+          let creditNote = 0;
+          if (paid > newAdjusted) {
+            remaining = 0;
+            creditNote = paid - newAdjusted;
+          } else {
+            remaining = newAdjusted - paid;
+            creditNote = 0;
+          }
+
+          liab.originalAmountCents = original;
+          liab.refundAdjustmentCents = newRefund;
+          liab.adjustedShareAmountCents = newAdjusted;
+          liab.remainingAmountCents = remaining;
+          liab.creditNoteCents = creditNote;
+
+          sendSpaceNotification(
+            {
+              userId: liab.memberUid,
+              spaceId: input.spaceId,
+              spaceName: 'Espaço Compartilhado',
+              type: 'supplier_refund_confirmed',
+              title: 'Reembolso comercial confirmado',
+              message: `O fornecedor devolveu R$ ${(input.amountRefundedCents / 100).toFixed(2)} em "${expense.title}". Sua cota líquida foi reduzida em R$ ${(reduction / 100).toFixed(2)}.${creditNote > 0 ? ` Você possui um crédito de R$ ${(creditNote / 100).toFixed(2)} a receber.` : ''}`,
+              originEventId: refundId,
+            },
+            true
+          ).catch(() => {});
         }
         saveDemoSharedLiabilities(liabilities);
       }

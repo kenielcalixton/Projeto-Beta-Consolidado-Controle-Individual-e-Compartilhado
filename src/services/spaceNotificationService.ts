@@ -93,7 +93,7 @@ export function generateDeterministicNotificationId(
   return `notif_${digest}`;
 }
 
-const NOTIFICATION_TO_AUDIT_EVENT_MAP: Record<SpaceNotificationType, SpaceAuditEventType> = {
+const NOTIFICATION_TO_AUDIT_EVENT_MAP: Partial<Record<SpaceNotificationType, SpaceAuditEventType>> = {
   invite_received: 'invite_created',
   invite_accepted: 'invite_accepted',
   invite_rejected: 'invite_rejected',

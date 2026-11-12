@@ -91,6 +91,7 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
   const [expDueDate, setExpDueDate] = useState('');
   const [expCategory, setExpCategory] = useState('Geral');
   const [expResponsibleUid, setExpResponsibleUid] = useState(userId);
+  const [expPayerUid, setExpPayerUid] = useState(userId);
   const [expSplitMethod, setExpSplitMethod] = useState<ExpenseLiabilitySplitMethod>('equal');
   const [selectedParticipants, setSelectedParticipants] = useState<string[]>([]);
   const [customPercentages, setCustomPercentages] = useState<Record<string, number>>({});
@@ -239,6 +240,7 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
           categoryName: expCategory,
           createdByUid: userId,
           responsibleUid: expResponsibleUid,
+          payerUid: expPayerUid || expResponsibleUid,
           splitMethod: expSplitMethod,
           participants: parts,
           percentages: customPercentages,
@@ -525,12 +527,19 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
                         {exp.description && (
                           <p className="text-xs text-gray-500">{exp.description}</p>
                         )}
-                        <div className="text-[11px] text-gray-400 flex items-center gap-3 pt-1">
+                        <div className="text-[11px] text-gray-400 flex flex-wrap items-center gap-3 pt-1">
                           <span>
-                            Responsável:{' '}
+                            Validador:{' '}
                             <strong className="text-gray-700">
                               {members.find((m) => m.uid === exp.responsibleUid)?.displayName ||
                                 exp.responsibleUid}
+                            </strong>
+                          </span>
+                          <span>
+                            Credor (Pagador):{' '}
+                            <strong className="text-gray-700">
+                              {members.find((m) => m.uid === (exp.payerUid || exp.responsibleUid))?.displayName ||
+                                (exp.payerUid || exp.responsibleUid)}
                             </strong>
                           </span>
                           {exp.dueDate && <span>Vencimento: {exp.dueDate}</span>}
@@ -612,21 +621,28 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
                                       {formatCentsToBRL(remaining)}
                                     </td>
                                     <td className="py-2 px-2">
-                                      <span
-                                        className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                                          isPaid
-                                            ? 'bg-emerald-50 text-emerald-700'
+                                      <div className="flex flex-col gap-1 items-start">
+                                        <span
+                                          className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                            isPaid
+                                              ? 'bg-emerald-50 text-emerald-700'
+                                              : l.status === 'in_validation'
+                                              ? 'bg-amber-50 text-amber-700'
+                                              : 'bg-rose-50 text-rose-700'
+                                          }`}
+                                        >
+                                          {isPaid
+                                            ? 'Quitado'
                                             : l.status === 'in_validation'
-                                            ? 'bg-amber-50 text-amber-700'
-                                            : 'bg-rose-50 text-rose-700'
-                                        }`}
-                                      >
-                                        {isPaid
-                                          ? 'Quitado'
-                                          : l.status === 'in_validation'
-                                          ? 'Em Validação'
-                                          : 'Pendente'}
-                                      </span>
+                                            ? 'Em Validação'
+                                            : 'Pendente'}
+                                        </span>
+                                        {Boolean(l.creditNoteCents && l.creditNoteCents > 0) && (
+                                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-purple-50 text-purple-700 border border-purple-200">
+                                            Restituir: {formatCentsToBRL(l.creditNoteCents!)}
+                                          </span>
+                                        )}
+                                      </div>
                                     </td>
                                     <td className="py-2 px-2 text-right">
                                       {isMe && !isPaid && !isArchived && (
@@ -696,8 +712,8 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
                       liability.remainingAmountCents ?? liability.adjustedShareAmountCents;
                     const isPaid = (liability.paidAmountCents || 0) >= liability.adjustedShareAmountCents;
                     const creditorName =
-                      members.find((m) => m.uid === expense.responsibleUid)?.displayName ||
-                      expense.responsibleUid;
+                      members.find((m) => m.uid === (expense.payerUid || expense.responsibleUid))?.displayName ||
+                      (expense.payerUid || expense.responsibleUid);
 
                     return (
                       <tr key={liability.id + expense.id} className="hover:bg-gray-50/50">
@@ -721,21 +737,28 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
                           {formatCentsToBRL(remaining)}
                         </td>
                         <td className="py-3 px-3">
-                          <span
-                            className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                              isPaid
-                                ? 'bg-emerald-50 text-emerald-700'
+                          <div className="flex flex-col gap-1 items-start">
+                            <span
+                              className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                isPaid
+                                  ? 'bg-emerald-50 text-emerald-700'
+                                  : liability.status === 'in_validation'
+                                  ? 'bg-amber-50 text-amber-700'
+                                  : 'bg-rose-50 text-rose-700'
+                              }`}
+                            >
+                              {isPaid
+                                ? 'Quitado'
                                 : liability.status === 'in_validation'
-                                ? 'bg-amber-50 text-amber-700'
-                                : 'bg-rose-50 text-rose-700'
-                            }`}
-                          >
-                            {isPaid
-                              ? 'Quitado'
-                              : liability.status === 'in_validation'
-                              ? 'Em Validação'
-                              : 'Pendente'}
-                          </span>
+                                ? 'Em Validação'
+                                : 'Pendente'}
+                            </span>
+                            {Boolean(liability.creditNoteCents && liability.creditNoteCents > 0) && (
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-purple-50 text-purple-700 border border-purple-200">
+                                Restituir: {formatCentsToBRL(liability.creditNoteCents!)}
+                              </span>
+                            )}
+                          </div>
                         </td>
                         <td className="py-3 px-3 text-right">
                           {!isPaid && !isArchived && (
@@ -1032,7 +1055,7 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
                 </div>
 
                 <div>
-                  <label className="font-bold text-gray-700 block mb-1">Responsável Financeiro *</label>
+                  <label className="font-bold text-gray-700 block mb-1">Responsável pela Validação *</label>
                   <select
                     value={expResponsibleUid}
                     onChange={(e) => setExpResponsibleUid(e.target.value)}
@@ -1044,6 +1067,23 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
                       </option>
                     ))}
                   </select>
+                  <p className="text-[10px] text-gray-400 mt-0.5">Autoridade com poder de aprovar/rejeitar.</p>
+                </div>
+
+                <div>
+                  <label className="font-bold text-gray-700 block mb-1">Quem Desembolsou / Pagador *</label>
+                  <select
+                    value={expPayerUid}
+                    onChange={(e) => setExpPayerUid(e.target.value)}
+                    className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 text-xs font-semibold"
+                  >
+                    {members.map((m) => (
+                      <option key={m.uid} value={m.uid}>
+                        {m.displayName} {m.uid === userId ? '(Você)' : ''}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-[10px] text-gray-400 mt-0.5">Credor legítimo com direito aos reembolsos.</p>
                 </div>
               </div>
 
@@ -1357,26 +1397,52 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
                 <div>Método: {selectedDeclForApproval.paymentMethod.toUpperCase()}</div>
               </div>
 
-              <div>
-                <label className="font-bold text-gray-700 block mb-1">
-                  Creditar na Conta Bancária (Opcional)
-                </label>
-                <select
-                  value={selectedDestAccountId}
-                  onChange={(e) => setSelectedDestAccountId(e.target.value)}
-                  className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 text-xs font-semibold"
-                >
-                  <option value="">Não registrar crédito em conta agora</option>
-                  {accounts.map((acc) => (
-                    <option key={acc.id} value={acc.id}>
-                      {acc.name} ({acc.type}) - Saldo: {formatCentsToBRL(acc.projectedBalanceCents)}
-                    </option>
-                  ))}
-                </select>
-                <p className="text-[11px] text-gray-400 mt-1">
-                  Selecione uma conta se você deseja que o valor recebido seja creditado no seu saldo oficial.
-                </p>
-              </div>
+              {(() => {
+                const targetExp = expenses.find((e) => e.id === selectedDeclForApproval.expenseId);
+                const beneficiaryUid = targetExp?.payerUid || targetExp?.responsibleUid;
+                const beneficiaryName =
+                  members.find((m) => m.uid === beneficiaryUid)?.displayName || beneficiaryUid;
+                const isCreditorMe = beneficiaryUid === userId;
+
+                if (!isCreditorMe) {
+                  return (
+                    <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-[11px] text-amber-800 space-y-1">
+                      <div className="font-bold flex items-center gap-1">
+                        <i className="ph ph-info text-sm" />
+                        Segregação de Beneficiário do Reembolso
+                      </div>
+                      <p>
+                        O credor legítimo desta despesa é <strong>{beneficiaryName}</strong>.
+                        O crédito financeiro pertence a ele(a). Como você está exercendo o papel de
+                        validador(a), o valor não pode ser creditado na sua conta individual.
+                      </p>
+                    </div>
+                  );
+                }
+
+                return (
+                  <div>
+                    <label className="font-bold text-gray-700 block mb-1">
+                      Creditar na Conta Bancária (Opcional)
+                    </label>
+                    <select
+                      value={selectedDestAccountId}
+                      onChange={(e) => setSelectedDestAccountId(e.target.value)}
+                      className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 text-xs font-semibold"
+                    >
+                      <option value="">Não registrar crédito em conta agora</option>
+                      {accounts.map((acc) => (
+                        <option key={acc.id} value={acc.id}>
+                          {acc.name} ({acc.type}) - Saldo: {formatCentsToBRL(acc.projectedBalanceCents)}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="text-[11px] text-gray-400 mt-1">
+                      Selecione sua conta se deseja creditar este reembolso no seu saldo oficial.
+                    </p>
+                  </div>
+                );
+              })()}
 
               <div className="flex justify-end gap-2 pt-2 border-t border-gray-100">
                 <button

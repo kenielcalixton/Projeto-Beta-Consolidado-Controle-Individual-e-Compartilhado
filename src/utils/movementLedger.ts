@@ -356,6 +356,14 @@ export function generatePaymentApprovalDocId(declarationId: string, idempotencyK
   return `appr_${cleanSlug ? `${cleanSlug}_` : ''}${hash.slice(0, 32)}`;
 }
 
+export function generatePaymentRejectionDocId(declarationId: string, idempotencyKey: string): string {
+  const cleanDecl = (declarationId || '').trim();
+  const cleanKey = (idempotencyKey || '').trim();
+  const cleanSlug = cleanKey.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 24);
+  const hash = sha256Hex(`rej:${cleanDecl}:${cleanKey}`);
+  return `rej_${cleanSlug ? `${cleanSlug}_` : ''}${hash.slice(0, 32)}`;
+}
+
 export function generateApprovalRevocationDocId(approvalId: string, idempotencyKey: string): string {
   const cleanAppr = (approvalId || '').trim();
   const cleanKey = (idempotencyKey || '').trim();

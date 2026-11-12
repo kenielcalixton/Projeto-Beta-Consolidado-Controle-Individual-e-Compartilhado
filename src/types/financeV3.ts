@@ -798,7 +798,15 @@ export type SpaceNotificationType =
   | 'space_unarchived'
   | 'dissolution_requested'
   | 'dissolution_decision_pending'
-  | 'dissolution_cancelled';
+  | 'dissolution_cancelled'
+  | 'shared_expense_assigned'
+  | 'payment_declaration_submitted'
+  | 'payment_approved'
+  | 'payment_rejected'
+  | 'payment_correction_requested'
+  | 'payment_approval_revoked'
+  | 'supplier_refund_confirmed'
+  | 'liability_settled';
 
 /**
  * Notificação destinada a um usuário sobre fatos relevantes de espaços compartilhados.
@@ -880,10 +888,18 @@ export interface ExpenseLiability {
   spaceId: string;
   memberUid: string;
   memberName: string;
+  /** Cota original atribuída no rateio inicial (imutável) */
   assignedShareAmountCents: CentsInteger;
+  /** Alias explícito para o valor original da responsabilidade */
+  originalAmountCents?: CentsInteger;
+  /** Reduções proporcionais decorrentes de reembolsos/devoluções comerciais do fornecedor */
+  refundAdjustmentCents?: CentsInteger;
+  /** Cota líquida atualizada = assignedShareAmountCents - (refundAdjustmentCents || 0) */
   adjustedShareAmountCents: CentsInteger;
   paidAmountCents?: CentsInteger;
   remainingAmountCents?: CentsInteger;
+  /** Crédito individual gerado quando o valor já pago pelo membro excede a nova cota líquida após reembolso */
+  creditNoteCents?: CentsInteger;
   status?: ExpenseLiabilityStatus;
   splitMethod: ExpenseLiabilitySplitMethod;
   splitRatio?: number;
@@ -896,6 +912,7 @@ export type PaymentDeclarationMethod = 'pix' | 'bank_transfer' | 'cash' | 'credi
 /**
  * Declaração formal de pagamento pelo devedor perante o credor da despesa.
  * Caminho Firestore: spaces/{spaceId}/shared_expenses/{expenseId}/payment_declarations/{declarationId}
+ * Documento append-only e imutável após sua criação. Seu status é derivado dos eventos.
  */
 export interface ExpensePaymentDeclaration {
   id: string;
@@ -904,6 +921,7 @@ export interface ExpensePaymentDeclaration {
   memberUid: string;
   memberName: string;
   responsibleUid: string;
+  payerUid?: string;
   amountCents: CentsInteger;
   paymentDate: DateString;
   paymentMethod: PaymentDeclarationMethod;
@@ -918,6 +936,27 @@ export interface ExpensePaymentDeclaration {
 }
 
 /**
+ * Evento independente e imutável de rejeição de declaração de pagamento.
+ * Caminho Firestore: spaces/{spaceId}/shared_expenses/{expenseId}/payment_rejections/{rejectionId}
+ */
+export interface ExpensePaymentRejection {
+  id: string;
+  expenseId: string;
+  spaceId: string;
+  declarationId: string;
+  liabilityId: string;
+  memberUid: string;
+  responsibleUid: string;
+  amountCents: CentsInteger;
+  reason: string;
+  rejectionReason?: string;
+  rejectedByUid: string;
+  rejectedAt: ISO8601String;
+  idempotencyKey: string;
+  createdAt: ISO8601String;
+}
+
+/**
  * Evento imutável de aprovação de pagamento emitido exclusivamente pelo responsável financeiro.
  * Caminho Firestore: spaces/{spaceId}/shared_expenses/{expenseId}/payment_approvals/{approvalId}
  */
@@ -926,8 +965,11 @@ export interface ExpensePaymentApproval {
   expenseId: string;
   spaceId: string;
   declarationId: string;
+  liabilityId?: string;
   memberUid: string;
   responsibleUid: string;
+  /** Beneficiário legítimo do reembolso (quem desembolsou ao fornecedor: payerUid) */
+  beneficiaryUid?: string;
   amountCents: CentsInteger;
   destinationAccountId?: string;
   financialMovementId?: string;
@@ -950,8 +992,10 @@ export interface ExpenseApprovalRevocation {
   spaceId: string;
   approvalId: string;
   declarationId: string;
+  liabilityId?: string;
   memberUid: string;
   responsibleUid: string;
+  beneficiaryUid?: string;
   revokedAmountCents: CentsInteger;
   compensatoryMovementId?: string;
   reason: string;

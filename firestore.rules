@@ -426,13 +426,18 @@ service cloud.firestore {
               resource.data.responsibleUid == request.auth.uid
             )
           );
-          // Declaração pode ser criada pelo próprio devedor ativo
+          // Declaração pode ser criada pelo próprio devedor ativo com validações estritas de negócio
           allow create: if isSpaceMember(spaceId) && isSpaceActive(spaceId) &&
-            request.resource.data.memberUid == request.auth.uid;
-          allow update, delete: if false; // Atualizações exclusivas via Cloud Functions autoritativas
+            request.auth.uid == request.resource.data.memberUid &&
+            request.resource.data.expenseId == expenseId &&
+            request.resource.data.spaceId == spaceId &&
+            request.resource.data.amountCents is int &&
+            request.resource.data.amountCents > 0 &&
+            request.resource.data.status == 'pending_validation';
+          allow update, delete: if false; // Imutabilidade estrita: histórico append-only
         }
 
-        match /payment_approvals/{approvalId} {
+        match /payment_rejections/{rejectionId} {
           // Leitura: membros do espaço ou histórico envolvido
           allow read: if isSpaceMember(spaceId) || (
             isSpaceHistoricalMember(spaceId) && (
@@ -443,12 +448,25 @@ service cloud.firestore {
           allow write: if false; // Escrita exclusiva via Cloud Functions autoritativas (Admin SDK)
         }
 
+        match /payment_approvals/{approvalId} {
+          // Leitura: membros do espaço ou histórico envolvido
+          allow read: if isSpaceMember(spaceId) || (
+            isSpaceHistoricalMember(spaceId) && (
+              resource.data.memberUid == request.auth.uid ||
+              resource.data.responsibleUid == request.auth.uid ||
+              resource.data.beneficiaryUid == request.auth.uid
+            )
+          );
+          allow write: if false; // Escrita exclusiva via Cloud Functions autoritativas (Admin SDK)
+        }
+
         match /approval_revocations/{revocationId} {
           // Leitura: membros do espaço ou histórico envolvido
           allow read: if isSpaceMember(spaceId) || (
             isSpaceHistoricalMember(spaceId) && (
               resource.data.memberUid == request.auth.uid ||
-              resource.data.responsibleUid == request.auth.uid
+              resource.data.responsibleUid == request.auth.uid ||
+              resource.data.beneficiaryUid == request.auth.uid
             )
           );
           allow write: if false; // Escrita exclusiva via Cloud Functions autoritativas (Admin SDK)

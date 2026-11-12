@@ -3150,6 +3150,14 @@ export function serverGeneratePaymentApprovalDocId(declarationId, key) {
   return `appr_${cleanSlug ? `${cleanSlug}_` : ''}${hash.slice(0, 32)}`;
 }
 
+export function serverGeneratePaymentRejectionDocId(declarationId, key) {
+  const cleanDecl = String(declarationId || '').trim();
+  const cleanKey = String(key || '').trim();
+  const cleanSlug = cleanKey.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 24);
+  const hash = crypto.createHash('sha256').update(`rej:${cleanDecl}:${cleanKey}`).digest('hex');
+  return `rej_${cleanSlug ? `${cleanSlug}_` : ''}${hash.slice(0, 32)}`;
+}
+
 export function serverGenerateApprovalRevocationDocId(approvalId, key) {
   const cleanAppr = String(approvalId || '').trim();
   const cleanKey = String(key || '').trim();
@@ -3267,9 +3275,12 @@ export async function executeServerSideCreateSharedExpense(db, callerUid, payloa
         memberUid: String(split.memberUid).trim(),
         memberName: String(split.memberName).trim(),
         assignedShareAmountCents: split.assignedShareAmountCents,
+        originalAmountCents: split.assignedShareAmountCents,
+        refundAdjustmentCents: 0,
         adjustedShareAmountCents: split.adjustedShareAmountCents,
         paidAmountCents: 0,
         remainingAmountCents: split.adjustedShareAmountCents,
+        creditNoteCents: 0,
         status: 'pending',
         splitMethod: split.splitMethod || 'equal',
         splitRatio: split.splitRatio || null,
@@ -3277,6 +3288,22 @@ export async function executeServerSideCreateSharedExpense(db, callerUid, payloa
       };
       tx.set(liabRef, liabData);
       savedLiabilities.push(liabData);
+
+      // Notificação oficial de nova obrigação atribuída para os participantes
+      const notifId = `notif_exp_${expenseId}_${String(split.memberUid).trim()}`;
+      const notifRef = db.collection('users').doc(String(split.memberUid).trim()).collection('notifications').doc(notifId);
+      tx.set(notifRef, {
+        id: notifId,
+        userId: String(split.memberUid).trim(),
+        spaceId: String(spaceId).trim(),
+        spaceName: spaceData.name || 'Espaço Compartilhado',
+        type: 'shared_expense_assigned',
+        title: 'Nova despesa compartilhada',
+        message: `Você possui uma cota de R$ ${(split.assignedShareAmountCents / 100).toFixed(2)} referente a "${title}".`,
+        read: false,
+        originEventId: expenseId,
+        createdAt: now,
+      }, { merge: true });
     }
 
     return { expense: newExpense, liabilities: savedLiabilities };
@@ -3360,6 +3387,7 @@ export async function executeServerSideDeclareExpensePayment(db, callerUid, payl
       memberUid: cleanUid,
       memberName: memberName ? String(memberName).trim() : 'Membro',
       responsibleUid: expense.responsibleUid,
+      payerUid: expense.payerUid || expense.responsibleUid,
       amountCents,
       paymentDate: String(paymentDate).trim(),
       paymentMethod: paymentMethod || 'pix',
@@ -3377,16 +3405,16 @@ export async function executeServerSideDeclareExpensePayment(db, callerUid, payl
 
     // Notificação ao responsável financeiro
     if (expense.responsibleUid) {
-      const notifId = `notif_${declId}`;
+      const notifId = `notif_decl_${declId}`;
       const notifRef = db.collection('users').doc(expense.responsibleUid).collection('notifications').doc(notifId);
       tx.set(notifRef, {
         id: notifId,
         userId: expense.responsibleUid,
         spaceId: String(spaceId).trim(),
         spaceName: spaceData.name || 'Espaço Compartilhado',
-        type: 'member_role_changed',
-        title: 'Pagamento de rateio informado',
-        message: `${newDecl.memberName} informou o pagamento de R$ ${(amountCents / 100).toFixed(2)} referente a "${expense.title}".`,
+        type: 'payment_declaration_submitted',
+        title: 'Nova declaração de pagamento',
+        message: `${newDecl.memberName} declarou o pagamento de R$ ${(amountCents / 100).toFixed(2)} referente à cota de "${expense.title}".`,
         read: false,
         originEventId: declId,
         createdAt: now,
@@ -3480,6 +3508,8 @@ export async function executeServerSideValidateExpensePayment(db, callerUid, pay
         throw new HttpsError('already-exists', 'Esta declaração já foi aprovada.');
       }
 
+      const beneficiaryUid = expense.payerUid || expense.responsibleUid;
+
       let financialMovementId = null;
       let movRecord = null;
       if (destinationAccountId) {
@@ -3489,8 +3519,11 @@ export async function executeServerSideValidateExpensePayment(db, callerUid, pay
           throw new HttpsError('not-found', `Conta bancária "${destinationAccountId}" não encontrada.`);
         }
         const accData = accSnap.data();
-        if (accData.userId !== cleanUid) {
-          throw new HttpsError('permission-denied', 'Conta bancária informada não pertence ao responsável financeiro.');
+        if (accData.userId !== beneficiaryUid) {
+          throw new HttpsError(
+            'permission-denied',
+            `Conta bancária informada não pertence ao credor/beneficiário do reembolso (${beneficiaryUid}).`
+          );
         }
         if (isAccountArchivedServer(accData)) {
           throw new HttpsError('failed-precondition', 'Não é possível receber reembolso em conta arquivada.');
@@ -3505,7 +3538,7 @@ export async function executeServerSideValidateExpensePayment(db, callerUid, pay
           movRecord = {
             id: movId,
             accountId: String(destinationAccountId).trim(),
-            userId: cleanUid,
+            userId: beneficiaryUid, // Credita a conta do beneficiário legítimo (payerUid)
             direction: 'inflow',
             amountCents: decl.amountCents,
             effectiveDate: decl.paymentDate,
@@ -3515,7 +3548,7 @@ export async function executeServerSideValidateExpensePayment(db, callerUid, pay
             confirmationStatus: 'cleared',
             idempotencyKey: `reimb_mov_${approvalId}`,
             description: `Reembolso de rateio recebido: ${expense.title} (${decl.memberName})`,
-            authorUid: cleanUid,
+            authorUid: cleanUid, // Autorizado pelo responsável (responsibleUid)
           };
           tx.set(movRef, movRecord);
           const currentBal = accData.projectedBalanceCents || 0;
@@ -3531,8 +3564,10 @@ export async function executeServerSideValidateExpensePayment(db, callerUid, pay
         expenseId: String(expenseId).trim(),
         spaceId: String(spaceId).trim(),
         declarationId: String(declarationId).trim(),
+        liabilityId: decl.memberUid,
         memberUid: decl.memberUid,
         responsibleUid: cleanUid,
+        beneficiaryUid,
         amountCents: decl.amountCents,
         destinationAccountId: destinationAccountId ? String(destinationAccountId).trim() : null,
         financialMovementId,
@@ -3544,7 +3579,7 @@ export async function executeServerSideValidateExpensePayment(db, callerUid, pay
       };
 
       tx.set(approvalRef, approval);
-      tx.update(declRef, { status: 'approved', updatedAt: now });
+      // REGRA DE IMUTABILIDADE: O documento da declaração original NÃO é alterado. Seu status é derivado dos eventos!
 
       const currentPaid = liab.paidAmountCents || 0;
       const newPaid = currentPaid + decl.amountCents;
@@ -3559,7 +3594,7 @@ export async function executeServerSideValidateExpensePayment(db, callerUid, pay
       };
       tx.set(liabRef, updatedLiability);
 
-      // Notificação ao devedor
+      // Notificação oficial de aprovação ao devedor
       const notifId = `notif_appr_${approvalId}`;
       const notifRef = db.collection('users').doc(decl.memberUid).collection('notifications').doc(notifId);
       tx.set(notifRef, {
@@ -3567,7 +3602,7 @@ export async function executeServerSideValidateExpensePayment(db, callerUid, pay
         userId: decl.memberUid,
         spaceId: String(spaceId).trim(),
         spaceName: spaceData.name || 'Espaço Compartilhado',
-        type: 'member_role_changed',
+        type: 'payment_approved',
         title: 'Pagamento aprovado!',
         message: `Seu pagamento de R$ ${(decl.amountCents / 100).toFixed(2)} referente a "${expense.title}" foi aprovado pelo responsável.`,
         read: false,
@@ -3575,41 +3610,103 @@ export async function executeServerSideValidateExpensePayment(db, callerUid, pay
         createdAt: now,
       }, { merge: true });
 
-      return { approval, liability: updatedLiability, movement: movRecord };
+      // Se a cota foi totalmente quitada, envia notificação de liquidação integral
+      if (newStatus === 'paid') {
+        const settledNotifId = `notif_settled_${approvalId}`;
+        const settledNotifRef = db.collection('users').doc(decl.memberUid).collection('notifications').doc(settledNotifId);
+        tx.set(settledNotifRef, {
+          id: settledNotifId,
+          userId: decl.memberUid,
+          spaceId: String(spaceId).trim(),
+          spaceName: spaceData.name || 'Espaço Compartilhado',
+          type: 'liability_settled',
+          title: 'Cota quitada integralmente!',
+          message: `Sua participação na despesa "${expense.title}" foi totalmente liquidada.`,
+          read: false,
+          originEventId: approvalId,
+          createdAt: now,
+        }, { merge: true });
+      }
+
+      // Se o beneficiário é diferente do responsável que validou, notifica o beneficiário sobre o crédito
+      if (beneficiaryUid !== cleanUid) {
+        const benNotifId = `notif_reimb_${approvalId}`;
+        const benNotifRef = db.collection('users').doc(beneficiaryUid).collection('notifications').doc(benNotifId);
+        tx.set(benNotifRef, {
+          id: benNotifId,
+          userId: beneficiaryUid,
+          spaceId: String(spaceId).trim(),
+          spaceName: spaceData.name || 'Espaço Compartilhado',
+          type: 'payment_approved',
+          title: 'Reembolso creditado',
+          message: `Foi aprovado o reembolso de R$ ${(decl.amountCents / 100).toFixed(2)} de ${decl.memberName} referente a "${expense.title}".`,
+          read: false,
+          originEventId: approvalId,
+          createdAt: now,
+        }, { merge: true });
+      }
+
+      return {
+        approval,
+        liability: updatedLiability,
+        movement: movRecord,
+        declaration: { ...decl, status: 'approved' },
+      };
     } else {
       // Rejection
       if (!rejectionReason || !String(rejectionReason).trim()) {
         throw new HttpsError('invalid-argument', 'Justificativa de rejeição é estritamente obrigatória.');
       }
 
-      tx.update(declRef, {
-        status: 'rejected',
+      // Criação de evento independente e imutável de rejeição
+      const rejectionId = serverGeneratePaymentRejectionDocId(declarationId, finalKey);
+      const rejectionRef = expenseRef.collection('payment_rejections').doc(rejectionId);
+      const rejection = {
+        id: rejectionId,
+        expenseId: String(expenseId).trim(),
+        spaceId: String(spaceId).trim(),
+        declarationId: String(declarationId).trim(),
+        liabilityId: decl.memberUid,
+        memberUid: decl.memberUid,
+        responsibleUid: cleanUid,
+        amountCents: decl.amountCents,
+        reason: String(rejectionReason).trim(),
         rejectionReason: String(rejectionReason).trim(),
-        updatedAt: now,
-      });
+        rejectedByUid: cleanUid,
+        rejectedAt: now,
+        idempotencyKey: finalKey,
+        createdAt: now,
+      };
+
+      tx.set(rejectionRef, rejection);
+      // REGRA DE IMUTABILIDADE: O documento da declaração original NÃO é alterado.
 
       const currentPaid = liab.paidAmountCents || 0;
       const newStatus = currentPaid > 0 ? 'partially_paid' : 'pending';
       const updatedLiability = { ...liab, status: newStatus };
       tx.set(liabRef, updatedLiability);
 
-      // Notificação ao devedor
-      const notifId = `notif_rej_${declarationId}`;
+      // Notificação oficial de rejeição ao devedor
+      const notifId = `notif_rej_${rejectionId}`;
       const notifRef = db.collection('users').doc(decl.memberUid).collection('notifications').doc(notifId);
       tx.set(notifRef, {
         id: notifId,
         userId: decl.memberUid,
         spaceId: String(spaceId).trim(),
         spaceName: spaceData.name || 'Espaço Compartilhado',
-        type: 'member_role_changed',
-        title: 'Pagamento não reconhecido',
-        message: `O pagamento de R$ ${(decl.amountCents / 100).toFixed(2)} em "${expense.title}" foi recusado. Motivo: ${rejectionReason.trim()}`,
+        type: 'payment_rejected',
+        title: 'Pagamento de rateio recusado',
+        message: `O pagamento de R$ ${(decl.amountCents / 100).toFixed(2)} em "${expense.title}" foi recusado pelo responsável. Motivo: ${rejectionReason.trim()}`,
         read: false,
-        originEventId: declarationId,
+        originEventId: rejectionId,
         createdAt: now,
       }, { merge: true });
 
-      return { declaration: { ...decl, status: 'rejected', rejectionReason: String(rejectionReason).trim() }, liability: updatedLiability };
+      return {
+        rejection,
+        declaration: { ...decl, status: 'rejected', rejectionReason: String(rejectionReason).trim() },
+        liability: updatedLiability,
+      };
     }
   });
 }
@@ -3697,7 +3794,7 @@ export async function executeServerSideRevokeExpensePaymentApproval(db, callerUi
           compensatoryMovement = {
             id: revMovId,
             accountId: approval.destinationAccountId,
-            userId: cleanUid,
+            userId: approval.beneficiaryUid || expense.payerUid || cleanUid,
             direction: 'outflow',
             amountCents: approval.amountCents,
             effectiveDate: now.split('T')[0],
@@ -3723,8 +3820,10 @@ export async function executeServerSideRevokeExpensePaymentApproval(db, callerUi
       spaceId: String(spaceId).trim(),
       approvalId: String(approvalId).trim(),
       declarationId: approval.declarationId,
+      liabilityId: approval.liabilityId || approval.memberUid,
       memberUid: approval.memberUid,
       responsibleUid: cleanUid,
+      beneficiaryUid: approval.beneficiaryUid || expense.payerUid || cleanUid,
       revokedAmountCents: approval.amountCents,
       compensatoryMovementId: compensatoryMovement?.id || null,
       reason: String(reason).trim(),
@@ -3742,16 +3841,18 @@ export async function executeServerSideRevokeExpensePaymentApproval(db, callerUi
     const restoredPaid = Math.max(0, currentPaid - approval.amountCents);
     const remaining = liab.adjustedShareAmountCents - restoredPaid;
     const newStatus = restoredPaid === 0 ? 'pending' : 'partially_paid';
+    const restoredCreditNote = Math.max(0, restoredPaid - liab.adjustedShareAmountCents);
 
     const updatedLiability = {
       ...liab,
       paidAmountCents: restoredPaid,
       remainingAmountCents: remaining,
+      creditNoteCents: restoredCreditNote,
       status: newStatus,
     };
     tx.set(liabRef, updatedLiability);
 
-    // Notificação ao devedor
+    // Notificação oficial de revogação ao devedor
     const notifId = `notif_revoc_${revocationId}`;
     const notifRef = db.collection('users').doc(approval.memberUid).collection('notifications').doc(notifId);
     tx.set(notifRef, {
@@ -3759,13 +3860,32 @@ export async function executeServerSideRevokeExpensePaymentApproval(db, callerUi
       userId: approval.memberUid,
       spaceId: String(spaceId).trim(),
       spaceName: spaceData.name || 'Espaço Compartilhado',
-      type: 'member_role_changed',
+      type: 'payment_approval_revoked',
       title: 'Aprovação de pagamento revogada',
       message: `A aprovação do pagamento em "${expense.title}" foi cancelada pelo responsável. Motivo: ${reason.trim()}`,
       read: false,
       originEventId: revocationId,
       createdAt: now,
     }, { merge: true });
+
+    // Se o beneficiário do crédito é diferente do responsável que revogou, notifica-o sobre o estorno
+    const beneficiaryUid = approval.beneficiaryUid || expense.payerUid;
+    if (beneficiaryUid && beneficiaryUid !== cleanUid) {
+      const benNotifId = `notif_revoc_ben_${revocationId}`;
+      const benNotifRef = db.collection('users').doc(beneficiaryUid).collection('notifications').doc(benNotifId);
+      tx.set(benNotifRef, {
+        id: benNotifId,
+        userId: beneficiaryUid,
+        spaceId: String(spaceId).trim(),
+        spaceName: spaceData.name || 'Espaço Compartilhado',
+        type: 'payment_approval_revoked',
+        title: 'Reembolso estornado',
+        message: `O crédito de reembolso referente a "${expense.title}" foi estornado pelo responsável. Motivo: ${reason.trim()}`,
+        read: false,
+        originEventId: revocationId,
+        createdAt: now,
+      }, { merge: true });
+    }
 
     return { revocation, liability: updatedLiability, compensatoryMovement };
   });
@@ -3798,6 +3918,7 @@ export async function executeServerSideRecordSharedRefund(db, callerUid, payload
   if (!spaceSnap.exists) {
     throw new HttpsError('not-found', 'Espaço não encontrado.');
   }
+  const spaceData = spaceSnap.data();
   const expenseRef = spaceRef.collection('shared_expenses').doc(String(expenseId).trim());
   const finalKey = idempotencyKey?.trim() || `idem_supref_${expenseId}_${Date.now()}`;
   const refundId = serverGenerateSupplierRefundDocId(expenseId, finalKey);
@@ -3838,20 +3959,70 @@ export async function executeServerSideRecordSharedRefund(db, callerUid, payload
 
     tx.set(refundRef, event);
 
-    // Ajuste proporcional das obrigações
+    // Ajuste proporcional das obrigações com Maior Resto (Hare-Niemeyer) e preservação estrita de originalAmountCents
     if (amountRefundedCents > 0 && expense.totalOriginalAmountCents > 0) {
       const liabsSnap = await expenseRef.collection('liabilities').get();
-      for (const docSnap of liabsSnap.docs) {
-        const liab = docSnap.data();
-        const ratio = liab.assignedShareAmountCents / expense.totalOriginalAmountCents;
-        const reduction = Math.round(amountRefundedCents * ratio);
-        const newAdjusted = Math.max(0, liab.assignedShareAmountCents - reduction);
+      const liabs = liabsSnap.docs.map((d) => ({ docRef: d.ref, data: d.data() }));
+
+      let allocatedReduction = 0;
+      const reductions = liabs.map((item) => {
+        const liab = item.data;
+        const orig = liab.originalAmountCents || liab.assignedShareAmountCents || 0;
+        const exact = (amountRefundedCents * orig) / expense.totalOriginalAmountCents;
+        const floor = Math.floor(exact);
+        const remainder = exact - floor;
+        allocatedReduction += floor;
+        return { item, floor, remainder, reduction: floor };
+      });
+
+      let remainderToDistribute = amountRefundedCents - allocatedReduction;
+      reductions.sort((a, b) => b.remainder - a.remainder);
+      for (let i = 0; i < remainderToDistribute; i++) {
+        reductions[i].reduction += 1;
+      }
+
+      for (const red of reductions) {
+        const { item, reduction } = red;
+        const liab = item.data;
+        const original = liab.originalAmountCents || liab.assignedShareAmountCents;
+        const prevRefund = liab.refundAdjustmentCents || 0;
+        const newRefund = prevRefund + reduction;
+        const newAdjusted = Math.max(0, original - newRefund);
         const paid = liab.paidAmountCents || 0;
-        const remaining = Math.max(0, newAdjusted - paid);
-        tx.update(docSnap.ref, {
+
+        let remaining = 0;
+        let creditNote = 0;
+        if (paid > newAdjusted) {
+          remaining = 0;
+          creditNote = paid - newAdjusted;
+        } else {
+          remaining = newAdjusted - paid;
+          creditNote = 0;
+        }
+
+        tx.update(item.docRef, {
+          originalAmountCents: original,
+          refundAdjustmentCents: newRefund,
           adjustedShareAmountCents: newAdjusted,
           remainingAmountCents: remaining,
+          creditNoteCents: creditNote,
         });
+
+        // Notificação oficial de confirmação de reembolso do fornecedor
+        const notifId = `notif_supref_${refundId}_${liab.memberUid}`;
+        const notifRef = db.collection('users').doc(liab.memberUid).collection('notifications').doc(notifId);
+        tx.set(notifRef, {
+          id: notifId,
+          userId: liab.memberUid,
+          spaceId: String(spaceId).trim(),
+          spaceName: spaceData.name || 'Espaço Compartilhado',
+          type: 'supplier_refund_confirmed',
+          title: 'Reembolso comercial confirmado',
+          message: `O fornecedor devolveu R$ ${(amountRefundedCents / 100).toFixed(2)} em "${expense.title}". Sua cota líquida foi reduzida em R$ ${(reduction / 100).toFixed(2)}.${creditNote > 0 ? ` Você possui um crédito de R$ ${(creditNote / 100).toFixed(2)} a receber.` : ''}`,
+          read: false,
+          originEventId: refundId,
+          createdAt: now,
+        }, { merge: true });
       }
     }
 

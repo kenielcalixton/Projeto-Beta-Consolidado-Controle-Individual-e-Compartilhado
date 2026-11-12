@@ -17,6 +17,7 @@ import {
   loadDemoPaymentApprovals,
   loadDemoPaymentDeclarations,
   loadDemoSharedExpenses,
+  loadDemoPaymentRejections,
   loadDemoSharedLiabilities,
   recordSupplierRefund,
   rejectExpensePayment,
@@ -24,6 +25,7 @@ import {
   saveDemoApprovalRevocations,
   saveDemoPaymentApprovals,
   saveDemoPaymentDeclarations,
+  saveDemoPaymentRejections,
   saveDemoSharedExpenses,
   saveDemoSharedLiabilities,
   saveDemoSupplierRefunds,
@@ -36,6 +38,7 @@ function resetSharedDemoStorage() {
   saveDemoSharedLiabilities([]);
   saveDemoPaymentDeclarations([]);
   saveDemoPaymentApprovals([]);
+  saveDemoPaymentRejections([]);
   saveDemoApprovalRevocations([]);
   saveDemoSupplierRefunds([]);
 }
@@ -524,5 +527,251 @@ test('FASE 6 — Rateios e Reembolsos Compartilhados (Arquitetura v3.1)', async 
     const summaryBob = await getSpaceFinancialSummary('space_alpha', 'bob_uid', true);
     assert.equal(summaryBob.totalMyPendingToPayCents, 4000);
     assert.equal(summaryBob.totalMyPendingToReceiveCents, 0); // Bob não é responsável
+  });
+
+  // ----------------------------------------------------------------------------
+  // 12. SEPARAÇÃO ENTRE AUTORIDADE DE VALIDAÇÃO E CREDOR BENEFICIÁRIO DO REEMBOLSO
+  // ----------------------------------------------------------------------------
+  await t.test('15. Segregação: Alice é a responsável pela validação, Bob é quem pagou (payerUid) e recebe o crédito', async () => {
+    // Cria contas bancárias para Bob e Alice
+    const bobAcc = await createAccount('bob_credor', { name: 'Nubank Bob', type: 'checking' }, true);
+    const aliceAcc = await createAccount('alice_validadora', { name: 'Itaú Alice', type: 'checking' }, true);
+
+    // Despesa criada por Alice: Total R$ 300,00. Responsável pela validação: Alice. Quem pagou: Bob!
+    const createRes = await createSharedExpense(
+      'space_segregation',
+      {
+        spaceId: 'space_segregation',
+        title: 'Supermercado Mensal Pela República',
+        totalOriginalAmountCents: 30000,
+        competenceMonth: '2026-11',
+        competenceDate: '2026-11-10',
+        categoryId: 'cat_mercado',
+        categoryName: 'Alimentação',
+        createdByUid: 'alice_validadora',
+        responsibleUid: 'alice_validadora', // Autoridade de validação
+        payerUid: 'bob_credor',             // Quem desembolsou os fundos ao fornecedor
+        splitMethod: 'equal',
+        participants: [
+          { uid: 'alice_validadora', name: 'Alice' },
+          { uid: 'bob_credor', name: 'Bob' },
+          { uid: 'charlie_devedor', name: 'Charlie' },
+        ],
+      },
+      true
+    );
+
+    const expId = createRes.expense.id;
+    assert.equal(createRes.expense.responsibleUid, 'alice_validadora');
+    assert.equal(createRes.expense.payerUid, 'bob_credor');
+
+    // Charlie declara o pagamento de R$ 100,00
+    const charlieDecl = await declareExpensePayment(
+      {
+        spaceId: 'space_segregation',
+        expenseId: expId,
+        memberUid: 'charlie_devedor',
+        memberName: 'Charlie',
+        amountCents: 10000,
+        paymentDate: '2026-11-11',
+        paymentMethod: 'pix',
+      },
+      true
+    );
+
+    // Alice (responsável pela validação) aprova o pagamento
+    // O crédito DEVE ir para a conta de Bob (beneficiário), e não de Alice!
+    const apprRes = await approveExpensePayment(
+      {
+        spaceId: 'space_segregation',
+        expenseId: expId,
+        declarationId: charlieDecl.id,
+        approverUid: 'alice_validadora',
+        destinationAccountId: bobAcc.id,
+      },
+      true
+    );
+
+    assert.equal(apprRes.approval.approverUid, 'alice_validadora');
+    assert.equal(apprRes.approval.responsibleUid, 'alice_validadora');
+    assert.equal(apprRes.approval.beneficiaryUid, 'bob_credor');
+    assert.ok(apprRes.movement);
+    assert.equal(apprRes.movement?.userId, 'bob_credor'); // Creditado no financeiro de Bob!
+    assert.equal(apprRes.movement?.authorUid, 'alice_validadora'); // Aprovado por Alice!
+    assert.equal(apprRes.movement?.amountCents, 10000);
+
+    // Valida saldos bancários: Bob recebeu R$ 100,00; Alice permaneceu com 0
+    const bobAccs = await getUserAccounts('bob_credor', false, true);
+    const bobUpdated = bobAccs.find((a) => a.id === bobAcc.id)!;
+    assert.equal(bobUpdated.projectedBalanceCents, 10000);
+
+    const aliceAccs = await getUserAccounts('alice_validadora', false, true);
+    const aliceUpdated = aliceAccs.find((a) => a.id === aliceAcc.id)!;
+    assert.equal(aliceUpdated.projectedBalanceCents, 0);
+  });
+
+  // ----------------------------------------------------------------------------
+  // 13. PRESERVAÇÃO DE originalAmountCents E NOTA DE CRÉDITO EM DEVOLUÇÃO
+  // ----------------------------------------------------------------------------
+  await t.test('16. Devolução de fornecedor preserva originalAmountCents e gera creditNoteCents para quem já pagou', async () => {
+    // Cria despesa de R$ 300,00 dividida entre Alice, Bob e Charlie (R$ 100,00 cada)
+    const createRes = await createSharedExpense(
+      'space_refund_note',
+      {
+        spaceId: 'space_refund_note',
+        title: 'Móveis para Sala Compartilhada',
+        totalOriginalAmountCents: 30000,
+        competenceMonth: '2026-11',
+        competenceDate: '2026-11-10',
+        categoryId: 'cat_moveis',
+        categoryName: 'Casa',
+        createdByUid: 'alice_uid',
+        responsibleUid: 'alice_uid',
+        payerUid: 'alice_uid',
+        splitMethod: 'equal',
+        participants: [
+          { uid: 'alice_uid', name: 'Alice' },
+          { uid: 'bob_uid', name: 'Bob' },
+          { uid: 'charlie_uid', name: 'Charlie' },
+        ],
+      },
+      true
+    );
+    const expId = createRes.expense.id;
+
+    // Bob declara e paga R$ 100,00 integralmente
+    const bobDecl = await declareExpensePayment(
+      {
+        spaceId: 'space_refund_note',
+        expenseId: expId,
+        memberUid: 'bob_uid',
+        memberName: 'Bob',
+        amountCents: 10000,
+        paymentDate: '2026-11-11',
+        paymentMethod: 'pix',
+      },
+      true
+    );
+
+    await approveExpensePayment(
+      {
+        spaceId: 'space_refund_note',
+        expenseId: expId,
+        declarationId: bobDecl.id,
+        approverUid: 'alice_uid',
+      },
+      true
+    );
+
+    // Agora a loja devolve R$ 60,00 (R$ 20,00 por participante)
+    await recordSupplierRefund(
+      {
+        spaceId: 'space_refund_note',
+        expenseId: expId,
+        refundType: 'partial_refund',
+        amountRefundedCents: 6000,
+        recipientUid: 'alice_uid',
+        date: '2026-11-12',
+        justification: 'Devolução de mesa com defeito',
+      },
+      true
+    );
+
+    const liabs = await getExpenseLiabilities('space_refund_note', expId, true);
+    const bobLiab = liabs.find((l) => l.memberUid === 'bob_uid')!;
+    const charlieLiab = liabs.find((l) => l.memberUid === 'charlie_uid')!;
+
+    // Regra Obrigatória: originalAmountCents e assignedShareAmountCents INTACTOS em R$ 100,00 (10000 centavos)
+    assert.equal(bobLiab.originalAmountCents, 10000);
+    assert.equal(bobLiab.assignedShareAmountCents, 10000);
+    assert.equal(bobLiab.refundAdjustmentCents, 2000);
+    assert.equal(bobLiab.adjustedShareAmountCents, 8000);
+    // Bob pagou 10000, a nova cota é 8000 -> remaining = 0 e crédito a restituir = 2000 (R$ 20,00)
+    assert.equal(bobLiab.paidAmountCents, 10000);
+    assert.equal(bobLiab.remainingAmountCents, 0);
+    assert.equal(bobLiab.creditNoteCents, 2000);
+
+    // Charlie não havia pago ainda:
+    assert.equal(charlieLiab.originalAmountCents, 10000);
+    assert.equal(charlieLiab.assignedShareAmountCents, 10000);
+    assert.equal(charlieLiab.refundAdjustmentCents, 2000);
+    assert.equal(charlieLiab.adjustedShareAmountCents, 8000);
+    assert.equal(charlieLiab.remainingAmountCents, 8000);
+    assert.equal(charlieLiab.creditNoteCents, 0);
+  });
+
+  // ----------------------------------------------------------------------------
+  // 14. IMUTABILIDADE DA DECLARAÇÃO E EVENTOS INDEPENDENTES DE REJEIÇÃO
+  // ----------------------------------------------------------------------------
+  await t.test('17. Declaração original é append-only imutável; rejeição gera evento em payment_rejections', async () => {
+    const createRes = await createSharedExpense(
+      'space_immutable',
+      {
+        spaceId: 'space_immutable',
+        title: 'Manutenção Hidráulica',
+        totalOriginalAmountCents: 10000,
+        competenceMonth: '2026-11',
+        competenceDate: '2026-11-10',
+        categoryId: 'cat_manutencao',
+        categoryName: 'Casa',
+        createdByUid: 'alice_uid',
+        responsibleUid: 'alice_uid',
+        payerUid: 'alice_uid',
+        splitMethod: 'equal',
+        participants: [
+          { uid: 'alice_uid', name: 'Alice' },
+          { uid: 'bob_uid', name: 'Bob' },
+        ],
+      },
+      true
+    );
+    const expId = createRes.expense.id;
+
+    // Bob declara pagamento de R$ 50,00
+    const decl = await declareExpensePayment(
+      {
+        spaceId: 'space_immutable',
+        expenseId: expId,
+        memberUid: 'bob_uid',
+        memberName: 'Bob',
+        amountCents: 5000,
+        paymentDate: '2026-11-11',
+        paymentMethod: 'pix',
+      },
+      true
+    );
+
+    // Alice rejeita o pagamento com justificativa
+    const rejRes = await rejectExpensePayment(
+      {
+        spaceId: 'space_immutable',
+        expenseId: expId,
+        declarationId: decl.id,
+        rejecterUid: 'alice_uid',
+        rejectionReason: 'Comprovante ilegível e sem autenticação bancária',
+      },
+      true
+    );
+
+    assert.ok(rejRes.rejection);
+    assert.equal(rejRes.rejection?.declarationId, decl.id);
+    assert.equal(rejRes.rejection?.reason, 'Comprovante ilegível e sem autenticação bancária');
+    assert.equal(rejRes.rejection?.rejectedByUid, 'alice_uid');
+
+    // Verifica que no armazenamento bruto de declarações o documento NÃO foi mutado!
+    const rawDecls = loadDemoPaymentDeclarations();
+    const storedDecl = rawDecls.find((d) => d.id === decl.id)!;
+    assert.equal(storedDecl.status, 'pending_validation', 'Documento original bruto não deve ser alterado');
+
+    // Verifica que a rejeição foi persistida na coleção de rejeições
+    const rawRejections = loadDemoPaymentRejections();
+    assert.ok(rawRejections.length >= 1);
+    assert.ok(rawRejections.some((r) => r.declarationId === decl.id));
+
+    // A consulta oficial (getExpensePaymentDeclarations) deriva o status a partir do histórico de eventos
+    const queriedDecls = await getExpensePaymentDeclarations('space_immutable', expId, true);
+    const queriedBobDecl = queriedDecls.find((d) => d.id === decl.id)!;
+    assert.equal(queriedBobDecl.status, 'rejected');
+    assert.equal(queriedBobDecl.rejectionReason, 'Comprovante ilegível e sem autenticação bancária');
   });
 });
