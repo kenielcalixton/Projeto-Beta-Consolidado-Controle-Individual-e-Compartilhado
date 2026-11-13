@@ -4,13 +4,15 @@ import {
   doc,
   getDoc,
   getDocs,
+  onSnapshot,
   query,
   runTransaction,
   setDoc,
   updateDoc,
   where,
 } from 'firebase/firestore';
-import { db } from './firebase';
+import { httpsCallable } from 'firebase/functions';
+import { db, functions } from './firebase';
 import {
   CentsInteger,
   ISO8601String,
@@ -24,6 +26,7 @@ import {
   recordSpaceAuditEvent,
 } from './spaceAuditService';
 import { notifySpaceMembers, sendSpaceNotification } from './spaceNotificationService';
+import { sha256Hex } from '../utils/hashUtils';
 import { universalStorage } from '../utils/universalStorage';
 
 /**
@@ -123,6 +126,25 @@ export interface CreateSpaceInput {
   color?: string;
   enabledModules?: SpaceModuleType[];
   monthlyBudgetCents?: CentsInteger;
+  idempotencyKey?: string;
+}
+
+let demoSpaceOpQueue: Promise<unknown> = Promise.resolve();
+function withDemoSpaceLock<T>(fn: () => Promise<T>): Promise<T> {
+  const run = demoSpaceOpQueue.then(fn, fn);
+  demoSpaceOpQueue = run.then(
+    () => undefined,
+    () => undefined
+  );
+  return run;
+}
+
+export function buildDeterministicSpaceId(
+  creatorUid: string,
+  idempotencyKey: string
+): string {
+  const digest = sha256Hex(`${creatorUid.trim()}|${idempotencyKey.trim()}`).slice(0, 32);
+  return `space_${digest}`;
 }
 
 export interface UpdateSpaceInput {
@@ -173,6 +195,10 @@ export function validateSpaceInput(input: CreateSpaceInput | UpdateSpaceInput): 
 
 /**
  * Cria um novo espaço compartilhado e estabelece o criador como proprietário inicial.
+ * - Garante proteção contra duplicidade por `idempotencyKey` (nunca pelo nome do espaço),
+ *   permitindo múltiplos espaços distintos para o mesmo usuário.
+ * - Em modo real/emulador, executa atomicamente via Cloud Function `createSpaceOfficial`
+ *   (criação do espaço, membro criador e trilha de auditoria na mesma transação ACID).
  */
 export async function createSpace(
   creatorUid: string,
@@ -180,81 +206,148 @@ export async function createSpace(
   creatorEmail: string,
   input: CreateSpaceInput,
   isDemo = false
-): Promise<{ space: Space; member: SpaceMember }> {
+): Promise<{ space: Space; member: SpaceMember; isIdempotentReplay?: boolean }> {
   if (!creatorUid || !creatorUid.trim()) {
     throw new Error('Identificador de criador inválido. É obrigatório estar autenticado.');
   }
 
   validateSpaceInput(input);
 
-  const now: ISO8601String = new Date().toISOString();
-  const spaceId = `space_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
-
-  const newSpace: Space = {
-    id: spaceId,
-    creatorUid: creatorUid.trim(),
-    ownerId: creatorUid.trim(),
-    name: input.name.trim(),
-    description: input.description?.trim() || '',
-    icon: input.icon || 'ph-users-three',
-    color: input.color || '#3b82f6',
-    spaceStatus: 'active',
-    memberUids: [creatorUid.trim()],
-    historicalMemberUids: [creatorUid.trim()],
-    enabledModules: input.enabledModules || ['finance', 'acquisitions'],
-    monthlyBudgetCents: input.monthlyBudgetCents,
-    createdAt: now,
-  };
-
-  const initialMember: SpaceMember = {
-    id: creatorUid.trim(),
-    spaceId,
-    uid: creatorUid.trim(),
-    displayName: creatorName?.trim() || 'Criador do Espaço',
-    contactEmail: creatorEmail?.trim() || '',
-    role: 'owner',
-    participationStatus: 'active',
-    invitedAt: now,
-    joinedAt: now,
-  };
-
-  const auditInput = {
-    spaceId,
-    eventType: 'space_created' as const,
-    performedByUid: creatorUid.trim(),
-    performedByName: creatorName?.trim() || 'Criador do Espaço',
-    details: { name: newSpace.name },
-    operationKey: `create_${spaceId}`,
-    timestamp: now,
-  };
+  const cleanUid = creatorUid.trim();
+  const cleanName = input.name.trim();
+  const cleanDesc = input.description?.trim() || '';
+  const resolvedModules: SpaceModuleType[] = input.enabledModules
+    ? Array.from(new Set(input.enabledModules))
+    : ['finance', 'acquisitions'];
+  const cleanIdempotencyKey = input.idempotencyKey?.trim() || '';
 
   if (isDemo) {
-    const spaces = loadDemoSpaces();
-    spaces.unshift(newSpace);
-    saveDemoSpaces(spaces);
+    return await withDemoSpaceLock(async () => {
+      const spaceId = cleanIdempotencyKey
+        ? buildDeterministicSpaceId(cleanUid, cleanIdempotencyKey)
+        : `space_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
 
-    const members = [initialMember];
-    saveDemoMembers(spaceId, members);
+      const spaces = loadDemoSpaces();
+      const existingSpace = spaces.find((s) => s.id === spaceId);
+      if (existingSpace) {
+        if (existingSpace.creatorUid !== cleanUid) {
+          throw new Error('Conflito de titularidade ao reutilizar chave de criação de espaço.');
+        }
+        const existingModules = existingSpace.enabledModules || ['finance', 'acquisitions'];
+        const sameModules =
+          existingModules.length === resolvedModules.length &&
+          existingModules.every((m, idx) => m === resolvedModules[idx]);
+        const sameBudget =
+          (existingSpace.monthlyBudgetCents ?? null) === (input.monthlyBudgetCents ?? null);
 
-    await recordSpaceAuditEvent(auditInput, true);
+        if (
+          existingSpace.name !== cleanName ||
+          (existingSpace.description || '') !== cleanDesc ||
+          !sameModules ||
+          !sameBudget
+        ) {
+          throw new Error(
+            'Conflito de idempotência: chave de criação já utilizada para outro espaço.'
+          );
+        }
 
-    return { space: newSpace, member: initialMember };
+        const existingMembers = loadDemoMembers(spaceId);
+        const existingMember =
+          existingMembers.find((m) => m.uid === cleanUid) || {
+            id: cleanUid,
+            spaceId,
+            uid: cleanUid,
+            displayName: creatorName?.trim() || 'Criador do Espaço',
+            contactEmail: creatorEmail?.trim() || '',
+            role: 'owner' as const,
+            participationStatus: 'active' as const,
+            invitedAt: existingSpace.createdAt,
+            joinedAt: existingSpace.createdAt,
+          };
+
+        return { space: existingSpace, member: existingMember, isIdempotentReplay: true };
+      }
+
+      const now: ISO8601String = new Date().toISOString();
+      const newSpace: Space = {
+        id: spaceId,
+        creatorUid: cleanUid,
+        ownerId: cleanUid,
+        name: cleanName,
+        description: cleanDesc,
+        icon: input.icon || 'ph-users-three',
+        color: input.color || '#3b82f6',
+        spaceStatus: 'active',
+        memberUids: [cleanUid],
+        historicalMemberUids: [cleanUid],
+        enabledModules: resolvedModules,
+        monthlyBudgetCents: input.monthlyBudgetCents,
+        createdAt: now,
+      };
+
+      const initialMember: SpaceMember = {
+        id: cleanUid,
+        spaceId,
+        uid: cleanUid,
+        displayName: creatorName?.trim() || 'Criador do Espaço',
+        contactEmail: creatorEmail?.trim() || '',
+        role: 'owner',
+        participationStatus: 'active',
+        invitedAt: now,
+        joinedAt: now,
+      };
+
+      spaces.unshift(newSpace);
+      saveDemoSpaces(spaces);
+      saveDemoMembers(spaceId, [initialMember]);
+
+      await recordSpaceAuditEvent(
+        {
+          spaceId,
+          eventType: 'space_created',
+          performedByUid: cleanUid,
+          performedByName: creatorName?.trim() || 'Criador do Espaço',
+          details: { name: newSpace.name },
+          operationKey: `create_${spaceId}`,
+          timestamp: now,
+        },
+        true
+      );
+
+      return { space: newSpace, member: initialMember, isIdempotentReplay: false };
+    });
   }
 
-  // Remove campos undefined antes de gravar no Firestore
-  const firestoreSpaceDoc: Record<string, unknown> = {
-    ...newSpace,
-  };
-  if (firestoreSpaceDoc.monthlyBudgetCents === undefined) {
-    delete firestoreSpaceDoc.monthlyBudgetCents;
-  }
+  const callable = httpsCallable<
+    {
+      creatorName: string;
+      creatorEmail: string;
+      name: string;
+      description: string;
+      icon: string;
+      color: string;
+      enabledModules: SpaceModuleType[];
+      monthlyBudgetCents?: CentsInteger;
+      idempotencyKey?: string;
+    },
+    { space: Space; member: SpaceMember; isIdempotentReplay: boolean }
+  >(functions, 'createSpaceOfficial');
 
-  await setDoc(doc(db, 'spaces', spaceId), firestoreSpaceDoc);
-  await setDoc(doc(db, 'spaces', spaceId, 'members', creatorUid.trim()), initialMember);
+  const response = await callable({
+    creatorName: creatorName?.trim() || 'Criador do Espaço',
+    creatorEmail: creatorEmail?.trim() || '',
+    name: cleanName,
+    description: cleanDesc,
+    icon: input.icon || 'ph-users-three',
+    color: input.color || '#3b82f6',
+    enabledModules: resolvedModules,
+    ...(input.monthlyBudgetCents !== undefined
+      ? { monthlyBudgetCents: input.monthlyBudgetCents }
+      : {}),
+    ...(cleanIdempotencyKey ? { idempotencyKey: cleanIdempotencyKey } : {}),
+  });
 
-  await recordSpaceAuditEvent(auditInput, false);
-
-  return { space: newSpace, member: initialMember };
+  return response.data;
 }
 
 export type SpaceViewMode = 'active' | 'historical' | 'all';
@@ -350,6 +443,67 @@ export async function getUserSpaces(
   }
 
   return Array.from(resultMap.values()).sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/**
+ * Inscreve um listener em tempo real (`onSnapshot`) para os espaços nos quais o usuário
+ * é participante ativo (`memberUids`). Garante atualização imediata da listagem sem
+ * exigir navegação entre abas após criação, aceite de convite ou alteração de status.
+ */
+export function subscribeToUserActiveSpaces(
+  userId: string,
+  includeArchived = false,
+  onUpdate: (spaces: Space[]) => void,
+  onError?: (err: Error) => void,
+  isDemo = false
+): () => void {
+  const cleanUid = userId?.trim() || '';
+  if (!cleanUid) {
+    return () => undefined;
+  }
+
+  if (isDemo) {
+    try {
+      const list = loadDemoSpaces()
+        .filter((s) => {
+          if (!Array.isArray(s.memberUids) || s.memberUids.length === 0) return false;
+          if (!s.memberUids.includes(cleanUid)) return false;
+          if (!includeArchived && s.spaceStatus === 'archived') return false;
+          if (s.spaceStatus === 'dissolved') return false;
+          return true;
+        })
+        .sort((a, b) => a.name.localeCompare(b.name));
+      onUpdate(list);
+    } catch (err: unknown) {
+      onError?.(err instanceof Error ? err : new Error(String(err)));
+    }
+    return () => undefined;
+  }
+
+  const activeQuery = query(
+    collection(db, 'spaces'),
+    where('memberUids', 'array-contains', cleanUid)
+  );
+
+  return onSnapshot(
+    activeQuery,
+    (snap) => {
+      const result: Space[] = [];
+      snap.forEach((d) => {
+        const raw = d.data() as Space;
+        const space: Space = { ...raw, id: d.id || raw.id };
+        if (!Array.isArray(space.memberUids) || space.memberUids.length === 0) return;
+        if (!includeArchived && space.spaceStatus === 'archived') return;
+        if (space.spaceStatus === 'dissolved') return;
+        result.push(space);
+      });
+      result.sort((a, b) => a.name.localeCompare(b.name));
+      onUpdate(result);
+    },
+    (err) => {
+      onError?.(err instanceof Error ? err : new Error(String(err)));
+    }
+  );
 }
 
 /**

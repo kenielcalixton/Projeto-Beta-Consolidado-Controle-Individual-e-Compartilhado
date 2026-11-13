@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
   Wallet,
   Building2,
@@ -23,6 +23,7 @@ import {
   FileSpreadsheet,
 } from 'lucide-react';
 import { Account, FinancialMovement, AccountType } from '../../types/financeV3';
+import { UniversalTransactionPreset } from '../../types/finance';
 import {
   getUserAccounts,
   createAccount,
@@ -33,7 +34,6 @@ import {
 } from '../../services/accountService';
 import {
   getAccountMovements,
-  recordMovement,
   reverseMovement,
   reconcileAndSyncAccountBalance,
 } from '../../services/ledgerService';
@@ -46,12 +46,13 @@ import { getRecurrenceRules } from '../../services/recurrenceService';
 import {
   formatCentsToBRL,
   parseBRLToCents,
-  validatePositiveCents,
 } from '../../utils/movementLedger';
 
 interface AccountsLedgerViewV3Props {
   userId: string;
   isDemo?: boolean;
+  refreshTrigger?: number;
+  onOpenNewTransaction?: (preset?: UniversalTransactionPreset) => void;
 }
 
 interface CardLimitInfo {
@@ -70,6 +71,8 @@ interface AccountObligationScan {
 export const AccountsLedgerViewV3: React.FC<AccountsLedgerViewV3Props> = ({
   userId,
   isDemo = false,
+  refreshTrigger = 0,
+  onOpenNewTransaction,
 }) => {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [cardLimits, setCardLimits] = useState<Record<string, CardLimitInfo>>({});
@@ -83,14 +86,16 @@ export const AccountsLedgerViewV3: React.FC<AccountsLedgerViewV3Props> = ({
 
   // Conta selecionada para visualização do Livro-Razão (Ledger) em modal responsivo
   const [selectedAccount, setSelectedAccount] = useState<Account | null>(null);
+  const selectedAccountRef = useRef<Account | null>(null);
+  useEffect(() => {
+    selectedAccountRef.current = selectedAccount;
+  }, [selectedAccount]);
   const [movements, setMovements] = useState<FinancialMovement[]>([]);
   const [loadingMovements, setLoadingMovements] = useState(false);
 
   // Modais
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [editingAccount, setEditingAccount] = useState<Account | null>(null);
-  const [isMovementModalOpen, setIsMovementModalOpen] = useState(false);
-  const [movementDirection, setMovementDirection] = useState<'inflow' | 'outflow'>('inflow');
   const [isReversalModalOpen, setIsReversalModalOpen] = useState(false);
   const [movementToReverse, setMovementToReverse] = useState<FinancialMovement | null>(null);
 
@@ -114,15 +119,6 @@ export const AccountsLedgerViewV3: React.FC<AccountsLedgerViewV3Props> = ({
   const [accDueDay, setAccDueDay] = useState('27');
   const [accSubmitting, setAccSubmitting] = useState(false);
 
-  // Formulário de Movimentação
-  const [movDescription, setMovDescription] = useState('');
-  const [movAmountInput, setMovAmountInput] = useState('');
-  const [movEffectiveDate, setMovEffectiveDate] = useState(() =>
-    new Date().toISOString().slice(0, 10)
-  );
-  const [movIdempotencyKey, setMovIdempotencyKey] = useState('');
-  const [movSubmitting, setMovSubmitting] = useState(false);
-
   // Formulário de Estorno
   const [reversalReason, setReversalReason] = useState('');
   const [reversalSubmitting, setReversalSubmitting] = useState(false);
@@ -140,7 +136,6 @@ export const AccountsLedgerViewV3: React.FC<AccountsLedgerViewV3Props> = ({
     const anyModalOpen =
       Boolean(selectedAccount) ||
       isCreateModalOpen ||
-      isMovementModalOpen ||
       isReversalModalOpen ||
       Boolean(archiveTargetAccount);
     if (!anyModalOpen) return;
@@ -152,7 +147,6 @@ export const AccountsLedgerViewV3: React.FC<AccountsLedgerViewV3Props> = ({
   }, [
     selectedAccount,
     isCreateModalOpen,
-    isMovementModalOpen,
     isReversalModalOpen,
     archiveTargetAccount,
   ]);
@@ -167,6 +161,10 @@ export const AccountsLedgerViewV3: React.FC<AccountsLedgerViewV3Props> = ({
         (a): a is Account => !!a && typeof a.id === 'string' && a.id.trim().length > 0
       );
       setAccounts(validAccounts);
+      setSelectedAccount((prev) => {
+        if (!prev) return null;
+        return validAccounts.find((a) => a.id === prev.id) || prev;
+      });
 
       const creditAccounts = validAccounts.filter((a) => a.type === 'credit');
       if (creditAccounts.length > 0) {
@@ -199,10 +197,6 @@ export const AccountsLedgerViewV3: React.FC<AccountsLedgerViewV3Props> = ({
     }
   }, [userId, isDemo]);
 
-  useEffect(() => {
-    loadAccounts();
-  }, [loadAccounts]);
-
   // Carrega movimentos ao selecionar uma conta
   const loadMovementsForAccount = useCallback(async (account: Account) => {
     if (!account || !account.id) return;
@@ -220,6 +214,13 @@ export const AccountsLedgerViewV3: React.FC<AccountsLedgerViewV3Props> = ({
       setLoadingMovements(false);
     }
   }, [userId, isDemo]);
+
+  useEffect(() => {
+    loadAccounts();
+    if (selectedAccountRef.current) {
+      loadMovementsForAccount(selectedAccountRef.current);
+    }
+  }, [loadAccounts, loadMovementsForAccount, refreshTrigger]);
 
   const handleSelectAccountForLedger = (acc: Account) => {
     setError(null);
@@ -481,85 +482,6 @@ export const AccountsLedgerViewV3: React.FC<AccountsLedgerViewV3Props> = ({
     }
   };
 
-  // Gravar movimentação simples (entrada ou saída avulsa)
-  const handleRecordMovement = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!selectedAccount) return;
-
-    if (!movDescription.trim()) {
-      setModalError('A descrição da movimentação é obrigatória.');
-      return;
-    }
-
-    let amountCents = 0;
-    try {
-      amountCents = parseBRLToCents(movAmountInput);
-      validatePositiveCents(amountCents);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Valor inválido';
-      setModalError(msg);
-      return;
-    }
-
-    setMovSubmitting(true);
-    setModalError(null);
-    try {
-      const activeIdemKey =
-        movIdempotencyKey ||
-        `idem_manual_${selectedAccount.id}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-      if (!movIdempotencyKey) {
-        setMovIdempotencyKey(activeIdemKey);
-      }
-
-      const newMov = await recordMovement(
-        {
-          accountId: selectedAccount.id,
-          userId,
-          amountCents,
-          direction: movementDirection,
-          originType: 'manual_adjustment',
-          originId: activeIdemKey,
-          authorUid: userId,
-          description: movDescription.trim(),
-          effectiveDate: movEffectiveDate,
-          notes: `Lançamento manual registrado no Livro-Razão v3.1`,
-          idempotencyKey: activeIdemKey,
-        },
-        isDemo
-      );
-
-      showToast(
-        `Movimentação de ${movementDirection === 'inflow' ? 'entrada' : 'saída'} gravada: ${formatCentsToBRL(
-          newMov.amountCents
-        )}`
-      );
-
-      setIsMovementModalOpen(false);
-      setMovDescription('');
-      setMovAmountInput('');
-      setMovIdempotencyKey('');
-
-      // Recarrega conta e movimentos
-      await loadMovementsForAccount(selectedAccount);
-      await loadAccounts();
-
-      // Atualiza saldo local projetado na gaveta
-      const delta = movementDirection === 'inflow' ? amountCents : -amountCents;
-      setSelectedAccount((prev) =>
-        prev
-          ? {
-              ...prev,
-              projectedBalanceCents: prev.projectedBalanceCents + delta,
-            }
-          : null
-      );
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : 'Falha ao registrar movimentação';
-      setModalError(message);
-    } finally {
-      setMovSubmitting(false);
-    }
-  };
 
   // Estorno compensatório
   const handleExecuteReversal = async (e: React.FormEvent) => {
@@ -1081,34 +1003,30 @@ export const AccountsLedgerViewV3: React.FC<AccountsLedgerViewV3Props> = ({
 
                   {!selectedAccount.isArchived && (
                     <>
-                      <button
-                        onClick={() => {
-                          setModalError(null);
-                          setMovementDirection('inflow');
-                          setMovDescription('');
-                          setMovAmountInput('');
-                          setMovIdempotencyKey(
-                            `idem_manual_${selectedAccount.id}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
-                          );
-                          setIsMovementModalOpen(true);
-                        }}
-                        className="flex items-center gap-1.5 px-3.5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold rounded-xl shadow-xs transition-all cursor-pointer"
-                      >
-                        <ArrowDownLeft className="w-4 h-4" />
-                        Nova Entrada (+)
-                      </button>
+                      {selectedAccount.type !== 'credit' && (
+                        <button
+                          onClick={() =>
+                            onOpenNewTransaction?.({
+                              presetAccountId: selectedAccount.id,
+                              presetType: 'income',
+                              presetIsPaid: true,
+                            })
+                          }
+                          className="flex items-center gap-1.5 px-3.5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold rounded-xl shadow-xs transition-all cursor-pointer"
+                        >
+                          <ArrowDownLeft className="w-4 h-4" />
+                          Nova Entrada (+)
+                        </button>
+                      )}
 
                       <button
-                        onClick={() => {
-                          setModalError(null);
-                          setMovementDirection('outflow');
-                          setMovDescription('');
-                          setMovAmountInput('');
-                          setMovIdempotencyKey(
-                            `idem_manual_${selectedAccount.id}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
-                          );
-                          setIsMovementModalOpen(true);
-                        }}
+                        onClick={() =>
+                          onOpenNewTransaction?.({
+                            presetAccountId: selectedAccount.id,
+                            presetType: 'expense',
+                            presetIsPaid: true,
+                          })
+                        }
                         className="flex items-center gap-1.5 px-3.5 py-2 bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold rounded-xl shadow-xs transition-all cursor-pointer"
                       >
                         <ArrowUpRight className="w-4 h-4" />
@@ -1447,129 +1365,6 @@ export const AccountsLedgerViewV3: React.FC<AccountsLedgerViewV3Props> = ({
         </div>
       )}
 
-      {/* MODAL: NOVA ENTRADA / SAÍDA NO LIVRO */}
-      {isMovementModalOpen && selectedAccount && (
-        <div className="fixed inset-0 z-[55] flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-xs">
-          <div className="bg-slate-900 rounded-2xl max-w-md w-full max-h-[90dvh] overflow-y-auto p-6 shadow-2xl border border-slate-700">
-            <div className="flex items-center justify-between pb-4 border-b border-slate-800">
-              <div className="flex items-center gap-2">
-                <div
-                  className={`p-2 rounded-xl text-white ${
-                    movementDirection === 'inflow' ? 'bg-emerald-600' : 'bg-rose-600'
-                  }`}
-                >
-                  {movementDirection === 'inflow' ? (
-                    <ArrowDownLeft className="w-5 h-5" />
-                  ) : (
-                    <ArrowUpRight className="w-5 h-5" />
-                  )}
-                </div>
-                <div>
-                  <h3 className="text-lg font-bold text-white">
-                    {movementDirection === 'inflow'
-                      ? 'Nova Entrada (+)'
-                      : 'Nova Saída (-)'}
-                  </h3>
-                  <p className="text-xs text-slate-400">
-                    Conta: <strong className="text-slate-200">{selectedAccount.name}</strong>
-                  </p>
-                </div>
-              </div>
-              <button
-                onClick={() => {
-                  setModalError(null);
-                  setIsMovementModalOpen(false);
-                }}
-                className="p-1 text-slate-400 hover:text-slate-200 rounded-lg cursor-pointer"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <form onSubmit={handleRecordMovement} className="space-y-4 mt-4">
-              {modalError && (
-                <div className="flex items-center gap-2 p-3 bg-rose-500/15 border border-rose-500/30 text-rose-200 rounded-xl text-xs">
-                  <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
-                  <span>{modalError}</span>
-                </div>
-              )}
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">
-                  Descrição da Movimentação *
-                </label>
-                <input
-                  type="text"
-                  required
-                  placeholder="Ex: Salário, Depósito, Almoço, Manutenção..."
-                  value={movDescription}
-                  onChange={(e) => setMovDescription(e.target.value)}
-                  className="w-full px-3.5 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-sm text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">
-                  Valor em Reais (R$) *
-                </label>
-                <div className="relative">
-                  <span className="absolute left-3.5 top-2.5 text-sm font-bold text-slate-400">
-                    R$
-                  </span>
-                  <input
-                    type="text"
-                    required
-                    placeholder="0,00"
-                    value={movAmountInput}
-                    onChange={(e) => setMovAmountInput(e.target.value)}
-                    className="w-full pl-11 pr-3.5 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-sm font-semibold text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  />
-                </div>
-                <p className="text-[11px] text-slate-400 mt-1">
-                  Exemplos: 150,00 ou 1.250,50 (convertido em centavos exatos)
-                </p>
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">
-                  Data de Débito/Crédito Efetivo *
-                </label>
-                <input
-                  type="date"
-                  required
-                  value={movEffectiveDate}
-                  onChange={(e) => setMovEffectiveDate(e.target.value)}
-                  className="w-full px-3.5 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-sm text-white focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
-
-              <div className="pt-4 border-t border-slate-800 flex items-center justify-end gap-3">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setModalError(null);
-                    setIsMovementModalOpen(false);
-                  }}
-                  className="px-4 py-2 text-sm font-semibold text-slate-400 hover:text-slate-200 cursor-pointer"
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="submit"
-                  disabled={movSubmitting}
-                  className={`px-5 py-2.5 text-white text-sm font-semibold rounded-xl shadow-sm transition-all disabled:opacity-50 cursor-pointer ${
-                    movementDirection === 'inflow'
-                      ? 'bg-emerald-600 hover:bg-emerald-500'
-                      : 'bg-rose-600 hover:bg-rose-500'
-                  }`}
-                >
-                  {movSubmitting ? 'Registrando...' : 'Gravar Movimentação'}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
 
       {/* MODAL: ESTORNO COMPENSATÓRIO COM JUSTIFICATIVA */}
       {isReversalModalOpen && movementToReverse && (

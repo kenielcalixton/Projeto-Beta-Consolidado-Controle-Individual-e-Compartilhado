@@ -372,29 +372,61 @@ export async function updateRecurrenceRuleStatus(
   return { rule: snap.data() as RecurrenceRule };
 }
 
+export interface RecurrenceQueryFilters {
+  scope: RecurrenceRuleScope;
+  userId?: string;
+  spaceId?: string;
+}
+
 export async function getRecurrenceRules(
-  filters: { userId?: string; spaceId?: string; scope?: RecurrenceRuleScope },
+  filters: RecurrenceQueryFilters,
   isDemo = false
 ): Promise<RecurrenceRule[]> {
+  if (!filters || (filters.scope !== 'personal' && filters.scope !== 'shared')) {
+    throw new Error(
+      'O parâmetro obrigatório "scope" ("personal" | "shared") deve ser informado para consultar regras de recorrência.'
+    );
+  }
+  const cleanUserId = filters.userId?.trim();
+  const cleanSpaceId = filters.spaceId?.trim();
+
+  if (filters.scope === 'personal' && !cleanUserId) {
+    throw new Error('userId é obrigatório para consultar regras de recorrência no escopo personal.');
+  }
+  if (filters.scope === 'shared' && !cleanSpaceId) {
+    throw new Error('spaceId é obrigatório para consultar regras de recorrência no escopo shared.');
+  }
+
   if (isDemo) {
     const rules = loadDemoRecurrenceRules();
-    return rules.filter((r) => {
-      if (filters.scope && r.scope !== filters.scope) return false;
-      if (filters.userId && r.userId !== filters.userId) return false;
-      if (filters.spaceId && r.spaceId !== filters.spaceId) return false;
-      return true;
-    });
+    const map = new Map<string, RecurrenceRule>();
+    for (const r of rules) {
+      if (r.scope !== filters.scope) continue;
+      if (cleanUserId && r.userId !== cleanUserId) continue;
+      if (cleanSpaceId && r.spaceId !== cleanSpaceId) continue;
+      map.set(r.id, r);
+    }
+    return Array.from(map.values());
   }
 
   const colRef = collection(db, 'recurrence_rules');
-  const constraints: any[] = [];
-  if (filters.scope) constraints.push(where('scope', '==', filters.scope));
-  if (filters.userId) constraints.push(where('userId', '==', filters.userId));
-  if (filters.spaceId) constraints.push(where('spaceId', '==', filters.spaceId));
+  const constraints: any[] = [where('scope', '==', filters.scope)];
+  if (filters.scope === 'personal' && cleanUserId) {
+    constraints.push(where('userId', '==', cleanUserId));
+  }
+  if (filters.scope === 'shared' && cleanSpaceId) {
+    constraints.push(where('spaceId', '==', cleanSpaceId));
+  }
 
   const q = query(colRef, ...constraints);
   const snap = await getDocs(q);
-  return snap.docs.map((d) => d.data() as RecurrenceRule);
+  const map = new Map<string, RecurrenceRule>();
+  for (const d of snap.docs) {
+    const data = d.data() as RecurrenceRule;
+    const id = data.id || d.id;
+    map.set(id, { ...data, id });
+  }
+  return Array.from(map.values());
 }
 
 export async function getRecurrenceRuleById(
@@ -713,29 +745,61 @@ export async function cancelInstallmentContract(
   };
 }
 
+export interface InstallmentContractQueryFilters {
+  scope: InstallmentContractScope;
+  userId?: string;
+  spaceId?: string;
+}
+
 export async function getInstallmentContracts(
-  filters: { userId?: string; spaceId?: string; scope?: InstallmentContractScope },
+  filters: InstallmentContractQueryFilters,
   isDemo = false
 ): Promise<InstallmentContract[]> {
+  if (!filters || (filters.scope !== 'personal' && filters.scope !== 'shared')) {
+    throw new Error(
+      'O parâmetro obrigatório "scope" ("personal" | "shared") deve ser informado para consultar contratos de parcelamento.'
+    );
+  }
+  const cleanUserId = filters.userId?.trim();
+  const cleanSpaceId = filters.spaceId?.trim();
+
+  if (filters.scope === 'personal' && !cleanUserId) {
+    throw new Error('userId é obrigatório para consultar parcelamentos no escopo personal.');
+  }
+  if (filters.scope === 'shared' && !cleanSpaceId) {
+    throw new Error('spaceId é obrigatório para consultar parcelamentos no escopo shared.');
+  }
+
   if (isDemo) {
     const contracts = loadDemoInstallmentContracts();
-    return contracts.filter((c) => {
-      if (filters.scope && c.scope !== filters.scope) return false;
-      if (filters.userId && c.userId !== filters.userId) return false;
-      if (filters.spaceId && c.spaceId !== filters.spaceId) return false;
-      return true;
-    });
+    const map = new Map<string, InstallmentContract>();
+    for (const c of contracts) {
+      if (c.scope !== filters.scope) continue;
+      if (cleanUserId && c.userId !== cleanUserId) continue;
+      if (cleanSpaceId && c.spaceId !== cleanSpaceId) continue;
+      map.set(c.id, c);
+    }
+    return Array.from(map.values());
   }
 
   const colRef = collection(db, 'installment_contracts');
-  const constraints: any[] = [];
-  if (filters.scope) constraints.push(where('scope', '==', filters.scope));
-  if (filters.userId) constraints.push(where('userId', '==', filters.userId));
-  if (filters.spaceId) constraints.push(where('spaceId', '==', filters.spaceId));
+  const constraints: any[] = [where('scope', '==', filters.scope)];
+  if (filters.scope === 'personal' && cleanUserId) {
+    constraints.push(where('userId', '==', cleanUserId));
+  }
+  if (filters.scope === 'shared' && cleanSpaceId) {
+    constraints.push(where('spaceId', '==', cleanSpaceId));
+  }
 
   const q = query(colRef, ...constraints);
   const snap = await getDocs(q);
-  return snap.docs.map((d) => d.data() as InstallmentContract);
+  const map = new Map<string, InstallmentContract>();
+  for (const d of snap.docs) {
+    const data = d.data() as InstallmentContract;
+    const id = data.id || d.id;
+    map.set(id, { ...data, id });
+  }
+  return Array.from(map.values());
 }
 
 export async function getInstallmentContractById(

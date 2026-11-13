@@ -27,6 +27,7 @@ export interface Category {
 }
 
 export interface SpaceParticipant {
+  uid?: string;
   email: string;
   name: string;
   status: 'active' | 'invited';
@@ -54,6 +55,33 @@ export interface Space {
 export type TransactionType = 'income' | 'expense';
 export type TransactionStatus = 'paid' | 'pending' | 'overdue' | 'validating' | 'rejected';
 export type RecurrenceType = 'single' | 'fixed' | 'installment';
+
+export interface UniversalTransactionPreset {
+  presetAccountId?: string;
+  presetSpaceId?: string;
+  presetType?: TransactionType;
+  presetRecurrenceType?: RecurrenceType;
+  presetFixedNature?: 'fixed' | 'recurring';
+  presetIsPaid?: boolean;
+  presetDescription?: string;
+  presetAmount?: number;
+}
+
+export interface UniversalTransactionExtra {
+  fixedNature?: 'fixed' | 'recurring';
+  frequency?: 'monthly' | 'weekly' | 'yearly';
+  installmentOngoing?: boolean;
+  initialInstallmentNumber?: number;
+  installmentAmountMode?: 'remaining' | 'total';
+  installmentFundingSource?: 'credit_card' | 'personal_loan';
+  sharedSplitMethod?: 'equal' | 'percentage' | 'custom_value';
+  sharedResponsibleUid?: string;
+  sharedPayerUid?: string;
+  sharedParticipantUids?: string[];
+  sharedPercentagesByUid?: Record<string, number>;
+  sharedCustomValuesCentsByUid?: Record<string, number>;
+  notes?: string;
+}
 
 export interface SplitShare {
   email: string;

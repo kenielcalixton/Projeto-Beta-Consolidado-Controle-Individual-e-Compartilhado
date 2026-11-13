@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   AuthorDataDestinationDecision,
   Space,
@@ -18,6 +18,7 @@ import {
   leaveSpace,
   removeMemberFromSpace,
   SpaceViewMode,
+  subscribeToUserActiveSpaces,
   unarchiveSpace,
   updateMemberRole,
 } from '../../services/spaceService';
@@ -43,6 +44,12 @@ import {
   markNotificationAsRead,
 } from '../../services/spaceNotificationService';
 import { SharedFinanceSectionV3 } from './SharedFinanceSectionV3';
+import { UniversalTransactionPreset } from '../../types/finance';
+import {
+  createSpaceAttemptKey,
+  executeSpaceCreationSubmission,
+  mergeSpaceListItem,
+} from '../../utils/spaceCreationFlow';
 
 interface SharedSpacesViewV3Props {
   userId: string;
@@ -50,6 +57,10 @@ interface SharedSpacesViewV3Props {
   userEmail: string;
   isDemo?: boolean;
   openCreateTrigger?: number;
+  refreshTrigger?: number;
+  onConsumeCreateTrigger?: () => void;
+  onSpacesChanged?: (space?: Space) => void;
+  onOpenNewTransaction?: (preset?: UniversalTransactionPreset) => void;
   onOpenSpaceAcquisitions?: (spaceId: string) => void;
 }
 
@@ -70,6 +81,10 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
   userEmail,
   isDemo = false,
   openCreateTrigger = 0,
+  refreshTrigger = 0,
+  onConsumeCreateTrigger,
+  onSpacesChanged,
+  onOpenNewTransaction,
   onOpenSpaceAcquisitions,
 }) => {
   // Estados principais
@@ -96,6 +111,11 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
   // Modais
   const [isCreateSpaceModalOpen, setIsCreateSpaceModalOpen] = useState(false);
   const [isCreatingSpace, setIsCreatingSpace] = useState(false);
+  const [createAttemptKey, setCreateAttemptKey] = useState<string>(() =>
+    createSpaceAttemptKey()
+  );
+  const createInFlightRef = useRef(false);
+  const lastHandledCreateTriggerRef = useRef(0);
   const [newSpaceName, setNewSpaceName] = useState('');
   const [newSpaceDesc, setNewSpaceDesc] = useState('');
   const [newSpaceColor, setNewSpaceColor] = useState('#3b82f6');
@@ -128,24 +148,42 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
   );
   const [targetSpaceIdInput, setTargetSpaceIdInput] = useState('');
 
+  const openCreateSpaceModal = () => {
+    setModalError(null);
+    if (!isCreateSpaceModalOpen) {
+      setCreateAttemptKey(createSpaceAttemptKey());
+    }
+    setIsCreateSpaceModalOpen(true);
+  };
+
+  const closeCreateSpaceModal = () => {
+    if (createInFlightRef.current || isCreatingSpace) return;
+    setModalError(null);
+    setIsCreateSpaceModalOpen(false);
+    setCreateAttemptKey(createSpaceAttemptKey());
+  };
+
   // Carrega lista de espaços
-  const loadSpaces = async () => {
+  const loadSpaces = async (options?: { silent?: boolean }) => {
     try {
-      setLoading(true);
+      if (!options?.silent) {
+        setLoading(true);
+      }
       const list = await getUserSpaces(userId, includeArchived, isDemo, spaceFilter);
       setSpaces(list);
-      if (selectedSpace) {
-        const refreshed = list.find((s) => s.id === selectedSpace.id);
-        if (refreshed) {
-          setSelectedSpace(refreshed);
-        } else if (!includeArchived && selectedSpace.spaceStatus === 'archived') {
-          setSelectedSpace(null);
-        }
-      }
+      setSelectedSpace((prevSelected) => {
+        if (!prevSelected) return null;
+        const refreshed = list.find((s) => s.id === prevSelected.id);
+        if (refreshed) return refreshed;
+        if (!includeArchived && prevSelected.spaceStatus === 'archived') return null;
+        return prevSelected;
+      });
     } catch (err: any) {
       setFeedbackMessage({ type: 'error', text: err.message || 'Erro ao carregar espaços.' });
     } finally {
-      setLoading(false);
+      if (!options?.silent) {
+        setLoading(false);
+      }
     }
   };
 
@@ -192,16 +230,61 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
   };
 
   useEffect(() => {
+    let active = true;
     loadSpaces();
     loadNotifications();
-  }, [userId, includeArchived, spaceFilter]);
+
+    if (isDemo || !userId || spaceFilter === 'historical') {
+      return () => {
+        active = false;
+      };
+    }
+
+    const unsubscribe = subscribeToUserActiveSpaces(
+      userId,
+      includeArchived,
+      (liveActiveSpaces) => {
+        if (!active) return;
+        if (spaceFilter === 'active') {
+          setSpaces(liveActiveSpaces);
+          setLoading(false);
+          setSelectedSpace((prevSelected) => {
+            if (!prevSelected) return null;
+            const refreshed = liveActiveSpaces.find((s) => s.id === prevSelected.id);
+            if (refreshed) return refreshed;
+            if (!includeArchived && prevSelected.spaceStatus === 'archived') return null;
+            return prevSelected;
+          });
+        } else {
+          // Em modo 'all', sincroniza mantendo projeções históricas combinadas
+          void loadSpaces({ silent: true });
+        }
+      },
+      (err) => {
+        if (!active) return;
+        setFeedbackMessage({
+          type: 'error',
+          text: err.message || 'Erro ao sincronizar espaços em tempo real.',
+        });
+      },
+      false
+    );
+
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, [userId, includeArchived, spaceFilter, isDemo, refreshTrigger]);
 
   useEffect(() => {
-    if (openCreateTrigger > 0) {
-      setModalError(null);
-      setIsCreateSpaceModalOpen(true);
+    if (openCreateTrigger > 0 && openCreateTrigger !== lastHandledCreateTriggerRef.current) {
+      lastHandledCreateTriggerRef.current = openCreateTrigger;
+      openCreateSpaceModal();
+      onConsumeCreateTrigger?.();
+    } else if (openCreateTrigger === 0) {
+      lastHandledCreateTriggerRef.current = 0;
     }
-  }, [openCreateTrigger]);
+  }, [openCreateTrigger, onConsumeCreateTrigger]);
 
   useEffect(() => {
     if (selectedSpace) {
@@ -212,42 +295,70 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
   // Handlers de Ações de Governança
   const handleCreateSpace = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newSpaceName.trim()) {
-      setModalError('Informe o nome do espaço compartilhado.');
-      return;
-    }
-
-    setIsCreatingSpace(true);
-    setModalError(null);
-    try {
-      const res = await createSpace(
-        userId,
-        userName,
-        userEmail,
-        {
-          name: newSpaceName.trim(),
-          description: newSpaceDesc.trim(),
-          icon: newSpaceIcon,
-          color: newSpaceColor,
-          enabledModules: newSpaceModules,
-          monthlyBudgetCents: newSpaceBudgetCents > 0 ? newSpaceBudgetCents : undefined,
-        },
-        isDemo
-      );
-      setFeedbackMessage({ type: 'success', text: `Espaço "${res.space.name}" criado com sucesso!` });
-      setIsCreateSpaceModalOpen(false);
-      setNewSpaceName('');
-      setNewSpaceDesc('');
-      setNewSpaceBudgetCents(0);
-      await loadSpaces();
-      setSelectedSpace(res.space);
-    } catch (err: any) {
-      const msg = err?.message || 'Erro ao criar espaço compartilhado.';
-      setModalError(msg);
-      setFeedbackMessage({ type: 'error', text: msg });
-    } finally {
-      setIsCreatingSpace(false);
-    }
+    await executeSpaceCreationSubmission({
+      inFlightRef: createInFlightRef,
+      isSubmittingState: isCreatingSpace,
+      attemptKey: createAttemptKey,
+      form: {
+        name: newSpaceName,
+        description: newSpaceDesc,
+        color: newSpaceColor,
+        icon: newSpaceIcon,
+        enabledModules: newSpaceModules,
+        monthlyBudgetCents: newSpaceBudgetCents,
+      },
+      onStart: (resolvedKey) => {
+        setCreateAttemptKey(resolvedKey);
+        setIsCreatingSpace(true);
+        setModalError(null);
+        setFeedbackMessage(null);
+      },
+      submitFn: (resolvedKey) =>
+        createSpace(
+          userId,
+          userName,
+          userEmail,
+          {
+            name: newSpaceName.trim(),
+            description: newSpaceDesc.trim(),
+            icon: newSpaceIcon,
+            color: newSpaceColor,
+            enabledModules: newSpaceModules,
+            monthlyBudgetCents: newSpaceBudgetCents > 0 ? newSpaceBudgetCents : undefined,
+            idempotencyKey: resolvedKey,
+          },
+          isDemo
+        ),
+      onSuccess: async (res) => {
+        setSelectedSpace(null);
+        if (spaceFilter === 'historical') {
+          setSpaceFilter('active');
+        }
+        setSpaces((prev) => mergeSpaceListItem(prev, res.space));
+        setLoading(false);
+        setIsCreateSpaceModalOpen(false);
+        setModalError(null);
+        setNewSpaceName('');
+        setNewSpaceDesc('');
+        setNewSpaceBudgetCents(0);
+        setCreateAttemptKey(createSpaceAttemptKey());
+        setFeedbackMessage({
+          type: 'success',
+          text: `Espaço "${res.space.name}" criado com sucesso!`,
+        });
+        onSpacesChanged?.(res.space);
+        if (isDemo || spaceFilter === 'all') {
+          await loadSpaces({ silent: true });
+        }
+      },
+      onError: (friendlyMessage) => {
+        // Mantém o modal aberto com todos os dados preenchidos e a mesma chave de idempotência
+        setModalError(friendlyMessage);
+      },
+      onFinish: () => {
+        setIsCreatingSpace(false);
+      },
+    });
   };
 
   const handleArchiveToggle = async () => {
@@ -528,10 +639,7 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
             </button>
 
             <button
-              onClick={() => {
-                setModalError(null);
-                setIsCreateSpaceModalOpen(true);
-              }}
+              onClick={openCreateSpaceModal}
               className="px-4 py-2 bg-indigo-600 text-white rounded-xl text-xs font-semibold hover:bg-indigo-500 flex items-center gap-1.5 transition-colors shadow-sm cursor-pointer"
             >
               <i className="ph ph-plus-circle text-base" />
@@ -1001,6 +1109,8 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
               userId={userId}
               userName={userName}
               isDemo={isDemo}
+              refreshTrigger={refreshTrigger}
+              onOpenNewTransaction={onOpenNewTransaction}
               activeTab={selectedTab}
               onTabChange={(tab) => setSelectedTab(tab)}
               onFeedback={(type, text) => setFeedbackMessage({ type, text })}
@@ -1437,18 +1547,21 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-base font-bold text-white">Novo Espaço Compartilhado</h3>
               <button
-                onClick={() => {
-                  setModalError(null);
-                  setIsCreateSpaceModalOpen(false);
-                }}
-                className="text-slate-400 hover:text-white cursor-pointer"
+                type="button"
+                onClick={closeCreateSpaceModal}
+                disabled={isCreatingSpace}
+                className="text-slate-400 hover:text-white cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                title={isCreatingSpace ? 'Aguarde a conclusão da criação' : 'Fechar modal'}
               >
                 <i className="ph ph-x text-lg" />
               </button>
             </div>
 
             {modalError && (
-              <div className="mb-3 p-3 rounded-xl bg-rose-500/15 border border-rose-500/30 text-rose-200 text-xs flex items-center gap-2">
+              <div
+                role="alert"
+                className="mb-3 p-3 rounded-xl bg-rose-500/15 border border-rose-500/30 text-rose-200 text-xs flex items-center gap-2"
+              >
                 <i className="ph ph-warning-circle text-rose-400 text-base shrink-0" />
                 <span>{modalError}</span>
               </div>
@@ -1462,10 +1575,11 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
                 <input
                   type="text"
                   required
+                  disabled={isCreatingSpace}
                   value={newSpaceName}
                   onChange={(e) => setNewSpaceName(e.target.value)}
                   placeholder="Ex: República dos Amigos, Casal, Viagem 2027"
-                  className="w-full text-xs px-3 py-2 bg-slate-800 border border-slate-700 text-white placeholder-slate-500 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                  className="w-full text-xs px-3 py-2 bg-slate-800 border border-slate-700 text-white placeholder-slate-500 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:outline-none disabled:opacity-60"
                 />
               </div>
 
@@ -1473,10 +1587,11 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
                 <label className="block text-xs font-bold text-slate-200 mb-1">Descrição</label>
                 <textarea
                   rows={2}
+                  disabled={isCreatingSpace}
                   value={newSpaceDesc}
                   onChange={(e) => setNewSpaceDesc(e.target.value)}
                   placeholder="Finalidade e governança do espaço..."
-                  className="w-full text-xs px-3 py-2 bg-slate-800 border border-slate-700 text-white placeholder-slate-500 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                  className="w-full text-xs px-3 py-2 bg-slate-800 border border-slate-700 text-white placeholder-slate-500 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:outline-none disabled:opacity-60"
                 />
               </div>
 
@@ -1485,17 +1600,19 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
                   <label className="block text-xs font-bold text-slate-200 mb-1">Cor</label>
                   <input
                     type="color"
+                    disabled={isCreatingSpace}
                     value={newSpaceColor}
                     onChange={(e) => setNewSpaceColor(e.target.value)}
-                    className="w-full h-9 rounded-xl bg-slate-800 border border-slate-700 cursor-pointer p-1"
+                    className="w-full h-9 rounded-xl bg-slate-800 border border-slate-700 cursor-pointer p-1 disabled:opacity-60"
                   />
                 </div>
                 <div>
                   <label className="block text-xs font-bold text-slate-200 mb-1">Ícone</label>
                   <select
+                    disabled={isCreatingSpace}
                     value={newSpaceIcon}
                     onChange={(e) => setNewSpaceIcon(e.target.value)}
-                    className="w-full h-9 text-xs px-2 bg-slate-800 border border-slate-700 text-white rounded-xl focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                    className="w-full h-9 text-xs px-2 bg-slate-800 border border-slate-700 text-white rounded-xl focus:ring-2 focus:ring-indigo-500 focus:outline-none disabled:opacity-60"
                   >
                     <option value="ph-users-three">Grupo / Pessoas</option>
                     <option value="ph-house-line">República / Moradia</option>
@@ -1514,9 +1631,10 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
                   type="number"
                   min="0"
                   step="100"
+                  disabled={isCreatingSpace}
                   value={newSpaceBudgetCents}
                   onChange={(e) => setNewSpaceBudgetCents(parseInt(e.target.value) || 0)}
-                  className="w-full text-xs px-3 py-2 bg-slate-800 border border-slate-700 text-white placeholder-slate-500 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                  className="w-full text-xs px-3 py-2 bg-slate-800 border border-slate-700 text-white placeholder-slate-500 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:outline-none disabled:opacity-60"
                   placeholder="Ex: 500000 para R$ 5.000,00"
                 />
               </div>
@@ -1524,19 +1642,17 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
               <div className="flex justify-end gap-2 pt-2 border-t border-slate-700/80">
                 <button
                   type="button"
-                  onClick={() => {
-                    setModalError(null);
-                    setIsCreateSpaceModalOpen(false);
-                  }}
+                  onClick={closeCreateSpaceModal}
                   disabled={isCreatingSpace}
-                  className="px-4 py-2 border border-slate-700 rounded-xl text-xs font-semibold text-slate-300 hover:bg-slate-700 hover:text-white bg-slate-800 cursor-pointer disabled:opacity-50"
+                  className="px-4 py-2 border border-slate-700 rounded-xl text-xs font-semibold text-slate-300 hover:bg-slate-700 hover:text-white bg-slate-800 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   Cancelar
                 </button>
                 <button
                   type="submit"
                   disabled={isCreatingSpace}
-                  className="px-4 py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold hover:bg-indigo-500 shadow-sm flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                  aria-busy={isCreatingSpace}
+                  className="px-4 py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold hover:bg-indigo-500 shadow-sm flex items-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {isCreatingSpace && <i className="ph ph-spinner animate-spin" />}
                   {isCreatingSpace ? 'Criando...' : 'Criar Espaço'}

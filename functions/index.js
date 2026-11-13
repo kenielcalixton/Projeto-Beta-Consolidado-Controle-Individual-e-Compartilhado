@@ -7639,4 +7639,223 @@ export const archiveAccountSafelyOfficial = onCall(
   }
 );
 
+// ==============================================================================
+// CRIAÇÃO ATÔMICA E IDEMPOTENTE DE ESPAÇO COMPARTILHADO (RC1)
+// ==============================================================================
+
+export async function executeServerSideCreateSpace(db, callerUid, payload) {
+  if (!callerUid || typeof callerUid !== 'string' || !callerUid.trim()) {
+    throw new HttpsError(
+      'unauthenticated',
+      'Autenticação obrigatória para criar espaço compartilhado.'
+    );
+  }
+
+  const cleanUid = callerUid.trim();
+  const {
+    creatorName,
+    creatorEmail,
+    name,
+    description,
+    icon,
+    color,
+    enabledModules,
+    monthlyBudgetCents,
+    idempotencyKey,
+  } = payload || {};
+
+  const cleanName = typeof name === 'string' ? name.trim() : '';
+  if (!cleanName) {
+    throw new HttpsError('invalid-argument', 'O nome do espaço é obrigatório.');
+  }
+  if (cleanName.length > 100) {
+    throw new HttpsError(
+      'invalid-argument',
+      'O nome do espaço não pode exceder 100 caracteres.'
+    );
+  }
+
+  let resolvedModules = ['finance', 'acquisitions'];
+  if (enabledModules !== undefined) {
+    if (!Array.isArray(enabledModules) || enabledModules.length === 0) {
+      throw new HttpsError(
+        'invalid-argument',
+        'Ao menos um módulo deve estar habilitado para o espaço.'
+      );
+    }
+    const validModules = new Set(['finance', 'acquisitions']);
+    for (const mod of enabledModules) {
+      if (!validModules.has(mod)) {
+        throw new HttpsError(
+          'invalid-argument',
+          `Módulo inválido: "${String(mod)}". Módulos permitidos: finance, acquisitions.`
+        );
+      }
+    }
+    resolvedModules = Array.from(new Set(enabledModules));
+  }
+
+  let resolvedBudget;
+  if (monthlyBudgetCents !== undefined && monthlyBudgetCents !== null) {
+    if (
+      typeof monthlyBudgetCents !== 'number' ||
+      !Number.isSafeInteger(monthlyBudgetCents) ||
+      monthlyBudgetCents < 0
+    ) {
+      throw new HttpsError(
+        'invalid-argument',
+        'O orçamento mensal deve ser um valor inteiro em centavos maior ou igual a zero.'
+      );
+    }
+    resolvedBudget = monthlyBudgetCents;
+  }
+
+  const cleanDesc = typeof description === 'string' ? description.trim() : '';
+  const cleanIcon = typeof icon === 'string' && icon.trim() ? icon.trim() : 'ph-users-three';
+  const cleanColor = typeof color === 'string' && color.trim() ? color.trim() : '#3b82f6';
+  const cleanCreatorName =
+    typeof creatorName === 'string' && creatorName.trim()
+      ? creatorName.trim()
+      : 'Criador do Espaço';
+  const cleanCreatorEmail =
+    typeof creatorEmail === 'string' ? creatorEmail.trim() : '';
+  const cleanIdempotencyKey =
+    typeof idempotencyKey === 'string' && idempotencyKey.trim()
+      ? idempotencyKey.trim()
+      : '';
+
+  const spaceId = cleanIdempotencyKey
+    ? buildDeterministicGovernanceId('space', [cleanUid, cleanIdempotencyKey])
+    : `space_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+
+  const spaceRef = db.collection('spaces').doc(spaceId);
+  const memberRef = spaceRef.collection('members').doc(cleanUid);
+  const auditEventId = buildDeterministicGovernanceId('audit', [
+    spaceId,
+    'space_created',
+    `create_${spaceId}`,
+  ]);
+  const auditRef = spaceRef.collection('audit').doc(auditEventId);
+
+  return await db.runTransaction(async (tx) => {
+    const [spaceSnap, memberSnap] = await Promise.all([
+      tx.get(spaceRef),
+      tx.get(memberRef),
+    ]);
+
+    if (spaceSnap.exists) {
+      const existingSpace = spaceSnap.data();
+      if (existingSpace.creatorUid !== cleanUid) {
+        throw new HttpsError(
+          'permission-denied',
+          'Conflito de titularidade ao reutilizar identificador de espaço.'
+        );
+      }
+
+      const existingModules = Array.isArray(existingSpace.enabledModules)
+        ? existingSpace.enabledModules
+        : ['finance', 'acquisitions'];
+      const sameModules =
+        existingModules.length === resolvedModules.length &&
+        existingModules.every((m, idx) => m === resolvedModules[idx]);
+      const sameBudget =
+        (existingSpace.monthlyBudgetCents ?? null) === (resolvedBudget ?? null);
+
+      if (
+        existingSpace.name !== cleanName ||
+        (existingSpace.description || '') !== cleanDesc ||
+        !sameModules ||
+        !sameBudget
+      ) {
+        throw new HttpsError(
+          'already-exists',
+          'Conflito de idempotência: chave de criação já utilizada para outro espaço com dados divergentes.'
+        );
+      }
+
+      const existingMember = memberSnap.exists
+        ? memberSnap.data()
+        : {
+            id: cleanUid,
+            spaceId,
+            uid: cleanUid,
+            displayName: cleanCreatorName,
+            contactEmail: cleanCreatorEmail,
+            role: 'owner',
+            participationStatus: 'active',
+            invitedAt: existingSpace.createdAt,
+            joinedAt: existingSpace.createdAt,
+          };
+
+      return {
+        space: { ...existingSpace, id: existingSpace.id || spaceId },
+        member: existingMember,
+        isIdempotentReplay: true,
+      };
+    }
+
+    const now = new Date().toISOString();
+    const newSpace = stripUndefined({
+      id: spaceId,
+      creatorUid: cleanUid,
+      ownerId: cleanUid,
+      name: cleanName,
+      description: cleanDesc,
+      icon: cleanIcon,
+      color: cleanColor,
+      spaceStatus: 'active',
+      memberUids: [cleanUid],
+      historicalMemberUids: [cleanUid],
+      enabledModules: resolvedModules,
+      monthlyBudgetCents: resolvedBudget,
+      ...(cleanIdempotencyKey ? { idempotencyKey: cleanIdempotencyKey } : {}),
+      createdAt: now,
+    });
+
+    const initialMember = {
+      id: cleanUid,
+      spaceId,
+      uid: cleanUid,
+      displayName: cleanCreatorName,
+      contactEmail: cleanCreatorEmail,
+      role: 'owner',
+      participationStatus: 'active',
+      invitedAt: now,
+      joinedAt: now,
+    };
+
+    const auditEvent = {
+      id: auditEventId,
+      spaceId,
+      eventType: 'space_created',
+      performedByUid: cleanUid,
+      performedByName: cleanCreatorName,
+      details: { name: cleanName },
+      timestamp: now,
+    };
+
+    tx.set(spaceRef, newSpace);
+    tx.set(memberRef, initialMember);
+    tx.set(auditRef, auditEvent);
+
+    return {
+      space: newSpace,
+      member: initialMember,
+      isIdempotentReplay: false,
+    };
+  });
+}
+
+export const createSpaceOfficial = onCall(
+  { region: 'us-central1' },
+  async (request) => {
+    return await executeServerSideCreateSpace(
+      getAdminDb(),
+      request.auth?.uid,
+      request.data
+    );
+  }
+);
+
+
 

@@ -45,15 +45,14 @@ import {
   PersonalRefund,
   PersonalTransaction,
   PersonalTransactionStatus,
-  PersonalTransactionType,
   RecurrenceRule,
-  RecurrenceRuleNature,
   InstallmentContract,
-  InstallmentContractFundingSource,
   InstallmentOccurrence,
-  RecurrenceInstance,
+  SharedExpense,
+  Space,
 } from '../../types/financeV3';
-import { resolveAutomatedV3Status } from '../../utils/financeEngine';
+import { UniversalTransactionPreset } from '../../types/finance';
+import { resolveAutomatedV3Status, getTodayDateString } from '../../utils/financeEngine';
 import { getUserAccounts } from '../../services/accountService';
 import {
   getUserCategories,
@@ -62,11 +61,9 @@ import {
   ensureDefaultCategories,
 } from '../../services/categoryService';
 import {
-  createPersonalTransaction,
   recordPartialPayment,
   cancelPersonalTransaction,
   getUserPersonalTransactions,
-  getPersonalTransactionPayments,
 } from '../../services/personalTransactionService';
 import {
   executeInternalTransfer,
@@ -76,7 +73,6 @@ import {
   getCardInvoices,
   payCardInvoice,
   carryOverInvoiceBalance,
-  calculateCardAvailableLimit,
 } from '../../services/creditCardService';
 import {
   getUserBudgetsWithProgress,
@@ -87,19 +83,17 @@ import {
   createPersonalRefund,
   recordRefundReceipt,
   getUserRefunds,
-  getRefundReceipts,
 } from '../../services/refundService';
 import {
   getRecurrenceRules,
-  createRecurrenceRule,
   updateRecurrenceRuleStatus,
   generateRecurrenceInstance,
-  getRecurrenceInstances,
   getInstallmentContracts,
-  createInstallmentContract,
   getInstallmentOccurrences,
   cancelInstallmentContract,
 } from '../../services/recurrenceService';
+import { getUserSpaces, getSpaceMembers } from '../../services/spaceService';
+import { getSharedExpenses } from '../../services/sharedFinanceService';
 import {
   formatCentsToBRL,
   parseBRLToCents,
@@ -109,6 +103,56 @@ import {
 interface PersonalFinanceViewV3Props {
   userId: string;
   isDemo?: boolean;
+  selectedMonth?: CompetenceMonthString;
+  onChangeMonth?: (month: CompetenceMonthString) => void;
+  refreshTrigger?: number;
+  onOpenNewTransaction?: (preset?: UniversalTransactionPreset) => void;
+}
+
+interface SharedExtratoEntry {
+  id: string;
+  spaceId: string;
+  spaceName: string;
+  title: string;
+  description?: string;
+  categoryId: string;
+  categoryName: string;
+  amountCents: number;
+  competenceDate: string;
+  dueDate?: string;
+  validationStatus: SharedExpense['validationStatus'];
+  commitmentStatus: SharedExpense['commitmentStatus'];
+  paymentExecutionStatus: SharedExpense['paymentExecutionStatus'];
+  originType: SharedExpense['originType'];
+  createdByName: string;
+  payerName: string;
+  createdAt: string;
+}
+
+interface UnifiedExtratoEntry {
+  key: string;
+  id: string;
+  scopeType: 'personal' | 'shared';
+  spaceId?: string;
+  scopeLabel: string;
+  originLabel: string;
+  authorLabel: string;
+  accountLabel: string;
+  description: string;
+  categoryId: string;
+  categoryName: string;
+  type: 'income' | 'expense';
+  amountCents: number;
+  paidAmountCents?: number;
+  remainingAmountCents?: number;
+  competenceDate: string;
+  dueDate?: string;
+  invoiceMonth?: string;
+  statusKey: string;
+  statusLabel: string;
+  statusBadgeClass: string;
+  createdAt: string;
+  personalTx?: PersonalTransaction;
 }
 
 type MainTab =
@@ -124,12 +168,21 @@ type MainTab =
 export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
   userId,
   isDemo = false,
+  selectedMonth: propSelectedMonth,
+  onChangeMonth,
+  refreshTrigger = 0,
+  onOpenNewTransaction,
 }) => {
   const [activeTab, setActiveTab] = useState<MainTab>('transactions');
-  const [selectedMonth, setSelectedMonth] = useState<CompetenceMonthString>(() => {
+  const [internalMonth, setInternalMonth] = useState<CompetenceMonthString>(() => {
     const now = new Date();
     return `${now.getFullYear()}-${(now.getMonth() + 1).toString().padStart(2, '0')}`;
   });
+  const selectedMonth = propSelectedMonth ?? internalMonth;
+  const handleMonthChange = (nextMonth: CompetenceMonthString) => {
+    setInternalMonth(nextMonth);
+    onChangeMonth?.(nextMonth);
+  };
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -140,28 +193,18 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [categories, setCategories] = useState<PersonalCategory[]>([]);
   const [transactions, setTransactions] = useState<PersonalTransaction[]>([]);
+  const [authorizedSpaces, setAuthorizedSpaces] = useState<Space[]>([]);
+  const [sharedExtratoItems, setSharedExtratoItems] = useState<SharedExtratoEntry[]>([]);
   const [invoices, setInvoices] = useState<CreditCardInvoice[]>([]);
   const [transfers, setTransfers] = useState<InternalAccountTransfer[]>([]);
   const [budgets, setBudgets] = useState<PersonalBudgetProgress[]>([]);
   const [refunds, setRefunds] = useState<PersonalRefund[]>([]);
 
-  // Filtros de Transações
+  // Filtros de Transações (Extrato Unificado)
+  const [filterScope, setFilterScope] = useState<'all' | 'personal' | string>('all');
   const [filterType, setFilterType] = useState<'all' | 'income' | 'expense'>('all');
   const [filterStatus, setFilterStatus] = useState<'all' | PersonalTransactionStatus>('all');
   const [filterCategory, setFilterCategory] = useState<string>('all');
-
-  // Modais
-  const [isTxModalOpen, setIsTxModalOpen] = useState(false);
-  const [txType, setTxType] = useState<PersonalTransactionType>('expense');
-  const [txDesc, setTxDesc] = useState('');
-  const [txAmount, setTxAmount] = useState('');
-  const [txCategory, setTxCategory] = useState('');
-  const [txAccount, setTxAccount] = useState('');
-  const [txDate, setTxDate] = useState(() => new Date().toISOString().slice(0, 10));
-  const [txStatus, setTxStatus] = useState<PersonalTransactionStatus>('paid');
-  const [txNotes, setTxNotes] = useState('');
-  const [txIdempotencyKey, setTxIdempotencyKey] = useState('');
-  const [txSubmitting, setTxSubmitting] = useState(false);
 
   // Modal Pagamento Parcial
   const [partialTx, setPartialTx] = useState<PersonalTransaction | null>(null);
@@ -228,35 +271,6 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
   const [contractOccurrences, setContractOccurrences] = useState<Record<string, InstallmentOccurrence[]>>({});
   const [loadingOccurrences, setLoadingOccurrences] = useState<Record<string, boolean>>({});
 
-  // Modal Recorrência / Fixos
-  const [isRecurrenceModalOpen, setIsRecurrenceModalOpen] = useState(false);
-  const [recTitle, setRecTitle] = useState('');
-  const [recDesc, setRecDesc] = useState('');
-  const [recType, setRecType] = useState<PersonalTransactionType>('expense');
-  const [recNature, setRecNature] = useState<RecurrenceRuleNature>('fixed');
-  const [recAmount, setRecAmount] = useState('');
-  const [recFrequency, setRecFrequency] = useState<'monthly' | 'weekly' | 'yearly'>('monthly');
-  const [recStartCompetence, setRecStartCompetence] = useState(() => selectedMonth);
-  const [recDueDay, setRecDueDay] = useState(10);
-  const [recCategory, setRecCategory] = useState('');
-  const [recAccount, setRecAccount] = useState('');
-  const [recGenerateInitial, setRecGenerateInitial] = useState(true);
-  const [recSubmitting, setRecSubmitting] = useState(false);
-
-  // Modal Parcelamento (incluindo parcelamentos já em andamento)
-  const [isInstallmentModalOpen, setIsInstallmentModalOpen] = useState(false);
-  const [instTitle, setInstTitle] = useState('');
-  const [instAmount, setInstAmount] = useState('');
-  const [instCount, setInstCount] = useState(2);
-  const [instOngoing, setInstOngoing] = useState(false);
-  const [instCurrentNumber, setInstCurrentNumber] = useState(2);
-  const [instAmountMode, setInstAmountMode] = useState<'remaining' | 'total'>('remaining');
-  const [instFundingSource, setInstFundingSource] = useState<InstallmentContractFundingSource>('credit_card');
-  const [instCardAccount, setInstCardAccount] = useState('');
-  const [instStartMonth, setInstStartMonth] = useState(() => selectedMonth);
-  const [instDueDay, setInstDueDay] = useState(10);
-  const [instSubmitting, setInstSubmitting] = useState(false);
-
   // Modal Cancelar Parcelamento
   const [cancelContractModal, setCancelContractModal] = useState<InstallmentContract | null>(null);
   const [cancelContractReason, setCancelContractReason] = useState('');
@@ -280,7 +294,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
       const catList = await ensureDefaultCategories(userId, isDemo);
       setCategories(catList);
 
-      // 3. Transações do Mês
+      // 3. Transações individuais do Mês (normalizadas e desduplicadas)
       const txList = await getUserPersonalTransactions(
         userId,
         { competenceMonth: selectedMonth },
@@ -288,7 +302,55 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
       );
       setTransactions(txList);
 
-      // 4. Faturas de Cartão
+      // 4. Espaços compartilhados autorizados e lançamentos do mês
+      const spacesList = await getUserSpaces(userId, false, isDemo, 'active').catch(() => []);
+      setAuthorizedSpaces(spacesList);
+
+      const sharedMap = new Map<string, SharedExtratoEntry>();
+      await Promise.all(
+        spacesList.map(async (sp) => {
+          const [exps, mems] = await Promise.all([
+            getSharedExpenses(sp.id, userId, isDemo).catch(() => []),
+            getSpaceMembers(sp.id, userId, isDemo).catch(() => []),
+          ]);
+          const memberNameByUid = new Map<string, string>();
+          mems.forEach((m) => memberNameByUid.set(m.uid, m.displayName));
+
+          for (const exp of exps) {
+            const expMonth =
+              exp.competenceMonth ||
+              (exp.competenceDate ? exp.competenceDate.slice(0, 7) : '');
+            if (expMonth !== selectedMonth) continue;
+            const key = `${sp.id}_${exp.id}`;
+            if (sharedMap.has(key)) continue;
+            sharedMap.set(key, {
+              id: exp.id,
+              spaceId: sp.id,
+              spaceName: sp.name,
+              title: exp.title || 'Despesa compartilhada',
+              description: exp.description,
+              categoryId: exp.categoryId || 'cat_shared',
+              categoryName: exp.categoryName || 'Compartilhado',
+              amountCents: exp.totalOriginalAmountCents || 0,
+              competenceDate: exp.competenceDate || exp.dueDate || `${selectedMonth}-01`,
+              dueDate: exp.dueDate,
+              validationStatus: exp.validationStatus,
+              commitmentStatus: exp.commitmentStatus,
+              paymentExecutionStatus: exp.paymentExecutionStatus,
+              originType: exp.originType,
+              createdByName: memberNameByUid.get(exp.createdByUid) || 'Membro',
+              payerName:
+                (exp.payerUid ? memberNameByUid.get(exp.payerUid) : undefined) ||
+                memberNameByUid.get(exp.createdByUid) ||
+                'Membro',
+              createdAt: exp.createdAt || '',
+            });
+          }
+        })
+      );
+      setSharedExtratoItems(Array.from(sharedMap.values()));
+
+      // 5. Faturas de Cartão
       const cardAccounts = accList.filter((a) => a.type === 'credit');
       const allInvoices: CreditCardInvoice[] = [];
       for (const card of cardAccounts) {
@@ -297,22 +359,37 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
       }
       setInvoices(allInvoices);
 
-      // 5. Transferências
+      // 6. Transferências
       const xferList = await getUserTransfers(userId, isDemo);
       setTransfers(xferList);
 
-      // 6. Orçamentos com Progresso
+      // 7. Orçamentos com Progresso
       const bgtList = await getUserBudgetsWithProgress(userId, selectedMonth, isDemo);
       setBudgets(bgtList);
 
-      // 7. Reembolsos
+      // 8. Reembolsos
       const refList = await getUserRefunds(userId, isDemo);
       setRefunds(refList);
 
-      // 8. Recorrências e Parcelamentos (Fase 9)
+      // 9. Recorrências e Parcelamentos (sempre passando `scope` explícito!)
+      const isSpecificAuthorizedSpace =
+        filterScope !== 'all' &&
+        filterScope !== 'personal' &&
+        spacesList.some((s) => s.id === filterScope);
+
       const [rulesList, contractsList] = await Promise.all([
-        getRecurrenceRules({ userId }, isDemo),
-        getInstallmentContracts({ userId }, isDemo),
+        getRecurrenceRules(
+          isSpecificAuthorizedSpace
+            ? { scope: 'shared', spaceId: filterScope }
+            : { userId, scope: 'personal' },
+          isDemo
+        ),
+        getInstallmentContracts(
+          isSpecificAuthorizedSpace
+            ? { scope: 'shared', spaceId: filterScope }
+            : { userId, scope: 'personal' },
+          isDemo
+        ),
       ]);
       setRecurrenceRules(rulesList);
       setInstallmentContracts(contractsList);
@@ -322,11 +399,11 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
     } finally {
       setLoading(false);
     }
-  }, [userId, selectedMonth, isDemo]);
+  }, [userId, selectedMonth, isDemo, filterScope]);
 
   useEffect(() => {
     loadAllData();
-  }, [loadAllData]);
+  }, [loadAllData, refreshTrigger]);
 
   // Indicadores e Métricas
   const totalBalanceCents = useMemo(() => {
@@ -349,103 +426,166 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
 
   const pendingExpenseCents = useMemo(() => {
     return transactions
-      .filter((t) => t.type === 'expense' && (t.status === 'pending' || t.status === 'forecast' || t.status === 'partially_paid'))
+      .filter((t) => {
+        if (t.type !== 'expense' || t.status === 'cancelled') return false;
+        const autoKey = resolveAutomatedV3Status(t).key;
+        return (
+          autoKey === 'overdue' ||
+          t.status === 'pending' ||
+          t.status === 'forecast' ||
+          t.status === 'partially_paid'
+        );
+      })
       .reduce((sum, t) => sum + (t.remainingAmountCents ?? t.amountCents), 0);
   }, [transactions]);
 
-  // Transações Filtradas
+  const accountNameById = useMemo(() => {
+    const map = new Map<string, string>();
+    accounts.forEach((a) => map.set(a.id, a.name));
+    return map;
+  }, [accounts]);
+
+  // Extrato Unificado (Individual + Espaços autorizados, normalizado e desduplicado)
+  const extratoEntries = useMemo<UnifiedExtratoEntry[]>(() => {
+    const byKey = new Map<string, UnifiedExtratoEntry>();
+    const today = getTodayDateString();
+
+    for (const tx of transactions) {
+      const key = `personal_${tx.id}`;
+      if (byKey.has(key)) continue;
+      const statusInfo = resolveAutomatedV3Status(tx);
+      const originLabel =
+        tx.originType === 'installment'
+          ? 'Parcelamento'
+          : tx.originType === 'recurrence'
+          ? 'Recorrência / Fixo'
+          : tx.originType === 'shopping_list'
+          ? 'Aquisição / Lista'
+          : 'Manual';
+      const accName = tx.accountId
+        ? accountNameById.get(tx.accountId) || 'Conta vinculada'
+        : 'Sem conta vinculada';
+
+      byKey.set(key, {
+        key,
+        id: tx.id,
+        scopeType: 'personal',
+        scopeLabel: 'Individual',
+        originLabel,
+        authorLabel: 'Individual (Você)',
+        accountLabel: accName,
+        description: tx.description,
+        categoryId: tx.categoryId,
+        categoryName: tx.categoryName,
+        type: tx.type,
+        amountCents: tx.amountCents,
+        paidAmountCents: tx.paidAmountCents,
+        remainingAmountCents: tx.remainingAmountCents,
+        competenceDate: tx.competenceDate,
+        dueDate: tx.dueDate,
+        invoiceMonth: tx.invoiceMonth,
+        statusKey: statusInfo.key,
+        statusLabel: statusInfo.label,
+        statusBadgeClass: statusInfo.badgeClass,
+        createdAt: tx.createdAt,
+        personalTx: tx,
+      });
+    }
+
+    for (const sh of sharedExtratoItems) {
+      const key = `shared_${sh.spaceId}_${sh.id}`;
+      if (byKey.has(key)) continue;
+      const isCancelled =
+        sh.commitmentStatus === 'cancelled_pre_payment' ||
+        sh.validationStatus === 'cancelled' ||
+        sh.validationStatus === 'rejected';
+      const isSettled =
+        sh.paymentExecutionStatus === 'fully_paid' || sh.commitmentStatus === 'closed';
+      const isPartial = sh.paymentExecutionStatus === 'partially_paid';
+      const isOverdue = !isCancelled && !isSettled && Boolean(sh.dueDate && sh.dueDate < today);
+      const sharedOriginLabel =
+        sh.originType === 'shopping_list'
+          ? 'Aquisição / Lista'
+          : sh.originType === 'installment'
+          ? 'Parcelamento'
+          : sh.originType === 'recurrence'
+          ? 'Recorrência / Fixo'
+          : 'Espaço Compartilhado';
+
+      const statusKey = isCancelled
+        ? 'cancelled'
+        : isSettled
+        ? 'paid'
+        : isPartial
+        ? 'partially_paid'
+        : isOverdue
+        ? 'overdue'
+        : 'pending';
+      const statusLabel = isCancelled
+        ? 'Cancelada'
+        : isSettled
+        ? 'Liquidada'
+        : isPartial
+        ? 'Parcialmente Liquidada'
+        : isOverdue
+        ? 'Vencida'
+        : 'Em Aberto';
+      const statusBadgeClass = isCancelled
+        ? 'bg-slate-800 text-slate-400 border border-slate-700'
+        : isSettled
+        ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
+        : isPartial
+        ? 'bg-sky-500/15 text-sky-300 border border-sky-500/30'
+        : isOverdue
+        ? 'bg-rose-500/15 text-rose-300 border border-rose-500/30'
+        : 'bg-amber-500/15 text-amber-300 border border-amber-500/30';
+
+      byKey.set(key, {
+        key,
+        id: sh.id,
+        scopeType: 'shared',
+        spaceId: sh.spaceId,
+        scopeLabel: sh.spaceName,
+        originLabel: sharedOriginLabel,
+        authorLabel: `Criado por ${sh.createdByName} · Pagador: ${sh.payerName}`,
+        accountLabel: `Espaço: ${sh.spaceName}`,
+        description: sh.title,
+        categoryId: sh.categoryId,
+        categoryName: sh.categoryName,
+        type: 'expense',
+        amountCents: sh.amountCents,
+        competenceDate: sh.competenceDate,
+        dueDate: sh.dueDate,
+        statusKey,
+        statusLabel,
+        statusBadgeClass,
+        createdAt: sh.createdAt,
+      });
+    }
+
+    return Array.from(byKey.values()).sort((a, b) => {
+      const cmp = (b.competenceDate || '').localeCompare(a.competenceDate || '');
+      if (cmp !== 0) return cmp;
+      return (b.createdAt || '').localeCompare(a.createdAt || '');
+    });
+  }, [transactions, sharedExtratoItems, accountNameById]);
+
   const filteredTransactions = useMemo(() => {
-    return transactions.filter((t) => {
-      if (filterType !== 'all' && t.type !== filterType) return false;
-      if (filterStatus !== 'all') {
-        const autoKey = resolveAutomatedV3Status(t).key;
-        if (filterStatus === ('overdue' as PersonalTransactionStatus)) {
-          if (autoKey !== 'overdue') return false;
-        } else if (t.status !== filterStatus) {
-          return false;
-        }
+    return extratoEntries.filter((entry) => {
+      if (filterScope === 'personal' && entry.scopeType !== 'personal') return false;
+      if (
+        filterScope !== 'all' &&
+        filterScope !== 'personal' &&
+        entry.spaceId !== filterScope
+      ) {
+        return false;
       }
-      if (filterCategory !== 'all' && t.categoryId !== filterCategory) return false;
+      if (filterType !== 'all' && entry.type !== filterType) return false;
+      if (filterStatus !== 'all' && entry.statusKey !== filterStatus) return false;
+      if (filterCategory !== 'all' && entry.categoryId !== filterCategory) return false;
       return true;
     });
-  }, [transactions, filterType, filterStatus, filterCategory]);
-
-  // 1. Gravar Nova Transação (Receita ou Despesa)
-  const handleCreateTransaction = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!txDesc.trim()) {
-      setModalError('Descrição é obrigatória.');
-      return;
-    }
-    let cents = 0;
-    try {
-      cents = parseBRLToCents(txAmount);
-      validatePositiveCents(cents);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Valor inválido';
-      setModalError(msg);
-      return;
-    }
-
-    if (!txCategory) {
-      setModalError('Selecione uma categoria.');
-      return;
-    }
-
-    setTxSubmitting(true);
-    setModalError(null);
-    try {
-      const activeKey =
-        txIdempotencyKey ||
-        `idem_ui_ptx_${userId}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-      if (!txIdempotencyKey) setTxIdempotencyKey(activeKey);
-
-      const selectedCat = categories.find((c) => c.id === txCategory);
-      await createPersonalTransaction(
-        userId,
-        {
-          description: txDesc.trim(),
-          amountCents: cents,
-          type: txType,
-          status: txStatus,
-          categoryId: txCategory,
-          categoryName: selectedCat?.name || 'Geral',
-          accountId: txAccount || undefined,
-          competenceDate: txDate,
-          dueDate: txDate,
-          paymentDate: txStatus === 'paid' ? txDate : undefined,
-          notes: txNotes.trim() || undefined,
-          idempotencyKey: activeKey,
-        },
-        isDemo
-      );
-
-      showToast(
-        `${txType === 'income' ? 'Receita' : 'Despesa'} registrada com sucesso!`
-      );
-      setIsTxModalOpen(false);
-      resetTxForm();
-      await loadAllData();
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Falha ao registrar transação';
-      setModalError(msg);
-    } finally {
-      setTxSubmitting(false);
-    }
-  };
-
-  const resetTxForm = () => {
-    setModalError(null);
-    setTxDesc('');
-    setTxAmount('');
-    setTxCategory('');
-    setTxAccount('');
-    setTxNotes('');
-    setTxStatus('paid');
-    setTxIdempotencyKey(
-      `idem_ui_ptx_${userId}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
-    );
-  };
+  }, [extratoEntries, filterScope, filterType, filterStatus, filterCategory]);
 
   // 2. Amortização / Pagamento Parcial
   const handleExecutePartialPayment = async (e: React.FormEvent) => {
@@ -821,76 +961,6 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
     }
   };
 
-  // 10. Criar Regra de Recorrência ou Lançamento Fixo
-  const handleCreateRecurrence = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!recTitle.trim()) {
-      setModalError('Título da recorrência é obrigatório.');
-      return;
-    }
-    let cents = 0;
-    try {
-      cents = parseBRLToCents(recAmount);
-      validatePositiveCents(cents);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Valor inválido';
-      setModalError(msg);
-      return;
-    }
-
-    setRecSubmitting(true);
-    setModalError(null);
-    try {
-      const idempotencyKey = `idem_ui_rec_${userId}_${Date.now()}`;
-      const res = await createRecurrenceRule(
-        {
-          scope: 'personal',
-          userId,
-          title: recTitle.trim(),
-          description: recDesc.trim() || undefined,
-          type: recType,
-          nature: recNature,
-          amountCents: cents,
-          frequency: recFrequency,
-          startCompetence: recStartCompetence,
-          dueDay: Number(recDueDay),
-          categoryId: recCategory || undefined,
-          defaultAccountId: recAccount || undefined,
-          idempotencyKey,
-        },
-        isDemo
-      );
-
-      if (recGenerateInitial && res.rule?.id) {
-        await generateRecurrenceInstance(
-          { ruleId: res.rule.id, competenceMonth: recStartCompetence },
-          isDemo
-        );
-      }
-
-      showToast(
-        recGenerateInitial
-          ? `Regra "${recTitle.trim()}" criada e lançamento de ${recStartCompetence} gerado!`
-          : `Regra "${recTitle.trim()}" criada com sucesso!`
-      );
-      setIsRecurrenceModalOpen(false);
-      setRecTitle('');
-      setRecDesc('');
-      setRecType('expense');
-      setRecNature('fixed');
-      setRecAmount('');
-      setRecDueDay(10);
-      setRecCategory('');
-      setRecAccount('');
-      setRecGenerateInitial(true);
-      await loadAllData();
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Falha ao criar recorrência';
-      setModalError(msg);
-    } finally {
-      setRecSubmitting(false);
-    }
-  };
 
   // 11. Alterar Status de Recorrência (Pausar / Reativar)
   const handleToggleRecurrenceStatus = async (ruleId: string, currentStatus: string) => {
@@ -933,95 +1003,6 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
     }
   };
 
-  // 14. Criar Contrato de Parcelamento (Novo ou Em Andamento)
-  const handleCreateInstallment = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!instTitle.trim()) {
-      setModalError('Título do parcelamento é obrigatório.');
-      return;
-    }
-    if (instFundingSource === 'credit_card' && !instCardAccount) {
-      setModalError('Selecione o cartão de crédito emissor.');
-      return;
-    }
-    let cents = 0;
-    try {
-      cents = parseBRLToCents(instAmount);
-      validatePositiveCents(cents);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Valor inválido';
-      setModalError(msg);
-      return;
-    }
-
-    const totalCount = Number(instCount);
-    const initialInstallmentNumber = instOngoing ? Number(instCurrentNumber) : 1;
-    if (
-      !Number.isInteger(initialInstallmentNumber) ||
-      initialInstallmentNumber < 1 ||
-      initialInstallmentNumber > totalCount
-    ) {
-      setModalError(`A parcela inicial deve estar entre 1 e ${totalCount}.`);
-      return;
-    }
-
-    const projectedCount = totalCount - initialInstallmentNumber + 1;
-    let totalContractAmountCents = cents;
-    let remainingAmountCents: CentsInteger | undefined = undefined;
-
-    if (instOngoing && initialInstallmentNumber > 1) {
-      if (instAmountMode === 'remaining') {
-        remainingAmountCents = cents;
-        totalContractAmountCents = Math.round((cents / projectedCount) * totalCount);
-      } else {
-        totalContractAmountCents = cents;
-        remainingAmountCents = Math.round((cents / totalCount) * projectedCount);
-      }
-    }
-
-    setInstSubmitting(true);
-    setModalError(null);
-    try {
-      const idempotencyKey = `idem_ui_inst_${userId}_${Date.now()}`;
-      await createInstallmentContract(
-        {
-          scope: 'personal',
-          userId,
-          title: instTitle.trim(),
-          totalContractAmountCents,
-          remainingAmountCents,
-          totalInstallmentsCount: totalCount,
-          initialInstallmentNumber,
-          fundingSource: instFundingSource,
-          sourceCardAccountId: instFundingSource === 'credit_card' ? instCardAccount : undefined,
-          startCompetenceMonth: instStartMonth,
-          dueDay: Number(instDueDay),
-          idempotencyKey,
-        },
-        isDemo
-      );
-      showToast(
-        instOngoing && initialInstallmentNumber > 1
-          ? `Parcelamento em andamento registrado (${initialInstallmentNumber}/${totalCount} até ${totalCount}/${totalCount})!`
-          : `Parcelamento em ${totalCount}x registrado com sucesso!`
-      );
-      setIsInstallmentModalOpen(false);
-      setInstTitle('');
-      setInstAmount('');
-      setInstCount(2);
-      setInstOngoing(false);
-      setInstCurrentNumber(2);
-      setInstAmountMode('remaining');
-      setInstCardAccount('');
-      setInstDueDay(10);
-      await loadAllData();
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Falha ao registrar parcelamento';
-      setModalError(msg);
-    } finally {
-      setInstSubmitting(false);
-    }
-  };
 
   // 15. Alternar Exibição de Parcelas de um Contrato
   const handleToggleContractOccurrences = async (contractId: string) => {
@@ -1129,17 +1110,13 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
             <input
               type="month"
               value={selectedMonth}
-              onChange={(e) => setSelectedMonth(e.target.value as CompetenceMonthString)}
+              onChange={(e) => handleMonthChange(e.target.value as CompetenceMonthString)}
               className="bg-transparent border-0 focus:outline-none cursor-pointer text-white font-bold"
             />
           </div>
 
           <button
-            onClick={() => {
-              setTxType('expense');
-              resetTxForm();
-              setIsTxModalOpen(true);
-            }}
+            onClick={() => onOpenNewTransaction?.({ presetType: 'expense' })}
             className="flex items-center gap-1.5 px-3.5 py-2 bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold rounded-xl shadow-xs transition-all cursor-pointer"
           >
             <ArrowUpRight className="w-4 h-4" />
@@ -1147,11 +1124,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
           </button>
 
           <button
-            onClick={() => {
-              setTxType('income');
-              resetTxForm();
-              setIsTxModalOpen(true);
-            }}
+            onClick={() => onOpenNewTransaction?.({ presetType: 'income' })}
             className="flex items-center gap-1.5 px-3.5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold rounded-xl shadow-xs transition-all cursor-pointer"
           >
             <ArrowDownLeft className="w-4 h-4" />
@@ -1247,7 +1220,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
             }`}
           >
             <FileText className="w-3.5 h-3.5" />
-            Receitas & Despesas ({transactions.length})
+            Receitas & Despesas ({extratoEntries.length})
           </button>
 
           <button
@@ -1354,6 +1327,22 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
               <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
                 Filtros:
               </span>
+
+              <select
+                aria-label="Filtrar por escopo"
+                value={filterScope}
+                onChange={(e) => setFilterScope(e.target.value)}
+                className="px-3 py-1.5 text-xs bg-slate-900 border border-slate-700 text-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              >
+                <option value="all">Todos os Escopos</option>
+                <option value="personal">Somente Individual</option>
+                {authorizedSpaces.map((sp) => (
+                  <option key={sp.id} value={sp.id}>
+                    Espaço: {sp.name}
+                  </option>
+                ))}
+              </select>
+
               <select
                 value={filterType}
                 onChange={(e) => setFilterType(e.target.value as any)}
@@ -1415,16 +1404,16 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
             </div>
           ) : (
             <div className="space-y-3">
-              {filteredTransactions.map((tx) => {
-                const isIncome = tx.type === 'income';
-                const statusInfo = resolveAutomatedV3Status(tx);
-                const isPaid = statusInfo.key === 'paid';
-                const isPartiallyPaid = statusInfo.key === 'partially_paid';
-                const isCancelled = statusInfo.key === 'cancelled';
+              {filteredTransactions.map((entry) => {
+                const isIncome = entry.type === 'income';
+                const isPaid = entry.statusKey === 'paid';
+                const isPartiallyPaid = entry.statusKey === 'partially_paid';
+                const isCancelled = entry.statusKey === 'cancelled';
+                const tx = entry.personalTx;
 
                 return (
                   <div
-                    key={tx.id}
+                    key={entry.key}
                     className={`p-4 rounded-xl border transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
                       isCancelled
                         ? 'bg-slate-900/40 border-slate-700/60 opacity-60'
@@ -1453,32 +1442,46 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                       <div>
                         <div className="flex flex-wrap items-center gap-2">
                           <span className="font-bold text-white text-sm">
-                            {tx.description}
-                          </span>
-                          <span className="px-2 py-0.5 text-[10px] font-semibold bg-slate-800 text-slate-300 border border-slate-700 rounded-md">
-                            {tx.categoryName}
+                            {entry.description}
                           </span>
                           <span
-                            className={`px-2 py-0.5 text-[10px] font-bold rounded-md ${statusInfo.badgeClass}`}
+                            className={`px-2 py-0.5 text-[10px] font-bold rounded-md border ${
+                              entry.scopeType === 'shared'
+                                ? 'bg-indigo-500/15 text-indigo-300 border-indigo-500/30'
+                                : 'bg-slate-800 text-slate-300 border-slate-700'
+                            }`}
                           >
-                            {statusInfo.label}
+                            {entry.scopeLabel}
                           </span>
-                          {tx.invoiceMonth && (
+                          <span className="px-2 py-0.5 text-[10px] font-medium bg-slate-800/80 text-slate-400 border border-slate-700/80 rounded-md">
+                            {entry.originLabel}
+                          </span>
+                          <span className="px-2 py-0.5 text-[10px] font-semibold bg-slate-800 text-slate-300 border border-slate-700 rounded-md">
+                            {entry.categoryName}
+                          </span>
+                          <span
+                            className={`px-2 py-0.5 text-[10px] font-bold rounded-md ${entry.statusBadgeClass}`}
+                          >
+                            {entry.statusLabel}
+                          </span>
+                          {entry.invoiceMonth && (
                             <span className="px-2 py-0.5 text-[10px] font-medium bg-purple-500/15 text-purple-300 border border-purple-500/30 rounded-md">
-                              Fatura: {tx.invoiceMonth}
+                              Fatura: {entry.invoiceMonth}
                             </span>
                           )}
                         </div>
 
                         <div className="flex flex-wrap items-center gap-3 text-xs text-slate-400 mt-1">
-                          <span>Data: {tx.competenceDate}</span>
-                          {tx.dueDate && tx.dueDate !== tx.competenceDate && (
-                            <span>• Vence: {tx.dueDate}</span>
+                          <span>Data: {entry.competenceDate}</span>
+                          {entry.dueDate && entry.dueDate !== entry.competenceDate && (
+                            <span>• Vence: {entry.dueDate}</span>
                           )}
+                          <span>• {entry.accountLabel}</span>
+                          <span>• {entry.authorLabel}</span>
                           {isPartiallyPaid && (
                             <span className="text-amber-300 font-semibold">
-                              • Amortizado: {formatCentsToBRL(tx.paidAmountCents || 0)} (Resta:{' '}
-                              {formatCentsToBRL(tx.remainingAmountCents || 0)})
+                              • Amortizado: {formatCentsToBRL(entry.paidAmountCents || 0)} (Resta:{' '}
+                              {formatCentsToBRL(entry.remainingAmountCents || 0)})
                             </span>
                           )}
                         </div>
@@ -1493,38 +1496,40 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                           }`}
                         >
                           {isIncome ? '+ ' : '- '}
-                          {formatCentsToBRL(tx.amountCents)}
+                          {formatCentsToBRL(entry.amountCents)}
                         </span>
                       </div>
 
-                      {/* Botões de Ação */}
-                      <div className="flex items-center gap-1.5">
-                        {!isPaid && !isCancelled && (
-                          <button
-                            onClick={() => {
-                              setModalError(null);
-                              setPartialTx(tx);
-                              setPartialAmount('');
-                              setPartialNotes('');
-                              setPartialAccount(tx.accountId || '');
-                            }}
-                            className="px-2.5 py-1 text-xs font-semibold bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 hover:bg-indigo-500/25 rounded-lg transition-all cursor-pointer"
-                            title="Registrar pagamento ou recebimento parcial"
-                          >
-                            Amortizar
-                          </button>
-                        )}
+                      {/* Botões de Ação (apenas lançamentos individuais editáveis aqui) */}
+                      {tx && (
+                        <div className="flex items-center gap-1.5">
+                          {!isPaid && !isCancelled && (
+                            <button
+                              onClick={() => {
+                                setModalError(null);
+                                setPartialTx(tx);
+                                setPartialAmount('');
+                                setPartialNotes('');
+                                setPartialAccount(tx.accountId || '');
+                              }}
+                              className="px-2.5 py-1 text-xs font-semibold bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 hover:bg-indigo-500/25 rounded-lg transition-all cursor-pointer"
+                              title="Registrar pagamento ou recebimento parcial"
+                            >
+                              Amortizar
+                            </button>
+                          )}
 
-                        {!isCancelled && (
-                          <button
-                            onClick={() => handleCancelTx(tx)}
-                            className="px-2.5 py-1 text-xs font-semibold text-rose-300 bg-rose-500/15 border border-rose-500/30 hover:bg-rose-500/25 rounded-lg transition-all cursor-pointer"
-                            title="Cancelar lançamento"
-                          >
-                            Cancelar
-                          </button>
-                        )}
-                      </div>
+                          {!isCancelled && (
+                            <button
+                              onClick={() => handleCancelTx(tx)}
+                              className="px-2.5 py-1 text-xs font-semibold text-rose-300 bg-rose-500/15 border border-rose-500/30 hover:bg-rose-500/25 rounded-lg transition-all cursor-pointer"
+                              title="Cancelar lançamento"
+                            >
+                              Cancelar
+                            </button>
+                          )}
+                        </div>
+                      )}
                     </div>
                   </div>
                 );
@@ -2069,11 +2074,12 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
             </div>
 
             <button
-              onClick={() => {
-                setModalError(null);
-                setRecStartCompetence(selectedMonth);
-                setIsRecurrenceModalOpen(true);
-              }}
+              onClick={() =>
+                onOpenNewTransaction?.({
+                  presetRecurrenceType: 'fixed',
+                  presetFixedNature: 'fixed',
+                })
+              }
               className="flex items-center gap-1.5 px-3.5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-xl shadow-xs transition-all cursor-pointer"
             >
               <Plus className="w-4 h-4" />
@@ -2225,11 +2231,11 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
             </div>
 
             <button
-              onClick={() => {
-                setModalError(null);
-                setInstStartMonth(selectedMonth);
-                setIsInstallmentModalOpen(true);
-              }}
+              onClick={() =>
+                onOpenNewTransaction?.({
+                  presetRecurrenceType: 'installment',
+                })
+              }
               className="flex items-center gap-1.5 px-3.5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-xl shadow-xs transition-all cursor-pointer"
             >
               <Plus className="w-4 h-4" />
@@ -2394,171 +2400,6 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
         </div>
       )}
 
-      {/* MODAL: NOVA TRANSAÇÃO */}
-      {isTxModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-xs">
-          <div className="bg-slate-900 rounded-2xl max-w-md w-full max-h-[90dvh] overflow-y-auto p-6 shadow-2xl border border-slate-700">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
-              <h3 className="text-base font-bold text-white">
-                {txType === 'income' ? 'Nova Receita' : 'Nova Despesa'}
-              </h3>
-              <button
-                onClick={() => {
-                  setModalError(null);
-                  setIsTxModalOpen(false);
-                }}
-                className="p-1 text-slate-400 hover:text-slate-200 rounded-lg cursor-pointer"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            {modalError && (
-              <div className="mt-3 p-3 rounded-xl bg-rose-500/15 border border-rose-500/30 text-rose-200 text-xs flex items-center gap-2">
-                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
-                <span>{modalError}</span>
-              </div>
-            )}
-
-            <form onSubmit={handleCreateTransaction} className="space-y-3.5 mt-3">
-              <div>
-                <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
-                  Descrição *
-                </label>
-                <input
-                  type="text"
-                  required
-                  placeholder="Ex: Salário, Aluguel, Supermercado..."
-                  value={txDesc}
-                  onChange={(e) => setTxDesc(e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
-                    Valor (R$) *
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    placeholder="0,00"
-                    value={txAmount}
-                    onChange={(e) => setTxAmount(e.target.value)}
-                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500 font-bold"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
-                    Data *
-                  </label>
-                  <input
-                    type="date"
-                    required
-                    value={txDate}
-                    onChange={(e) => setTxDate(e.target.value)}
-                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
-                  Categoria *
-                </label>
-                <select
-                  required
-                  value={txCategory}
-                  onChange={(e) => setTxCategory(e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                >
-                  <option value="">Selecione...</option>
-                  {categories
-                    .filter((c) => !c.isArchived && (c.type === txType || c.type === 'both'))
-                    .map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {c.name}
-                      </option>
-                    ))}
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
-                  Status *
-                </label>
-                <select
-                  value={txStatus}
-                  onChange={(e) => setTxStatus(e.target.value as PersonalTransactionStatus)}
-                  className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                >
-                  <option value="paid">{txType === 'income' ? 'Recebido (Crédito em Conta)' : 'Pago (Débito em Conta/Cartão)'}</option>
-                  <option value="pending">Pendente (A pagar/receber)</option>
-                  <option value="forecast">Previsto (Planejamento futuro)</option>
-                </select>
-              </div>
-
-              {txStatus === 'paid' && (
-                <div>
-                  <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
-                    Conta / Cartão *
-                  </label>
-                  <select
-                    required
-                    value={txAccount}
-                    onChange={(e) => setTxAccount(e.target.value)}
-                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  >
-                    <option value="">Selecione...</option>
-                    {accounts
-                      .filter((a) => !a.isArchived)
-                      .map((a) => (
-                        <option key={a.id} value={a.id}>
-                          {a.name} ({a.type === 'credit' ? 'Cartão de Crédito' : 'Conta/Carteira'})
-                        </option>
-                      ))}
-                  </select>
-                </div>
-              )}
-
-              <div>
-                <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
-                  Observações (Opcional)
-                </label>
-                <input
-                  type="text"
-                  placeholder="Anotações internas..."
-                  value={txNotes}
-                  onChange={(e) => setTxNotes(e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
-
-              <div className="pt-3 border-t border-slate-800 flex items-center justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setModalError(null);
-                    setIsTxModalOpen(false);
-                  }}
-                  className="px-3 py-2 text-xs font-semibold text-slate-400 hover:text-slate-200 cursor-pointer"
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="submit"
-                  disabled={txSubmitting}
-                  className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-xl shadow-xs disabled:opacity-50 cursor-pointer"
-                >
-                  {txSubmitting ? 'Salvando...' : 'Gravar Lançamento'}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
 
       {/* MODAL: AMORTIZAÇÃO / PAGAMENTO PARCIAL */}
       {partialTx && (
@@ -3340,457 +3181,6 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
         </div>
       )}
 
-      {/* MODAL: NOVA RECORRÊNCIA OU LANÇAMENTO FIXO */}
-      {isRecurrenceModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-xs">
-          <div className="bg-slate-900 rounded-2xl max-w-md w-full max-h-[90dvh] overflow-y-auto p-6 shadow-2xl border border-slate-700">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
-              <h3 className="text-base font-bold text-white">
-                Novo Lançamento Fixo ou Recorrente
-              </h3>
-              <button
-                onClick={() => {
-                  setModalError(null);
-                  setIsRecurrenceModalOpen(false);
-                }}
-                className="p-1 text-slate-400 hover:text-slate-200 rounded-lg cursor-pointer"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            {modalError && (
-              <div className="mt-3 p-3 rounded-xl bg-rose-500/15 border border-rose-500/30 text-rose-200 text-xs flex items-center gap-2">
-                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
-                <span>{modalError}</span>
-              </div>
-            )}
-
-            <form onSubmit={handleCreateRecurrence} className="space-y-3 mt-3">
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
-                    Natureza *
-                  </label>
-                  <select
-                    value={recNature}
-                    onChange={(e) => setRecNature(e.target.value as RecurrenceRuleNature)}
-                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                  >
-                    <option value="fixed">Fixo Mensal (Ex: Aluguel, Salário)</option>
-                    <option value="recurring">Recorrente / Assinatura (Ex: Streaming)</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
-                    Tipo *
-                  </label>
-                  <select
-                    value={recType}
-                    onChange={(e) => {
-                      setRecType(e.target.value as PersonalTransactionType);
-                      setRecCategory('');
-                    }}
-                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                  >
-                    <option value="expense">Despesa</option>
-                    <option value="income">Receita</option>
-                  </select>
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
-                  Título *
-                </label>
-                <input
-                  type="text"
-                  required
-                  placeholder={recType === 'income' ? 'Ex: Salário Mensal, Aluguel Recebido...' : 'Ex: Aluguel, Internet Fibra, Netflix...'}
-                  value={recTitle}
-                  onChange={(e) => setRecTitle(e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
-                    Valor Previsto (R$) *
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    placeholder="0,00"
-                    value={recAmount}
-                    onChange={(e) => setRecAmount(e.target.value)}
-                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500 font-bold"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
-                    Frequência *
-                  </label>
-                  <select
-                    value={recFrequency}
-                    onChange={(e) => setRecFrequency(e.target.value as any)}
-                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                  >
-                    <option value="monthly">Mensal</option>
-                    <option value="weekly">Semanal</option>
-                    <option value="yearly">Anual</option>
-                  </select>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
-                    Dia de Vencimento (1 a 31) *
-                  </label>
-                  <input
-                    type="number"
-                    min="1"
-                    max="31"
-                    required
-                    value={recDueDay}
-                    onChange={(e) => setRecDueDay(Number(e.target.value))}
-                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
-                    Mês de Início (YYYY-MM) *
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    pattern="\d{4}-\d{2}"
-                    placeholder="2026-11"
-                    value={recStartCompetence}
-                    onChange={(e) => setRecStartCompetence(e.target.value)}
-                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
-                  Categoria
-                </label>
-                <select
-                  value={recCategory}
-                  onChange={(e) => setRecCategory(e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                >
-                  <option value="">Selecione...</option>
-                  {categories
-                    .filter((c) => !c.isArchived && (c.type === recType || c.type === 'both'))
-                    .map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {c.name}
-                      </option>
-                    ))}
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
-                  Conta Padrão (Opcional)
-                </label>
-                <select
-                  value={recAccount}
-                  onChange={(e) => setRecAccount(e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                >
-                  <option value="">Nenhuma / Definir no lançamento</option>
-                  {accounts
-                    .filter((a) => !a.isArchived)
-                    .map((a) => (
-                      <option key={a.id} value={a.id}>
-                        {a.name} ({a.type === 'credit' ? 'Cartão' : 'Conta'})
-                      </option>
-                    ))}
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
-                  Descrição Adicional
-                </label>
-                <input
-                  type="text"
-                  placeholder="Ex: Assinatura premium família..."
-                  value={recDesc}
-                  onChange={(e) => setRecDesc(e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                />
-              </div>
-
-              <label className="flex items-start gap-2.5 p-3 rounded-xl bg-slate-800/80 border border-slate-700/80 cursor-pointer text-xs text-slate-200">
-                <input
-                  type="checkbox"
-                  checked={recGenerateInitial}
-                  onChange={(e) => setRecGenerateInitial(e.target.checked)}
-                  className="mt-0.5 rounded text-indigo-600 focus:ring-indigo-500"
-                />
-                <span>
-                  Já gerar lançamento materializado para o mês inicial (<strong className="text-indigo-300 font-mono">{recStartCompetence}</strong>) em Receitas &amp; Despesas
-                </span>
-              </label>
-
-              <div className="pt-3 border-t border-slate-800 flex items-center justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setModalError(null);
-                    setIsRecurrenceModalOpen(false);
-                  }}
-                  className="px-3 py-2 text-xs font-semibold text-slate-400 hover:text-slate-200 cursor-pointer"
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="submit"
-                  disabled={recSubmitting}
-                  className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-xl shadow-xs disabled:opacity-50 cursor-pointer"
-                >
-                  {recSubmitting ? 'Salvando...' : 'Criar Regra'}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* MODAL: NOVO PARCELAMENTO (NOVO OU EM ANDAMENTO) */}
-      {isInstallmentModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-xs">
-          <div className="bg-slate-900 rounded-2xl max-w-md w-full max-h-[90dvh] overflow-y-auto p-6 shadow-2xl border border-slate-700">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
-              <h3 className="text-base font-bold text-white">
-                Novo Contrato de Parcelamento
-              </h3>
-              <button
-                onClick={() => {
-                  setModalError(null);
-                  setIsInstallmentModalOpen(false);
-                }}
-                className="p-1 text-slate-400 hover:text-slate-200 rounded-lg cursor-pointer"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            {modalError && (
-              <div className="mt-3 p-3 rounded-xl bg-rose-500/15 border border-rose-500/30 text-rose-200 text-xs flex items-center gap-2">
-                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
-                <span>{modalError}</span>
-              </div>
-            )}
-
-            <form onSubmit={handleCreateInstallment} className="space-y-3 mt-3">
-              <div>
-                <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
-                  Título da Compra / Financiamento *
-                </label>
-                <input
-                  type="text"
-                  required
-                  placeholder="Ex: Smartphone Novo, IPVA 2026, Sofá da Sala..."
-                  value={instTitle}
-                  onChange={(e) => setInstTitle(e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                />
-              </div>
-
-              <label className="flex items-start gap-2.5 p-3 rounded-xl bg-slate-800/80 border border-slate-700/80 cursor-pointer text-xs text-slate-200">
-                <input
-                  type="checkbox"
-                  checked={instOngoing}
-                  onChange={(e) => {
-                    const checked = e.target.checked;
-                    setInstOngoing(checked);
-                    if (checked && instCurrentNumber < 2) {
-                      setInstCurrentNumber(2);
-                    }
-                  }}
-                  className="mt-0.5 rounded text-indigo-600 focus:ring-indigo-500"
-                />
-                <span>
-                  Parcelamento já está em andamento (parcela inicial &gt; 1 — ex: estou na 5/10)
-                </span>
-              </label>
-
-              {instOngoing && (
-                <div className="p-3 rounded-xl bg-indigo-950/40 border border-indigo-800/50 space-y-3">
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="block text-[10px] font-semibold text-indigo-200 uppercase mb-1">
-                        Parcela Atual (k) *
-                      </label>
-                      <input
-                        type="number"
-                        min="2"
-                        max={instCount}
-                        required
-                        value={instCurrentNumber}
-                        onChange={(e) => setInstCurrentNumber(Number(e.target.value))}
-                        className="w-full px-3 py-1.5 bg-slate-900 border border-indigo-700/60 rounded-xl text-xs text-white font-bold focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-[10px] font-semibold text-indigo-200 uppercase mb-1">
-                        Modo do Valor *
-                      </label>
-                      <select
-                        value={instAmountMode}
-                        onChange={(e) => setInstAmountMode(e.target.value as 'remaining' | 'total')}
-                        className="w-full px-2.5 py-1.5 bg-slate-900 border border-indigo-700/60 rounded-xl text-xs text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                      >
-                        <option value="remaining">Saldo restante (k..N)</option>
-                        <option value="total">Valor total original (1..N)</option>
-                      </select>
-                    </div>
-                  </div>
-                  <div className="text-[11px] text-indigo-200 leading-relaxed">
-                    Projetará <strong className="text-white">{Math.max(1, instCount - instCurrentNumber + 1)}</strong> parcela(s) restante(s):{' '}
-                    <strong className="text-indigo-300 font-mono">
-                      {instCurrentNumber}/{instCount} até {instCount}/{instCount}
-                    </strong>{' '}
-                    a partir de <strong className="font-mono">{instStartMonth}</strong>, sem fabricar cobranças passadas (1/{instCount}..{Math.max(1, instCurrentNumber - 1)}/{instCount}).
-                  </div>
-                </div>
-              )}
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
-                    {instOngoing && instAmountMode === 'remaining'
-                      ? 'Saldo Restante (R$) *'
-                      : 'Valor Total (R$) *'}
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    placeholder="0,00"
-                    value={instAmount}
-                    onChange={(e) => setInstAmount(e.target.value)}
-                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500 font-bold"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
-                    Total de Parcelas (N) *
-                  </label>
-                  <input
-                    type="number"
-                    min="2"
-                    max="48"
-                    required
-                    value={instCount}
-                    onChange={(e) => setInstCount(Number(e.target.value))}
-                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500 font-bold"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
-                  Forma de Pagamento *
-                </label>
-                <select
-                  value={instFundingSource}
-                  onChange={(e) => setInstFundingSource(e.target.value as any)}
-                  className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                >
-                  <option value="credit_card">Cartão de Crédito (Projeção em Faturas)</option>
-                  <option value="personal_loan">Empréstimo Pessoal / Financiamento</option>
-                </select>
-              </div>
-
-              {instFundingSource === 'credit_card' && (
-                <div>
-                  <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
-                    Cartão de Crédito *
-                  </label>
-                  <select
-                    required
-                    value={instCardAccount}
-                    onChange={(e) => setInstCardAccount(e.target.value)}
-                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                  >
-                    <option value="">Selecione o cartão...</option>
-                    {accounts
-                      .filter((a) => !a.isArchived && a.type === 'credit')
-                      .map((a) => (
-                        <option key={a.id} value={a.id}>
-                          {a.name}
-                        </option>
-                      ))}
-                  </select>
-                </div>
-              )}
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
-                    {instOngoing ? `Mês da Parcela ${instCurrentNumber}/${instCount} *` : '1º Mês de Competência *'}
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    pattern="\d{4}-\d{2}"
-                    placeholder="2026-11"
-                    value={instStartMonth}
-                    onChange={(e) => setInstStartMonth(e.target.value)}
-                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
-                    Dia de Vencimento *
-                  </label>
-                  <input
-                    type="number"
-                    min="1"
-                    max="31"
-                    required
-                    value={instDueDay}
-                    onChange={(e) => setInstDueDay(Number(e.target.value))}
-                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                  />
-                </div>
-              </div>
-
-              <div className="pt-3 border-t border-slate-800 flex items-center justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setModalError(null);
-                    setIsInstallmentModalOpen(false);
-                  }}
-                  className="px-3 py-2 text-xs font-semibold text-slate-400 hover:text-slate-200 cursor-pointer"
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="submit"
-                  disabled={instSubmitting}
-                  className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-xl shadow-xs disabled:opacity-50 cursor-pointer"
-                >
-                  {instSubmitting ? 'Gerando...' : 'Criar Parcelamento'}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
 
       {/* MODAL: CANCELAR PARCELAMENTO ANTECIPADAMENTE */}
       {cancelContractModal && (

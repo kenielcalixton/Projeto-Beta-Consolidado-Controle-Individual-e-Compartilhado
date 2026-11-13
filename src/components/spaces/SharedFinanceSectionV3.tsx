@@ -7,7 +7,6 @@ import {
   CustodyTransfer,
   ExpenseApprovalRevocation,
   ExpenseLiability,
-  ExpenseLiabilitySplitMethod,
   ExpensePaymentApproval,
   ExpensePaymentDeclaration,
   ExpensePaymentRejection,
@@ -20,10 +19,10 @@ import {
   SupplierRefundEvent,
   SupplierRefundType,
 } from '../../types/financeV3';
+import { UniversalTransactionPreset } from '../../types/finance';
 import {
   approveExpensePayment,
   confirmRestitutionReceipt,
-  createSharedExpense,
   declareExpensePayment,
   getExpenseLiabilities,
   getExpensePaymentDeclarations,
@@ -51,7 +50,6 @@ import {
   getSpaceCustodyBalances,
   getSpaceCustodyTransfers,
 } from '../../services/custodyService';
-import { calculateExpenseSplit, SplitParticipant } from '../../utils/splitEngine';
 import { formatCentsToBRL, parseBRLToCents } from '../../utils/movementLedger';
 import { getUserAccounts } from '../../services/accountService';
 import { getSpaceMembers } from '../../services/spaceService';
@@ -61,6 +59,8 @@ interface SharedFinanceSectionV3Props {
   userId: string;
   userName: string;
   isDemo?: boolean;
+  refreshTrigger?: number;
+  onOpenNewTransaction?: (preset?: UniversalTransactionPreset) => void;
   activeTab: 'expenses' | 'liabilities' | 'validations' | 'refunds' | 'custody';
   onTabChange: (tab: 'expenses' | 'liabilities' | 'validations' | 'refunds' | 'custody') => void;
   onFeedback: (type: 'success' | 'error', text: string) => void;
@@ -71,6 +71,8 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
   userId,
   userName,
   isDemo = false,
+  refreshTrigger = 0,
+  onOpenNewTransaction,
   activeTab,
   onTabChange,
   onFeedback,
@@ -95,7 +97,6 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
   const [summary, setSummary] = useState<SpaceFinancialSummary | null>(null);
 
   // Modais
-  const [isCreateExpenseModalOpen, setIsCreateExpenseModalOpen] = useState(false);
   const [isDeclareModalOpen, setIsDeclareModalOpen] = useState(false);
   const [isApproveModalOpen, setIsApproveModalOpen] = useState(false);
   const [isRejectModalOpen, setIsRejectModalOpen] = useState(false);
@@ -106,25 +107,6 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
     useState<ExpenseRestitutionObligation | null>(null);
   const [restitutionConfirmAccountId, setRestitutionConfirmAccountId] = useState('');
   const [restitutionConfirmAmountInput, setRestitutionConfirmAmountInput] = useState('');
-
-  // Formulário: Nova Despesa
-  const [expTitle, setExpTitle] = useState('');
-  const [expDesc, setExpDesc] = useState('');
-  const [expAmountInput, setExpAmountInput] = useState('');
-  const [expCompetenceMonth, setExpCompetenceMonth] = useState(() =>
-    new Date().toISOString().slice(0, 7)
-  );
-  const [expCompetenceDate, setExpCompetenceDate] = useState(() =>
-    new Date().toISOString().slice(0, 10)
-  );
-  const [expDueDate, setExpDueDate] = useState('');
-  const [expCategory, setExpCategory] = useState('Geral');
-  const [expResponsibleUid, setExpResponsibleUid] = useState(userId);
-  const [expPayerUid, setExpPayerUid] = useState(userId);
-  const [expSplitMethod, setExpSplitMethod] = useState<ExpenseLiabilitySplitMethod>('equal');
-  const [selectedParticipants, setSelectedParticipants] = useState<string[]>([]);
-  const [customPercentages, setCustomPercentages] = useState<Record<string, number>>({});
-  const [customValues, setCustomValues] = useState<Record<string, string>>({});
 
   // Formulário: Declarar Pagamento
   const [declExpense, setDeclExpense] = useState<SharedExpense | null>(null);
@@ -245,98 +227,7 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
 
   useEffect(() => {
     loadFinanceData();
-  }, [space.id, userId]);
-
-  // Inicializa participantes para nova despesa
-  useEffect(() => {
-    if (members.length > 0 && selectedParticipants.length === 0) {
-      const activeUids = members
-        .filter((m) => m.participationStatus === 'active')
-        .map((m) => m.uid);
-      setSelectedParticipants(activeUids);
-    }
-  }, [members]);
-
-  // Cálculo ao vivo do rateio na criação
-  let liveSplitPreview: ReturnType<typeof calculateExpenseSplit> = [];
-  let liveSplitError: string | null = null;
-  try {
-    const totalCents = expAmountInput ? parseBRLToCents(expAmountInput) : 0;
-    if (totalCents > 0 && selectedParticipants.length > 0) {
-      const parts: SplitParticipant[] = selectedParticipants.map((uid) => {
-        const m = members.find((mem) => mem.uid === uid);
-        return { uid, name: m?.displayName || uid };
-      });
-
-      const parsedCustomVals: Record<string, CentsInteger> = {};
-      for (const uid of selectedParticipants) {
-        const raw = customValues[uid];
-        parsedCustomVals[uid] = raw ? parseBRLToCents(raw) : 0;
-      }
-
-      liveSplitPreview = calculateExpenseSplit({
-        totalAmountCents: totalCents,
-        splitMethod: expSplitMethod,
-        participants: parts,
-        percentages: customPercentages,
-        customValues: parsedCustomVals,
-      });
-    }
-  } catch (err: any) {
-    liveSplitError = err.message;
-  }
-
-  // Handler: Criar Despesa Compartilhada
-  const handleCreateExpense = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!expTitle.trim() || !expAmountInput) return;
-
-    try {
-      const totalAmountCents = parseBRLToCents(expAmountInput);
-      const parts: SplitParticipant[] = selectedParticipants.map((uid) => {
-        const m = members.find((mem) => mem.uid === uid);
-        return { uid, name: m?.displayName || uid };
-      });
-
-      const parsedCustomVals: Record<string, CentsInteger> = {};
-      for (const uid of selectedParticipants) {
-        const raw = customValues[uid];
-        parsedCustomVals[uid] = raw ? parseBRLToCents(raw) : 0;
-      }
-
-      await createSharedExpense(
-        space.id,
-        {
-          spaceId: space.id,
-          title: expTitle.trim(),
-          description: expDesc.trim() || undefined,
-          totalOriginalAmountCents: totalAmountCents,
-          competenceMonth: expCompetenceMonth,
-          competenceDate: expCompetenceDate,
-          dueDate: expDueDate || undefined,
-          categoryId: 'cat_shared',
-          categoryName: expCategory,
-          createdByUid: userId,
-          responsibleUid: expResponsibleUid,
-          payerUid: expPayerUid || expResponsibleUid,
-          splitMethod: expSplitMethod,
-          participants: parts,
-          percentages: customPercentages,
-          customValues: parsedCustomVals,
-        },
-        isDemo
-      );
-
-      onFeedback('success', `Despesa "${expTitle}" e rateio cadastrados com sucesso!`);
-      setIsCreateExpenseModalOpen(false);
-      setExpTitle('');
-      setExpDesc('');
-      setExpAmountInput('');
-      await loadFinanceData();
-    } catch (err: any) {
-      onFeedback('error', err.message);
-    }
-  };
+  }, [space.id, userId, refreshTrigger]);
 
   // Handler: Abrir modal de declaração de pagamento
   const handleOpenDeclarePayment = (expense: SharedExpense, liability: ExpenseLiability) => {
@@ -842,8 +733,13 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
             </div>
             {!isArchived && !isHistoricalOnly && (
               <button
-                onClick={() => setIsCreateExpenseModalOpen(true)}
-                className="px-3 py-1.5 bg-indigo-600 text-white rounded-xl text-xs font-bold hover:bg-indigo-700 flex items-center gap-1.5 shadow-sm"
+                onClick={() =>
+                  onOpenNewTransaction?.({
+                    presetSpaceId: space.id,
+                    presetType: 'expense',
+                  })
+                }
+                className="px-3 py-1.5 bg-indigo-600 text-white rounded-xl text-xs font-bold hover:bg-indigo-700 flex items-center gap-1.5 shadow-sm cursor-pointer"
               >
                 <i className="ph ph-plus-circle text-sm" /> Nova Despesa
               </button>
@@ -1663,302 +1559,6 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
         </div>
       )}
 
-      {/* ======================================================================== */}
-      {/* MODAL 1: NOVA DESPESA COMPARTILHADA                                       */}
-      {/* ======================================================================== */}
-      {isCreateExpenseModalOpen && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 overflow-y-auto">
-          <div className="bg-slate-900 rounded-2xl max-w-2xl w-full max-h-[90dvh] overflow-y-auto p-6 shadow-2xl border border-slate-700 space-y-4 my-4">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-              <h3 className="text-base font-bold text-white">Nova Despesa Compartilhada</h3>
-              <button
-                onClick={() => setIsCreateExpenseModalOpen(false)}
-                className="text-slate-400 hover:text-slate-300"
-              >
-                <i className="ph ph-x text-lg" />
-              </button>
-            </div>
-
-            <form onSubmit={handleCreateExpense} className="space-y-4 text-xs">
-              <div className="grid grid-cols-2 gap-3">
-                <div className="col-span-2">
-                  <label className="font-bold text-slate-200 block mb-1">Título da Despesa *</label>
-                  <input
-                    type="text"
-                    required
-                    value={expTitle}
-                    onChange={(e) => setExpTitle(e.target.value)}
-                    placeholder="Ex: Supermercado Mensal"
-                    className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500"
-                  />
-                </div>
-
-                <div>
-                  <label className="font-bold text-slate-200 block mb-1">Valor Total (R$) *</label>
-                  <input
-                    type="text"
-                    required
-                    value={expAmountInput}
-                    onChange={(e) => setExpAmountInput(e.target.value)}
-                    placeholder="Ex: 300,00"
-                    className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs font-bold text-white"
-                  />
-                </div>
-
-                <div>
-                  <label className="font-bold text-slate-200 block mb-1">Categoria *</label>
-                  <input
-                    type="text"
-                    required
-                    value={expCategory}
-                    onChange={(e) => setExpCategory(e.target.value)}
-                    className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500"
-                  />
-                </div>
-
-                <div>
-                  <label className="font-bold text-slate-200 block mb-1">Competência (YYYY-MM) *</label>
-                  <input
-                    type="text"
-                    required
-                    value={expCompetenceMonth}
-                    onChange={(e) => setExpCompetenceMonth(e.target.value)}
-                    placeholder="2026-11"
-                    className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500"
-                  />
-                </div>
-
-                <div>
-                  <label className="font-bold text-slate-200 block mb-1">Data da Compra *</label>
-                  <input
-                    type="date"
-                    required
-                    value={expCompetenceDate}
-                    onChange={(e) => setExpCompetenceDate(e.target.value)}
-                    className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500"
-                  />
-                </div>
-
-                <div>
-                  <label className="font-bold text-slate-200 block mb-1">Vencimento (Opcional)</label>
-                  <input
-                    type="date"
-                    value={expDueDate}
-                    onChange={(e) => setExpDueDate(e.target.value)}
-                    className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500"
-                  />
-                </div>
-
-                <div>
-                  <label className="font-bold text-slate-200 block mb-1">Responsável pela Validação *</label>
-                  <select
-                    value={expResponsibleUid}
-                    onChange={(e) => setExpResponsibleUid(e.target.value)}
-                    className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs font-semibold text-white"
-                  >
-                    {members.map((m) => (
-                      <option key={m.uid} value={m.uid}>
-                        {m.displayName} {m.uid === userId ? '(Você)' : ''}
-                      </option>
-                    ))}
-                  </select>
-                  <p className="text-[10px] text-slate-400 mt-0.5">Autoridade com poder de aprovar/rejeitar.</p>
-                </div>
-
-                <div>
-                  <label className="font-bold text-slate-200 block mb-1">Quem Desembolsou / Pagador *</label>
-                  <select
-                    value={expPayerUid}
-                    onChange={(e) => setExpPayerUid(e.target.value)}
-                    className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs font-semibold text-white"
-                  >
-                    {members.map((m) => (
-                      <option key={m.uid} value={m.uid}>
-                        {m.displayName} {m.uid === userId ? '(Você)' : ''}
-                      </option>
-                    ))}
-                  </select>
-                  <p className="text-[10px] text-slate-400 mt-0.5">Credor legítimo com direito aos reembolsos.</p>
-                </div>
-              </div>
-
-              {/* Modalidade de Rateio */}
-              <div className="pt-2 border-t border-slate-800">
-                <label className="font-bold text-slate-200 block mb-2">Modalidade de Rateio *</label>
-                <div className="grid grid-cols-3 gap-2">
-                  <label
-                    className={`border rounded-xl p-2.5 flex items-center gap-2 cursor-pointer ${
-                      expSplitMethod === 'equal'
-                        ? 'border-indigo-500 bg-indigo-950/60'
-                        : 'border-slate-700 bg-slate-800/40'
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="splitMethod"
-                      value="equal"
-                      checked={expSplitMethod === 'equal'}
-                      onChange={() => setExpSplitMethod('equal')}
-                    />
-                    <div>
-                      <div className="font-bold text-white">Igual (Equal)</div>
-                      <div className="text-[10px] text-slate-400">Divisão exata de centavos</div>
-                    </div>
-                  </label>
-
-                  <label
-                    className={`border rounded-xl p-2.5 flex items-center gap-2 cursor-pointer ${
-                      expSplitMethod === 'percentage'
-                        ? 'border-indigo-500 bg-indigo-950/60'
-                        : 'border-slate-700 bg-slate-800/40'
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="splitMethod"
-                      value="percentage"
-                      checked={expSplitMethod === 'percentage'}
-                      onChange={() => setExpSplitMethod('percentage')}
-                    />
-                    <div>
-                      <div className="font-bold text-white">Percentual (%)</div>
-                      <div className="text-[10px] text-slate-400">Soma de 100%</div>
-                    </div>
-                  </label>
-
-                  <label
-                    className={`border rounded-xl p-2.5 flex items-center gap-2 cursor-pointer ${
-                      expSplitMethod === 'custom_value'
-                        ? 'border-indigo-500 bg-indigo-950/60'
-                        : 'border-slate-700 bg-slate-800/40'
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="splitMethod"
-                      value="custom_value"
-                      checked={expSplitMethod === 'custom_value'}
-                      onChange={() => setExpSplitMethod('custom_value')}
-                    />
-                    <div>
-                      <div className="font-bold text-white">Personalizado (R$)</div>
-                      <div className="text-[10px] text-slate-400">Valores fixos</div>
-                    </div>
-                  </label>
-                </div>
-              </div>
-
-              {/* Participantes Selecionados */}
-              <div className="pt-2 border-t border-slate-800">
-                <label className="font-bold text-slate-200 block mb-2">
-                  Participantes no Rateio ({selectedParticipants.length})
-                </label>
-                <div className="grid grid-cols-2 gap-2">
-                  {members
-                    .filter((m) => m.participationStatus === 'active')
-                    .map((m) => {
-                      const isChecked = selectedParticipants.includes(m.uid);
-                      return (
-                        <div
-                          key={m.uid}
-                          className="flex items-center gap-2 border border-slate-700 rounded-xl p-2 bg-slate-800/50"
-                        >
-                          <input
-                            type="checkbox"
-                            checked={isChecked}
-                            onChange={(e) => {
-                              if (e.target.checked) {
-                                setSelectedParticipants([...selectedParticipants, m.uid]);
-                              } else {
-                                setSelectedParticipants(
-                                  selectedParticipants.filter((u) => u !== m.uid)
-                                );
-                              }
-                            }}
-                          />
-                          <span className="font-medium text-white">{m.displayName}</span>
-
-                          {expSplitMethod === 'percentage' && isChecked && (
-                            <input
-                              type="number"
-                              placeholder="%"
-                              value={customPercentages[m.uid] || ''}
-                              onChange={(e) =>
-                                setCustomPercentages({
-                                  ...customPercentages,
-                                  [m.uid]: parseFloat(e.target.value) || 0,
-                                })
-                              }
-                              className="w-16 ml-auto bg-slate-800 border border-slate-700 text-white rounded px-1.5 py-0.5 text-right text-xs"
-                            />
-                          )}
-
-                          {expSplitMethod === 'custom_value' && isChecked && (
-                            <input
-                              type="text"
-                              placeholder="R$"
-                              value={customValues[m.uid] || ''}
-                              onChange={(e) =>
-                                setCustomValues({
-                                  ...customValues,
-                                  [m.uid]: e.target.value,
-                                })
-                              }
-                              className="w-20 ml-auto bg-slate-800 border border-slate-700 text-white rounded px-1.5 py-0.5 text-right text-xs"
-                            />
-                          )}
-                        </div>
-                      );
-                    })}
-                </div>
-              </div>
-
-              {/* Pré-visualização do Rateio Matemático */}
-              {liveSplitError ? (
-                <div className="bg-rose-950/50 border border-rose-800/70 text-rose-300 p-2.5 rounded-xl text-xs">
-                  {liveSplitError}
-                </div>
-              ) : liveSplitPreview.length > 0 ? (
-                <div className="bg-emerald-950/30 border border-emerald-800/70 rounded-xl p-3 space-y-1.5">
-                  <div className="font-bold text-emerald-300 flex items-center justify-between text-xs">
-                    <span>Prévia do Rateio (Desvio Zero Centavos)</span>
-                    <span className="text-[10px] bg-emerald-950/80 border border-emerald-800/60 text-emerald-300 px-2 py-0.5 rounded-full">
-                      ✓ Conservação Estrita
-                    </span>
-                  </div>
-                  <div className="grid grid-cols-2 gap-1.5 text-xs">
-                    {liveSplitPreview.map((res) => (
-                      <div key={res.memberUid} className="flex justify-between border-b border-emerald-800/40 pb-0.5">
-                        <span className="text-slate-200">{res.memberName}:</span>
-                        <strong className="text-white">
-                          {formatCentsToBRL(res.assignedShareAmountCents)}
-                        </strong>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
-
-              <div className="flex justify-end gap-2 pt-2 border-t border-slate-800">
-                <button
-                  type="button"
-                  onClick={() => setIsCreateExpenseModalOpen(false)}
-                  className="px-4 py-2 border border-slate-700 text-slate-200 rounded-xl text-xs font-bold hover:bg-slate-800/80"
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="submit"
-                  disabled={Boolean(liveSplitError) || liveSplitPreview.length === 0}
-                  className="px-4 py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold hover:bg-indigo-700 disabled:opacity-50"
-                >
-                  Confirmar e Criar Rateio
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
 
       {/* ======================================================================== */}
       {/* MODAL 2: INFORMAR PAGAMENTO (DECLARAÇÃO PELO DEVEDOR)                      */}

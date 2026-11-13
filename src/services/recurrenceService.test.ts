@@ -400,5 +400,100 @@ describe('RecurrenceService (Fase 9 - Recorrências e Parcelamentos Desacoplados
       );
     });
   });
+
+  describe('Explicit Scope Requirement & Deduplication (Extrato Root Cause Regression)', () => {
+    it('rejeita getRecurrenceRules sem scope explícito e exige userId/spaceId coerentes', async () => {
+      await assert.rejects(
+        () => getRecurrenceRules({ userId: 'u_1' } as any, true),
+        (err: any) => String(err?.message || err).includes('scope')
+      );
+      await assert.rejects(
+        () => getRecurrenceRules({ scope: 'personal' } as any, true),
+        (err: any) => String(err?.message || err).includes('userId')
+      );
+      await assert.rejects(
+        () => getRecurrenceRules({ scope: 'shared' } as any, true),
+        (err: any) => String(err?.message || err).includes('spaceId')
+      );
+    });
+
+    it('rejeita getInstallmentContracts sem scope explícito e exige userId/spaceId coerentes', async () => {
+      await assert.rejects(
+        () => getInstallmentContracts({ userId: 'u_1' } as any, true),
+        (err: any) => String(err?.message || err).includes('scope')
+      );
+      await assert.rejects(
+        () => getInstallmentContracts({ scope: 'personal' } as any, true),
+        (err: any) => String(err?.message || err).includes('userId')
+      );
+      await assert.rejects(
+        () => getInstallmentContracts({ scope: 'shared' } as any, true),
+        (err: any) => String(err?.message || err).includes('spaceId')
+      );
+    });
+
+    it('isola escopo personal vs shared e desduplica regras e contratos por ID', async () => {
+      const pRule = await createRecurrenceRule(
+        {
+          scope: 'personal',
+          userId: 'user_scope_a',
+          title: 'Aluguel Individual',
+          amountCents: 200000,
+          startCompetence: '2026-11',
+          dueDay: 5,
+          idempotencyKey: 'idem_scope_p1',
+        },
+        true
+      );
+      const sRule = await createRecurrenceRule(
+        {
+          scope: 'shared',
+          userId: 'user_scope_a',
+          spaceId: 'space_scope_1',
+          title: 'Condomínio Espaço',
+          amountCents: 80000,
+          startCompetence: '2026-11',
+          dueDay: 10,
+          idempotencyKey: 'idem_scope_s1',
+        },
+        true
+      );
+
+      // Injeta duplicata artificial no demo storage para garantir desduplicação
+      const rawRules = JSON.parse(universalStorage.getItem('demo_recurrence_rules_v3') || '[]');
+      rawRules.push({ ...pRule.rule });
+      universalStorage.setItem('demo_recurrence_rules_v3', JSON.stringify(rawRules));
+
+      const personalRules = await getRecurrenceRules({ scope: 'personal', userId: 'user_scope_a' }, true);
+      assert.equal(personalRules.length, 1);
+      assert.equal(personalRules[0].id, pRule.rule.id);
+
+      const sharedRules = await getRecurrenceRules({ scope: 'shared', spaceId: 'space_scope_1' }, true);
+      assert.equal(sharedRules.length, 1);
+      assert.equal(sharedRules[0].id, sRule.rule.id);
+
+      const pContract = await createInstallmentContract(
+        {
+          scope: 'personal',
+          userId: 'user_scope_a',
+          title: 'Monitor 3x',
+          totalContractAmountCents: 90000,
+          totalInstallmentsCount: 3,
+          startCompetenceMonth: '2026-11',
+          dueDay: 12,
+          idempotencyKey: 'idem_scope_c1',
+        },
+        true
+      );
+
+      const rawContracts = JSON.parse(universalStorage.getItem('demo_installment_contracts_v3') || '[]');
+      rawContracts.push({ ...pContract.contract });
+      universalStorage.setItem('demo_installment_contracts_v3', JSON.stringify(rawContracts));
+
+      const personalContracts = await getInstallmentContracts({ scope: 'personal', userId: 'user_scope_a' }, true);
+      assert.equal(personalContracts.length, 1);
+      assert.equal(personalContracts[0].id, pContract.contract.id);
+    });
+  });
 });
 

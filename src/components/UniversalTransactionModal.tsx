@@ -9,6 +9,7 @@ import {
   Transaction,
   TransactionStatus,
   TransactionType,
+  UniversalTransactionExtra,
 } from '../types/finance';
 import {
   calculateCreditCardInvoice,
@@ -18,6 +19,7 @@ import {
   getTodayDateString,
 } from '../utils/financeEngine';
 import { sendTransactionalEmail } from '../services/emailService';
+import { calculateExpenseSplit } from '../utils/splitEngine';
 
 interface UniversalTransactionModalProps {
   isOpen: boolean;
@@ -33,12 +35,16 @@ interface UniversalTransactionModalProps {
   presetAccountId?: string;
   presetSpaceId?: string;
   presetType?: TransactionType;
+  presetRecurrenceType?: RecurrenceType;
+  presetFixedNature?: 'fixed' | 'recurring';
+  presetIsPaid?: boolean;
   presetDescription?: string;
   presetAmount?: number;
   onSaveSeries: (
     series: Omit<Transaction, 'id'>[],
     editingTx: Transaction | null,
-    cascadeMode: CascadeMode
+    cascadeMode: CascadeMode,
+    extra?: UniversalTransactionExtra
   ) => Promise<void>;
   onCreateCategory: (cat: Omit<Category, 'id' | 'userId'>) => Promise<Category>;
   onNotifyToast: (msg: string) => void;
@@ -116,6 +122,9 @@ export const UniversalTransactionModal: React.FC<UniversalTransactionModalProps>
   presetAccountId,
   presetSpaceId,
   presetType,
+  presetRecurrenceType,
+  presetFixedNature,
+  presetIsPaid,
   presetDescription,
   presetAmount,
   onSaveSeries,
@@ -125,6 +134,7 @@ export const UniversalTransactionModal: React.FC<UniversalTransactionModalProps>
   const [type, setType] = useState<TransactionType>('expense');
   const [description, setDescription] = useState('');
   const [amount, setAmount] = useState('');
+  const [notes, setNotes] = useState('');
   const [isPaid, setIsPaid] = useState(false);
   const [paymentDate, setPaymentDate] = useState('');
   const [accountId, setAccountId] = useState('');
@@ -132,7 +142,12 @@ export const UniversalTransactionModal: React.FC<UniversalTransactionModalProps>
   const [competenceDate, setCompetenceDate] = useState(`${selectedMonth}-07`);
   const [dueDate, setDueDate] = useState(`${selectedMonth}-15`);
   const [recurrenceType, setRecurrenceType] = useState<RecurrenceType>('single');
+  const [fixedNature, setFixedNature] = useState<'fixed' | 'recurring'>('fixed');
+  const [frequency, setFrequency] = useState<'monthly' | 'weekly' | 'yearly'>('monthly');
   const [installmentTotal, setInstallmentTotal] = useState('2');
+  const [installmentOngoing, setInstallmentOngoing] = useState(false);
+  const [initialInstallmentNumber, setInitialInstallmentNumber] = useState('2');
+  const [installmentAmountMode, setInstallmentAmountMode] = useState<'remaining' | 'total'>('remaining');
   const [cascadeMode, setCascadeMode] = useState<CascadeMode>('only_this');
 
   // Divisão em Espaço ou Rateio Avulso
@@ -140,14 +155,20 @@ export const UniversalTransactionModal: React.FC<UniversalTransactionModalProps>
   const [spaceId, setSpaceId] = useState('');
   const [paidByEmail, setPaidByEmail] = useState(userEmail);
   const [recipientEmail, setRecipientEmail] = useState(userEmail);
+  const [responsibleUid, setResponsibleUid] = useState(userId);
+  const [payerUid, setPayerUid] = useState(userId);
+  const [includedSpaceMemberEmails, setIncludedSpaceMemberEmails] = useState<string[]>([]);
   const [spaceExpensePaymentMode, setSpaceExpensePaymentMode] = useState<
     'unpaid' | 'space_cash' | 'member_direct'
   >('unpaid');
   const [spaceAllocationMode, setSpaceAllocationMode] = useState<
-    'equal' | 'percentage'
+    'equal' | 'percentage' | 'custom_value'
   >('equal');
   const [participantPercentages, setParticipantPercentages] = useState<
     Record<string, number>
+  >({});
+  const [participantCustomValues, setParticipantCustomValues] = useState<
+    Record<string, string>
   >({});
   const [adhocEmail, setAdhocEmail] = useState('');
   const [adhocName, setAdhocName] = useState('');
@@ -170,6 +191,7 @@ export const UniversalTransactionModal: React.FC<UniversalTransactionModalProps>
       setType(editingTransaction.type);
       setDescription(editingTransaction.description.replace(/\s*\(\d+\/\d+\)$/, ''));
       setAmount(String(editingTransaction.amount));
+      setNotes('');
       const editingIsPaid = editingTransaction.status === 'paid';
       setIsPaid(editingIsPaid);
       setPaymentDate(
@@ -182,7 +204,12 @@ export const UniversalTransactionModal: React.FC<UniversalTransactionModalProps>
       setCompetenceDate(editingTransaction.competenceDate);
       setDueDate(editingTransaction.dueDate);
       setRecurrenceType(editingTransaction.recurrenceType);
+      setFixedNature('fixed');
+      setFrequency('monthly');
       setInstallmentTotal(String(editingTransaction.installmentTotal || 2));
+      setInstallmentOngoing(false);
+      setInitialInstallmentNumber('2');
+      setInstallmentAmountMode('remaining');
       setPaidByEmail(editingTransaction.paidByEmail || userEmail);
       setRecipientEmail(editingTransaction.recipientEmail || editingTransaction.ownerEmail || userEmail);
 
@@ -221,19 +248,32 @@ export const UniversalTransactionModal: React.FC<UniversalTransactionModalProps>
           ? String(presetAmount)
           : ''
       );
-      // Padrão automático: Pendente (não pago, sem data de pagamento preenchida)
-      setIsPaid(false);
-      setPaymentDate('');
-      setAccountId(presetAccountId || accounts[0]?.id || '');
+      setNotes('');
+      const shouldBePaid = Boolean(presetIsPaid);
+      setIsPaid(shouldBePaid);
+      setPaymentDate(shouldBePaid ? getTodayDateString() : '');
+      const fallbackAcc =
+        presetAccountId ||
+        (initialType === 'income'
+          ? accounts.find((a) => a.type !== 'credit')?.id || accounts[0]?.id || ''
+          : accounts[0]?.id || '');
+      setAccountId(fallbackAcc);
       const matchingCats = categories.filter(
         (c) => c.type === initialType || c.type === 'both'
       );
       setCategoryId(matchingCats[0]?.id || categories[0]?.id || '');
       setCompetenceDate(`${selectedMonth}-07`);
       setDueDate(`${selectedMonth}-15`);
-      setRecurrenceType('single');
+      setRecurrenceType(presetRecurrenceType || 'single');
+      setFixedNature(presetFixedNature || 'fixed');
+      setFrequency('monthly');
       setInstallmentTotal('3');
+      setInstallmentOngoing(false);
+      setInitialInstallmentNumber('2');
+      setInstallmentAmountMode('remaining');
       setPaidByEmail(userEmail);
+      setResponsibleUid(userId);
+      setPayerUid(userId);
       setSpaceExpensePaymentMode('unpaid');
       setSpaceAllocationMode('equal');
 
@@ -255,6 +295,9 @@ export const UniversalTransactionModal: React.FC<UniversalTransactionModalProps>
     presetAccountId,
     presetSpaceId,
     presetType,
+    presetRecurrenceType,
+    presetFixedNature,
+    presetIsPaid,
     presetDescription,
     presetAmount,
     selectedMonth,
@@ -263,7 +306,12 @@ export const UniversalTransactionModal: React.FC<UniversalTransactionModalProps>
   useEffect(() => {
     if (!isOpen) return;
     if (!accountId && accounts.length > 0) {
-      setAccountId(presetAccountId || accounts[0].id);
+      const fallbackAcc =
+        presetAccountId ||
+        (type === 'income'
+          ? accounts.find((a) => a.type !== 'credit')?.id || accounts[0].id
+          : accounts[0].id);
+      setAccountId(fallbackAcc);
     }
     if (!categoryId && categories.length > 0) {
       const matchingCats = categories.filter(
@@ -278,18 +326,31 @@ export const UniversalTransactionModal: React.FC<UniversalTransactionModalProps>
     categories.find((c) => c.id === categoryId) || categories[0];
   const selectedSpace = spaces.find((s) => s.id === spaceId);
 
-  // Inicializa percentuais iguais quando troca de espaço
+  // Inicializa percentuais iguais, participantes incluídos e responsáveis quando troca de espaço
   useEffect(() => {
     if (!selectedSpace) return;
-    const parts = selectedSpace.participants;
+    const activeParts = selectedSpace.participants.filter(
+      (p) => p.status !== 'invited'
+    );
+    const parts = activeParts.length > 0 ? activeParts : selectedSpace.participants;
     const count = Math.max(1, parts.length);
     const basePct = Number((100 / count).toFixed(2));
     const map: Record<string, number> = {};
+    const customMap: Record<string, string> = {};
     parts.forEach((p, idx) => {
-      map[p.email.toLowerCase()] =
-        idx === 0 ? Number((100 - basePct * (count - 1)).toFixed(2)) : basePct;
+      const key = p.email.toLowerCase();
+      map[key] = idx === 0 ? Number((100 - basePct * (count - 1)).toFixed(2)) : basePct;
+      customMap[key] = '';
     });
     setParticipantPercentages(map);
+    setParticipantCustomValues(customMap);
+    setIncludedSpaceMemberEmails(parts.map((p) => p.email.toLowerCase()));
+    const selfMatch = parts.find(
+      (p) => p.uid === userId || p.email.toLowerCase() === userEmail.toLowerCase()
+    );
+    const fallbackUid = selfMatch?.uid || parts[0]?.uid || userId;
+    setResponsibleUid(fallbackUid);
+    setPayerUid(fallbackUid);
   }, [spaceId, spaces]);
 
   // Projeção automática de fatura de cartão quando muda data de competência ou conta
@@ -330,11 +391,18 @@ export const UniversalTransactionModal: React.FC<UniversalTransactionModalProps>
     }
   };
 
-  // Recalcula divisão (Igual ou Percentual) quando muda o espaço, valor total, modo de pagamento ou percentuais
+  // Recalcula divisão (Igual, Percentual ou Personalizado) quando muda espaço, valor, membros ou modo
   useEffect(() => {
     const numericAmount = Number(amount) || 0;
     if (type === 'expense' && splitMode === 'space' && selectedSpace) {
-      const parts = selectedSpace.participants;
+      const allParts = selectedSpace.participants;
+      const activeParts =
+        includedSpaceMemberEmails.length > 0
+          ? allParts.filter((p) =>
+              includedSpaceMemberEmails.includes(p.email.toLowerCase())
+            )
+          : allParts;
+      const parts = activeParts.length > 0 ? activeParts : allParts;
       const count = Math.max(1, parts.length);
       const shareVal = Number((numericAmount / count).toFixed(2));
 
@@ -343,8 +411,16 @@ export const UniversalTransactionModal: React.FC<UniversalTransactionModalProps>
           const emailKey = p.email.toLowerCase();
           const pct =
             participantPercentages[emailKey] ?? Number((100 / count).toFixed(2));
+          const customRaw = participantCustomValues[emailKey];
+          const customNum =
+            customRaw !== undefined && customRaw !== ''
+              ? Number(String(customRaw).replace(',', '.')) || 0
+              : 0;
+
           const responsibility =
-            spaceAllocationMode === 'percentage'
+            spaceAllocationMode === 'custom_value'
+              ? customNum
+              : spaceAllocationMode === 'percentage'
               ? Number(((numericAmount * pct) / 100).toFixed(2))
               : idx === 0
               ? Number((numericAmount - shareVal * (count - 1)).toFixed(2))
@@ -362,7 +438,6 @@ export const UniversalTransactionModal: React.FC<UniversalTransactionModalProps>
             name: p.name,
             responsibility,
             paidAmount,
-            // No Espaço Compartilhado, a despesa entra automaticamente no Livro-Razão do mês sem travar como 'Em Validação'
             status: 'accepted',
           };
         })
@@ -380,6 +455,8 @@ export const UniversalTransactionModal: React.FC<UniversalTransactionModalProps>
     spaceExpensePaymentMode,
     spaceAllocationMode,
     participantPercentages,
+    participantCustomValues,
+    includedSpaceMemberEmails,
   ]);
 
   // Trava a rolagem do body quando o modal universal está aberto para evitar barra de rolagem dupla
@@ -470,8 +547,21 @@ export const UniversalTransactionModal: React.FC<UniversalTransactionModalProps>
       setErrorMsg('Informe um valor financeiro maior que zero.');
       return;
     }
-    if (!selectedAccount) {
+
+    const isSharedExpenseLaunch = splitMode === 'space' && type === 'expense';
+    if (!isSharedExpenseLaunch && !selectedAccount) {
       setErrorMsg('Selecione uma conta bancária ou cartão de crédito.');
+      return;
+    }
+    if (
+      !isSharedExpenseLaunch &&
+      type === 'income' &&
+      selectedAccount?.type === 'credit' &&
+      recurrenceType === 'single'
+    ) {
+      setErrorMsg(
+        'Receitas não podem ser creditadas diretamente em cartão de crédito. Selecione uma conta corrente ou carteira.'
+      );
       return;
     }
     if (!selectedCategory) {
@@ -481,6 +571,78 @@ export const UniversalTransactionModal: React.FC<UniversalTransactionModalProps>
     if (isPaid && !paymentDate.trim()) {
       setErrorMsg('Informe a data de pagamento para efetivar o lançamento.');
       return;
+    }
+
+    const parsedInstTotal = Number(installmentTotal) || 2;
+    const parsedInitialInst = installmentOngoing
+      ? Math.max(2, Number(initialInstallmentNumber) || 2)
+      : 1;
+    if (recurrenceType === 'installment' && !editingTransaction) {
+      if (parsedInstTotal < 2 || parsedInstTotal > 48) {
+        setErrorMsg('O número de parcelas deve estar entre 2x e 48x.');
+        return;
+      }
+      if (installmentOngoing && parsedInitialInst > parsedInstTotal) {
+        setErrorMsg(
+          `A parcela atual (${parsedInitialInst}) não pode ser maior que o total de parcelas (${parsedInstTotal}).`
+        );
+        return;
+      }
+    }
+
+    // Validação matemática estrita de rateio em espaço compartilhado
+    let sharedParticipantUids: string[] | undefined;
+    let sharedPercentagesByUid: Record<string, number> | undefined;
+    let sharedCustomValuesCentsByUid: Record<string, number> | undefined;
+
+    if (isSharedExpenseLaunch) {
+      if (!selectedSpace) {
+        setErrorMsg('Selecione um espaço compartilhado.');
+        return;
+      }
+      const chosenParts = selectedSpace.participants.filter((p) =>
+        includedSpaceMemberEmails.includes(p.email.toLowerCase())
+      );
+      if (chosenParts.length === 0) {
+        setErrorMsg('Selecione ao menos 1 participante para o rateio no espaço.');
+        return;
+      }
+
+      const totalCents = Math.round(numericAmount * 100);
+      const splitParticipants = chosenParts.map((p) => ({
+        uid: p.uid || p.email.toLowerCase(),
+        name: p.name,
+      }));
+      sharedParticipantUids = splitParticipants.map((p) => p.uid);
+
+      const pctByUid: Record<string, number> = {};
+      const customByUid: Record<string, number> = {};
+      for (const p of chosenParts) {
+        const uidKey = p.uid || p.email.toLowerCase();
+        const emailKey = p.email.toLowerCase();
+        pctByUid[uidKey] = participantPercentages[emailKey] ?? 0;
+        const customRaw = participantCustomValues[emailKey];
+        const customNum =
+          customRaw !== undefined && customRaw !== ''
+            ? Number(String(customRaw).replace(',', '.'))
+            : 0;
+        customByUid[uidKey] = Number.isFinite(customNum) ? Math.round(customNum * 100) : 0;
+      }
+      sharedPercentagesByUid = pctByUid;
+      sharedCustomValuesCentsByUid = customByUid;
+
+      try {
+        calculateExpenseSplit({
+          totalAmountCents: totalCents,
+          splitMethod: spaceAllocationMode,
+          participants: splitParticipants,
+          percentages: pctByUid,
+          customValues: customByUid,
+        });
+      } catch (splitErr: any) {
+        setErrorMsg(splitErr?.message || 'Erro na validação matemática do rateio.');
+        return;
+      }
     }
 
     setSaving(true);
@@ -509,6 +671,19 @@ export const UniversalTransactionModal: React.FC<UniversalTransactionModalProps>
             : 'space_cash'
           : paidByEmail;
 
+      const fallbackAccount: Account = selectedAccount || {
+        id: '',
+        userId,
+        name: 'Espaço Compartilhado',
+        type: 'checking',
+        balance: 0,
+        limit: 0,
+        closingDay: 20,
+        dueDay: 10,
+        color: '#6366f1',
+        icon: 'ph-users-three',
+      };
+
       const series = generateRecurrenceSeries(
         {
           userId,
@@ -523,9 +698,9 @@ export const UniversalTransactionModal: React.FC<UniversalTransactionModalProps>
           categoryName: selectedCategory.name,
           categoryIcon: selectedCategory.icon,
           categoryColor: selectedCategory.color,
-          accountId: selectedAccount.id,
-          accountName: selectedAccount.name,
-          accountType: selectedAccount.type,
+          accountId: fallbackAccount.id,
+          accountName: fallbackAccount.name,
+          accountType: fallbackAccount.type,
           competenceDate,
           dueDate: effectiveDueDate,
           recurrenceType,
@@ -541,12 +716,29 @@ export const UniversalTransactionModal: React.FC<UniversalTransactionModalProps>
           disputeReason: editingTransaction?.disputeReason || '',
           proposedAmount: editingTransaction?.proposedAmount || 0,
         },
-        selectedAccount,
+        fallbackAccount,
         recurrenceType,
-        Number(installmentTotal) || 2
+        parsedInstTotal
       );
 
-      await onSaveSeries(series, editingTransaction, cascadeMode);
+      const extraPayload: UniversalTransactionExtra = {
+        fixedNature,
+        frequency,
+        installmentOngoing,
+        initialInstallmentNumber: parsedInitialInst,
+        installmentAmountMode,
+        installmentFundingSource:
+          fallbackAccount.type === 'credit' ? 'credit_card' : 'personal_loan',
+        sharedSplitMethod: isSharedExpenseLaunch ? spaceAllocationMode : undefined,
+        sharedResponsibleUid: isSharedExpenseLaunch ? responsibleUid : undefined,
+        sharedPayerUid: isSharedExpenseLaunch ? payerUid : undefined,
+        sharedParticipantUids,
+        sharedPercentagesByUid,
+        sharedCustomValuesCentsByUid,
+        notes: notes.trim() || undefined,
+      };
+
+      await onSaveSeries(series, editingTransaction, cascadeMode, extraPayload);
 
       // Envia notificação via EmailJS para participantes de rateio avulso/espaço
       if (splitMode !== 'none' && customSplits.length > 1) {
@@ -575,6 +767,8 @@ export const UniversalTransactionModal: React.FC<UniversalTransactionModalProps>
       }
 
       onClose();
+    } catch (err: any) {
+      setErrorMsg(err?.message || 'Erro ao salvar lançamento. Verifique os dados e tente novamente.');
     } finally {
       setSaving(false);
     }
@@ -587,15 +781,15 @@ export const UniversalTransactionModal: React.FC<UniversalTransactionModalProps>
       aria-modal="true"
       aria-label="Formulário Universal de Lançamento"
     >
-      <div className="w-full max-w-2xl bg-slate-800 border-t sm:border border-slate-700 rounded-t-3xl sm:rounded-3xl p-5 sm:p-6 md:p-8 shadow-2xl max-h-[92dvh] overflow-y-auto overscroll-contain">
-        <div className="flex items-center justify-between pb-4 border-b border-slate-700/80 mb-5">
-          <div>
-            <h2 className="text-lg font-bold text-white">
+      <div className="w-full max-w-2xl bg-slate-800 border-t sm:border border-slate-700 rounded-t-3xl sm:rounded-3xl shadow-2xl flex flex-col max-h-[95dvh] sm:max-h-[90dvh] overflow-hidden">
+        <div className="shrink-0 flex items-center justify-between px-5 sm:px-6 md:px-8 pt-5 pb-4 border-b border-slate-700/80 bg-slate-800">
+          <div className="min-w-0 pr-3">
+            <h2 className="text-base sm:text-lg font-bold text-white truncate">
               {editingTransaction
                 ? 'Editar Lançamento Financeiro'
                 : 'Novo Lançamento Universal'}
             </h2>
-            <p className="text-xs text-slate-400">
+            <p className="text-[11px] sm:text-xs text-slate-400">
               Configure recorrência, projeção de fatura, datas de competência e divisão colaborativa.
             </p>
           </div>
@@ -603,20 +797,20 @@ export const UniversalTransactionModal: React.FC<UniversalTransactionModalProps>
             type="button"
             onClick={onClose}
             aria-label="Fechar formulário"
-            className="w-9 h-9 rounded-xl bg-slate-700/60 text-slate-400 hover:text-white flex items-center justify-center cursor-pointer"
+            className="w-9 h-9 rounded-xl bg-slate-700/60 text-slate-400 hover:text-white flex items-center justify-center shrink-0 cursor-pointer"
           >
             <i className="ph-bold ph-x"></i>
           </button>
         </div>
 
-        {errorMsg && (
-          <div className="mb-4 p-3.5 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-xs text-rose-300 flex items-center gap-2">
-            <i className="ph-fill ph-warning-circle text-base"></i>
-            <span>{errorMsg}</span>
-          </div>
-        )}
-
-        <form onSubmit={handleSubmit} className="space-y-5">
+        <form onSubmit={handleSubmit} className="flex flex-col flex-1 min-h-0">
+          <div className="flex-1 overflow-y-auto overscroll-contain px-5 sm:px-6 md:px-8 py-4 space-y-5">
+            {errorMsg && (
+              <div className="p-3.5 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-xs text-rose-300 flex items-center gap-2">
+                <i className="ph-fill ph-warning-circle text-base shrink-0"></i>
+                <span>{errorMsg}</span>
+              </div>
+            )}
           {/* Tipo: Despesa vs Receita */}
           <div className="grid grid-cols-2 gap-2 p-1 bg-slate-900 rounded-2xl border border-slate-700/70">
             <button
@@ -701,7 +895,9 @@ export const UniversalTransactionModal: React.FC<UniversalTransactionModalProps>
                 htmlFor="tx-account"
                 className="block text-xs font-medium text-slate-300 mb-1"
               >
-                Conta Bancária ou Cartão de Crédito
+                {splitMode === 'space' && type === 'expense'
+                  ? 'Conta / Cartão (Opcional para Espaço)'
+                  : 'Conta Bancária ou Cartão de Crédito'}
               </label>
               <select
                 id="tx-account"
@@ -709,6 +905,9 @@ export const UniversalTransactionModal: React.FC<UniversalTransactionModalProps>
                 onChange={(e) => setAccountId(e.target.value)}
                 className="w-full px-3.5 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-sm text-white"
               >
+                {splitMode === 'space' && type === 'expense' && (
+                  <option value="">Sem conta individual (Gerido no Espaço)</option>
+                )}
                 {accounts.map((acc) => (
                   <option key={acc.id} value={acc.id}>
                     {acc.type === 'credit' ? `[Cartão] ${acc.name}` : `[Conta] ${acc.name}`}
@@ -747,6 +946,23 @@ export const UniversalTransactionModal: React.FC<UniversalTransactionModalProps>
                 ))}
               </select>
             </div>
+          </div>
+
+          <div>
+            <label
+              htmlFor="tx-notes"
+              className="block text-xs font-medium text-slate-300 mb-1"
+            >
+              Observações / Detalhes (Opcional)
+            </label>
+            <input
+              id="tx-notes"
+              type="text"
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              placeholder="Anotações, número da nota, referência ou lembrete..."
+              className="w-full px-3.5 py-2 bg-slate-900 border border-slate-700 rounded-xl text-xs sm:text-sm text-white"
+            />
           </div>
 
           {showNewCatForm && (
@@ -990,20 +1206,126 @@ export const UniversalTransactionModal: React.FC<UniversalTransactionModalProps>
               </button>
             </div>
 
+            {recurrenceType === 'fixed' && !editingTransaction && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-slate-800">
+                <div>
+                  <label htmlFor="tx-fixed-nature" className="block text-[11px] text-slate-400 mb-1">
+                    Natureza da Recorrência
+                  </label>
+                  <select
+                    id="tx-fixed-nature"
+                    value={fixedNature}
+                    onChange={(e) => setFixedNature(e.target.value as 'fixed' | 'recurring')}
+                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white"
+                  >
+                    <option value="fixed">Fixo Mensal (Aluguel, Salário, Escola)</option>
+                    <option value="recurring">Recorrente / Assinatura (Streaming, Conta)</option>
+                  </select>
+                </div>
+                <div>
+                  <label htmlFor="tx-frequency" className="block text-[11px] text-slate-400 mb-1">
+                    Frequência de Geração
+                  </label>
+                  <select
+                    id="tx-frequency"
+                    value={frequency}
+                    onChange={(e) => setFrequency(e.target.value as 'monthly' | 'weekly' | 'yearly')}
+                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white"
+                  >
+                    <option value="monthly">Mensal</option>
+                    <option value="weekly">Semanal</option>
+                    <option value="yearly">Anual</option>
+                  </select>
+                </div>
+              </div>
+            )}
+
             {recurrenceType === 'installment' && !editingTransaction && (
-              <div className="flex items-center justify-between gap-4 pt-2">
-                <label htmlFor="tx-installments" className="text-xs text-slate-300">
-                  Número de Parcelas (2x a 48x):
+              <div className="space-y-3 pt-2 border-t border-slate-800">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <label htmlFor="tx-installments" className="text-xs text-slate-300">
+                    Número Total de Parcelas (2x a 48x):
+                  </label>
+                  <input
+                    id="tx-installments"
+                    type="number"
+                    min={2}
+                    max={48}
+                    value={installmentTotal}
+                    onChange={(e) => setInstallmentTotal(e.target.value)}
+                    className="w-28 px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white font-mono"
+                  />
+                </div>
+
+                <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={installmentOngoing}
+                    onChange={(e) => setInstallmentOngoing(e.target.checked)}
+                    className="rounded border-slate-600 bg-slate-800 text-indigo-500 focus:ring-indigo-500"
+                  />
+                  <span>Parcelamento já está em andamento (parcela atual &gt; 1)</span>
                 </label>
-                <input
-                  id="tx-installments"
-                  type="number"
-                  min={2}
-                  max={48}
-                  value={installmentTotal}
-                  onChange={(e) => setInstallmentTotal(e.target.value)}
-                  className="w-28 px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white font-mono"
-                />
+
+                {installmentOngoing && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-3 rounded-xl bg-slate-800/80 border border-slate-700/70">
+                    <div>
+                      <label htmlFor="tx-inst-current" className="block text-[11px] text-slate-400 mb-1">
+                        Parcela atual (ex: 4)
+                      </label>
+                      <input
+                        id="tx-inst-current"
+                        type="number"
+                        min={2}
+                        max={Math.max(2, Number(installmentTotal) || 48)}
+                        value={initialInstallmentNumber}
+                        onChange={(e) => setInitialInstallmentNumber(e.target.value)}
+                        className="w-full px-3 py-1.5 bg-slate-900 border border-slate-700 rounded-xl text-xs text-white font-mono"
+                      />
+                    </div>
+                    <div>
+                      <label htmlFor="tx-inst-mode" className="block text-[11px] text-slate-400 mb-1">
+                        O valor informado acima refere-se ao:
+                      </label>
+                      <select
+                        id="tx-inst-mode"
+                        value={installmentAmountMode}
+                        onChange={(e) =>
+                          setInstallmentAmountMode(e.target.value as 'remaining' | 'total')
+                        }
+                        className="w-full px-3 py-1.5 bg-slate-900 border border-slate-700 rounded-xl text-xs text-white"
+                      >
+                        <option value="remaining">Saldo restante a pagar</option>
+                        <option value="total">Valor total original da compra</option>
+                      </select>
+                    </div>
+                  </div>
+                )}
+
+                <div className="text-[11px] text-slate-400 flex flex-wrap items-center justify-between gap-2">
+                  <span>
+                    Origem:{' '}
+                    <strong className="text-slate-200">
+                      {selectedAccount?.type === 'credit'
+                        ? `Cartão de Crédito (${selectedAccount.name})`
+                        : 'Empréstimo / Carnê / Débito'}
+                    </strong>
+                  </span>
+                  {Number(amount) > 0 && Number(installmentTotal) >= 2 && (
+                    <span className="font-mono text-indigo-300">
+                      {installmentOngoing
+                        ? `${Math.max(1, (Number(installmentTotal) || 2) - (Math.max(2, Number(initialInstallmentNumber) || 2)) + 1)} parcelas restantes (~${formatCurrency(
+                            Number(amount) /
+                              (installmentAmountMode === 'remaining'
+                                ? Math.max(1, (Number(installmentTotal) || 2) - (Math.max(2, Number(initialInstallmentNumber) || 2)) + 1)
+                                : Number(installmentTotal) || 2)
+                          )}/mês)`
+                        : `${Number(installmentTotal)}x de ${formatCurrency(
+                            Number(amount) / (Number(installmentTotal) || 2)
+                          )}`}
+                    </span>
+                  )}
+                </div>
               </div>
             )}
 
@@ -1261,12 +1583,103 @@ export const UniversalTransactionModal: React.FC<UniversalTransactionModalProps>
                   </div>
                 )}
 
-                {/* Regra de Rateio: Divisão Igual (Padrão) vs. Por Percentual (%) */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label
+                      htmlFor="tx-space-responsible"
+                      className="block text-xs text-slate-400 mb-1"
+                    >
+                      Responsável pela Validação
+                    </label>
+                    <select
+                      id="tx-space-responsible"
+                      value={responsibleUid}
+                      onChange={(e) => setResponsibleUid(e.target.value)}
+                      className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white"
+                    >
+                      {(selectedSpace?.participants || []).map((p) => {
+                        const val = p.uid || p.email.toLowerCase();
+                        return (
+                          <option key={val} value={val}>
+                            {p.name} ({p.email})
+                          </option>
+                        );
+                      })}
+                    </select>
+                  </div>
+                  <div>
+                    <label
+                      htmlFor="tx-space-payer"
+                      className="block text-xs text-slate-400 mb-1"
+                    >
+                      Pagador / Origem do Desembolso
+                    </label>
+                    <select
+                      id="tx-space-payer"
+                      value={payerUid}
+                      onChange={(e) => setPayerUid(e.target.value)}
+                      className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white"
+                    >
+                      {(selectedSpace?.participants || []).map((p) => {
+                        const val = p.uid || p.email.toLowerCase();
+                        return (
+                          <option key={val} value={val}>
+                            {p.name} ({p.email})
+                          </option>
+                        );
+                      })}
+                    </select>
+                  </div>
+                </div>
+
+                {selectedSpace && selectedSpace.participants.length > 0 && (
+                  <div className="space-y-1.5">
+                    <span className="block text-[11px] font-medium text-slate-400">
+                      Participantes incluídos no rateio:
+                    </span>
+                    <div className="flex flex-wrap gap-2">
+                      {selectedSpace.participants.map((p) => {
+                        const em = p.email.toLowerCase();
+                        const checked = includedSpaceMemberEmails.includes(em);
+                        return (
+                          <label
+                            key={em}
+                            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-xs cursor-pointer transition-colors ${
+                              checked
+                                ? 'bg-indigo-600/20 border-indigo-500/60 text-indigo-200'
+                                : 'bg-slate-800 border-slate-700 text-slate-400'
+                            }`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={(e) => {
+                                if (e.target.checked) {
+                                  setIncludedSpaceMemberEmails((prev) =>
+                                    Array.from(new Set([...prev, em]))
+                                  );
+                                } else if (includedSpaceMemberEmails.length > 1) {
+                                  setIncludedSpaceMemberEmails((prev) =>
+                                    prev.filter((item) => item !== em)
+                                  );
+                                }
+                              }}
+                              className="rounded border-slate-600 bg-slate-900 text-indigo-500"
+                            />
+                            <span>{p.name}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {/* Regra de Rateio: Divisão Igual (Padrão), Por Percentual (%) ou Personalizado (R$) */}
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pt-1">
                   <span className="text-xs font-semibold text-slate-300">
                     Regra de Rateio entre os Participantes:
                   </span>
-                  <div className="flex items-center gap-1.5 bg-slate-800 p-1 rounded-xl border border-slate-700">
+                  <div className="flex flex-wrap items-center gap-1.5 bg-slate-800 p-1 rounded-xl border border-slate-700">
                     <button
                       type="button"
                       onClick={() => setSpaceAllocationMode('equal')}
@@ -1276,7 +1689,7 @@ export const UniversalTransactionModal: React.FC<UniversalTransactionModalProps>
                           : 'text-slate-400 hover:text-white'
                       }`}
                     >
-                      Divisão Igual (Padrão)
+                      Divisão Igual
                     </button>
                     <button
                       type="button"
@@ -1288,6 +1701,17 @@ export const UniversalTransactionModal: React.FC<UniversalTransactionModalProps>
                       }`}
                     >
                       Por Percentual (%)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSpaceAllocationMode('custom_value')}
+                      className={`px-3 py-1 rounded-lg text-xs font-semibold cursor-pointer ${
+                        spaceAllocationMode === 'custom_value'
+                          ? 'bg-indigo-600 text-white'
+                          : 'text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      Personalizado (R$)
                     </button>
                   </div>
                 </div>
@@ -1329,6 +1753,8 @@ export const UniversalTransactionModal: React.FC<UniversalTransactionModalProps>
                   <span>
                     {splitMode === 'space' && spaceAllocationMode === 'percentage'
                       ? 'Percentual (%) · Cota Calculada (R$)'
+                      : splitMode === 'space' && spaceAllocationMode === 'custom_value'
+                      ? 'Valor Fixo (R$) · Desembolso'
                       : 'Cota na Despesa (R$) · Desembolso Direto (R$)'}
                   </span>
                 </div>
@@ -1337,6 +1763,7 @@ export const UniversalTransactionModal: React.FC<UniversalTransactionModalProps>
                   const pctVal =
                     participantPercentages[emailKey] ??
                     Number((100 / Math.max(1, customSplits.length)).toFixed(2));
+                  const customValStr = participantCustomValues[emailKey] ?? '';
                   return (
                     <div
                       key={sp.email}
@@ -1344,11 +1771,11 @@ export const UniversalTransactionModal: React.FC<UniversalTransactionModalProps>
                     >
                       <div className="min-w-0">
                         <span className="font-semibold text-white">{sp.name}</span>
-                        <span className="text-slate-400 ml-1.5 text-[11px]">
+                        <span className="text-slate-400 ml-1.5 text-[11px] break-all">
                           ({sp.email})
                         </span>
                       </div>
-                      <div className="flex items-center gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
                         {splitMode === 'space' && spaceAllocationMode === 'percentage' && (
                           <>
                             <label className="text-[11px] text-indigo-300 font-semibold">
@@ -1373,6 +1800,30 @@ export const UniversalTransactionModal: React.FC<UniversalTransactionModalProps>
                           </>
                         )}
 
+                        {splitMode === 'space' && spaceAllocationMode === 'custom_value' && (
+                          <>
+                            <label className="text-[11px] text-amber-300 font-semibold">
+                              Valor R$:
+                            </label>
+                            <input
+                              type="number"
+                              step="0.01"
+                              min={0}
+                              aria-label={`Valor personalizado de ${sp.name}`}
+                              value={customValStr}
+                              placeholder={String(sp.responsibility)}
+                              onChange={(e) => {
+                                const nextVal = e.target.value;
+                                setParticipantCustomValues((prev) => ({
+                                  ...prev,
+                                  [emailKey]: nextVal,
+                                }));
+                              }}
+                              className="w-24 px-2 py-1 bg-slate-900 border border-amber-500/50 rounded-lg text-xs text-amber-200 font-mono text-right"
+                            />
+                          </>
+                        )}
+
                         <label className="text-[11px] text-slate-400">Cota:</label>
                         <input
                           type="number"
@@ -1380,10 +1831,17 @@ export const UniversalTransactionModal: React.FC<UniversalTransactionModalProps>
                           aria-label={`Responsabilidade de ${sp.name}`}
                           value={sp.responsibility}
                           onChange={(e) => {
+                            const nextNum = Number(e.target.value) || 0;
+                            if (splitMode === 'space' && spaceAllocationMode === 'custom_value') {
+                              setParticipantCustomValues((prev) => ({
+                                ...prev,
+                                [emailKey]: e.target.value,
+                              }));
+                            }
                             const updated = [...customSplits];
                             updated[idx] = {
                               ...updated[idx],
-                              responsibility: Number(e.target.value) || 0,
+                              responsibility: nextNum,
                             };
                             setCustomSplits(updated);
                           }}
@@ -1412,8 +1870,9 @@ export const UniversalTransactionModal: React.FC<UniversalTransactionModalProps>
               </div>
             )}
           </div>
+          </div>
 
-          <div className="pt-3 flex items-center justify-end gap-3 border-t border-slate-700/80">
+          <div className="shrink-0 px-5 sm:px-6 md:px-8 py-3.5 pb-[calc(0.875rem+env(safe-area-inset-bottom))] border-t border-slate-700/80 bg-slate-800/95 flex items-center justify-end gap-3">
             <button
               type="button"
               onClick={onClose}
@@ -1424,7 +1883,7 @@ export const UniversalTransactionModal: React.FC<UniversalTransactionModalProps>
             <button
               type="submit"
               disabled={saving}
-              className="px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-xs font-semibold text-white shadow-lg shadow-indigo-600/25 cursor-pointer"
+              className="px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-xs font-semibold text-white shadow-lg shadow-indigo-600/25 cursor-pointer disabled:opacity-60"
             >
               {saving
                 ? 'Processando...'

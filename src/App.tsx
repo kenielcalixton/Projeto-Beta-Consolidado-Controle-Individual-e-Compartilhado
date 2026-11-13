@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import {
   collection,
@@ -29,6 +29,8 @@ import {
   Transaction,
   TransactionStatus,
   TransactionType,
+  UniversalTransactionExtra,
+  UniversalTransactionPreset,
   UserProfile,
 } from './types/finance';
 import { getAdminDemoDataset, getInitialDemoData } from './utils/seedData';
@@ -78,6 +80,10 @@ import {
   createRecurrenceRule,
   generateRecurrenceInstance,
 } from './services/recurrenceService';
+import { getUserAccounts } from './services/accountService';
+import { getSpaceMembers, getUserSpaces } from './services/spaceService';
+import { createSharedExpense } from './services/sharedFinanceService';
+import { SplitParticipant } from './utils/splitEngine';
 import {
   Account as AccountV3,
   PersonalCategory,
@@ -252,21 +258,95 @@ function AppInner() {
   // Estados de Modais e Gavetas Globais
   const [isTxModalOpen, setIsTxModalOpen] = useState(false);
   const [editingTx, setEditingTx] = useState<Transaction | null>(null);
-  const [presetAccountId, setPresetAccountId] = useState<string | undefined>(
-    undefined
-  );
-  const [presetSpaceId, setPresetSpaceId] = useState<string | undefined>(
-    undefined
-  );
-  const [presetTxType, setPresetTxType] = useState<TransactionType | undefined>(
-    undefined
-  );
-  const [presetDescription, setPresetDescription] = useState<
-    string | undefined
-  >(undefined);
-  const [presetAmount, setPresetAmount] = useState<number | undefined>(
-    undefined
-  );
+  const [universalPreset, setUniversalPreset] = useState<UniversalTransactionPreset>({});
+  const [v3RefreshToken, setV3RefreshToken] = useState(0);
+  const cloudAccountsRef = useRef<Account[]>([]);
+
+  const openUniversalModal = async (
+    spaceIdOrPreset?: string | UniversalTransactionPreset
+  ) => {
+    const normalized: UniversalTransactionPreset =
+      typeof spaceIdOrPreset === 'string'
+        ? { presetSpaceId: spaceIdOrPreset }
+        : spaceIdOrPreset || {};
+
+    if (currentUser?.isDemo) {
+      try {
+        const [demoV3Accs, demoV3Spaces] = await Promise.all([
+          getUserAccounts(currentUser.uid, false, true).catch(() => []),
+          getUserSpaces(currentUser.uid, false, true, 'active').catch(() => []),
+        ]);
+        if (demoV3Accs.length > 0) {
+          const mappedAccs: Account[] = demoV3Accs
+            .filter((a) => !a.isArchived)
+            .map((a) => ({
+              id: a.id,
+              userId: a.userId,
+              name: a.name,
+              type: a.type === 'credit' ? 'credit' : 'checking',
+              balance: (a.projectedBalanceCents || 0) / 100,
+              limit: a.creditLimitCents ? a.creditLimitCents / 100 : 0,
+              closingDay: a.closingDay ?? 20,
+              dueDay: a.dueDay ?? 27,
+              color: a.color || '#6366f1',
+              icon: a.icon || 'ph-bank',
+            }));
+          syncAccountsState((prev) => {
+            const byId = new Map<string, Account>();
+            prev.forEach((p) => byId.set(p.id, p));
+            mappedAccs.forEach((m) => byId.set(m.id, m));
+            return Array.from(byId.values());
+          }, currentUser.uid);
+        }
+        if (demoV3Spaces.length > 0) {
+          const mappedSpaces: Space[] = await Promise.all(
+            demoV3Spaces.map(async (sp) => {
+              const mems = await getSpaceMembers(sp.id, currentUser.uid, true).catch(() => []);
+              const activeMems = mems.filter((m) => m.participationStatus !== 'removed_by_admin' && m.participationStatus !== 'voluntary_exit');
+              const participants = activeMems.length > 0
+                ? activeMems.map((m) => ({
+                    uid: m.uid,
+                    email: (m.contactEmail || `${m.uid}@membro.local`).toLowerCase(),
+                    name: m.displayName,
+                    status: (m.participationStatus === 'invited' ? 'invited' : 'active') as 'active' | 'invited',
+                  }))
+                : [{
+                    uid: currentUser.uid,
+                    email: currentUser.email.toLowerCase(),
+                    name: currentUser.name,
+                    status: 'active' as const,
+                  }];
+              return {
+                id: sp.id,
+                name: sp.name,
+                description: sp.description || '',
+                ownerId: sp.creatorUid,
+                ownerEmail: currentUser.email,
+                icon: sp.icon || 'ph-users-three',
+                color: sp.color || 'indigo',
+                participantEmails: participants.map((p) => p.email),
+                participants,
+                enabledModules: sp.enabledModules || ['finance', 'acquisitions'],
+                monthlyBudget: sp.monthlyBudgetCents ? sp.monthlyBudgetCents / 100 : 0,
+              } as Space;
+            })
+          );
+          syncSpacesState((prev) => {
+            const byId = new Map<string, Space>();
+            prev.forEach((p) => byId.set(p.id, p));
+            mappedSpaces.forEach((m) => byId.set(m.id, m));
+            return Array.from(byId.values());
+          }, currentUser.uid);
+        }
+      } catch (err) {
+        console.warn('Aviso ao sincronizar contas/espaços demo para formulário universal:', err);
+      }
+    }
+
+    setEditingTx(null);
+    setUniversalPreset(normalized);
+    setIsTxModalOpen(true);
+  };
   const [inspectAcqWorkspaceId, setInspectAcqWorkspaceId] = useState<
     string | null
   >(null);
@@ -522,6 +602,7 @@ function AppInner() {
             } as Account;
           })
           .filter((a): a is Account => a !== null);
+        cloudAccountsRef.current = cloudAccs;
         syncAccountsState(cloudAccs, uid);
       },
       (err) => handleFirestoreError(err, OperationType.LIST, 'accounts')
@@ -561,37 +642,62 @@ function AppInner() {
       (err) => handleFirestoreError(err, OperationType.LIST, `users/${uid}/categories`)
     );
 
-    // 4. Espaços compartilhados canônicos v3.1 em spaces (via memberUids)
+    // 4. Espaços compartilhados canônicos v3.1 em spaces (via memberUids + enriquecimento de members)
     const spQuery = query(
       collection(db, 'spaces'),
       where('memberUids', 'array-contains', uid)
     );
     const unsubSp = onSnapshot(
       spQuery,
-      (snap) => {
-        const cloudSpaces: Space[] = snap.docs
-          .map((d) => {
+      async (snap) => {
+        const activeDocs = snap.docs.filter((d) => {
+          const raw = d.data() as SpaceV3;
+          return raw.spaceStatus !== 'dissolved' && raw.spaceStatus !== 'archived';
+        });
+
+        const cloudSpaces: Space[] = await Promise.all(
+          activeDocs.map(async (d) => {
             const raw = d.data() as SpaceV3 & {
               ownerEmail?: string;
               participantEmails?: string[];
               participants?: any[];
               monthlyBudget?: number;
             };
-            if (raw.spaceStatus === 'dissolved' || raw.spaceStatus === 'archived') {
-              return null;
-            }
-            const participantEmails = Array.isArray(raw.participantEmails)
-              ? raw.participantEmails
-              : [email];
-            const participants = Array.isArray(raw.participants)
-              ? raw.participants
-              : participantEmails.map((em) => ({
-                  email: em,
-                  name: em.split('@')[0],
-                  status: 'active' as const,
-                }));
+            const spId = raw.id || d.id;
+            const mems = await getSpaceMembers(spId, uid, false).catch(() => []);
+            const activeMems = mems.filter(
+              (m) =>
+                m.participationStatus !== 'removed_by_admin' &&
+                m.participationStatus !== 'voluntary_exit'
+            );
+
+            const participants =
+              activeMems.length > 0
+                ? activeMems.map((m) => ({
+                    uid: m.uid,
+                    email: (m.contactEmail || `${m.uid}@membro.local`).toLowerCase(),
+                    name: m.displayName,
+                    status: (m.participationStatus === 'invited'
+                      ? 'invited'
+                      : 'active') as 'active' | 'invited',
+                  }))
+                : Array.isArray(raw.participants)
+                ? raw.participants
+                : (Array.isArray(raw.participantEmails)
+                    ? raw.participantEmails
+                    : [email]
+                  ).map((em) => ({
+                    email: em,
+                    name: em.split('@')[0],
+                    status: 'active' as const,
+                  }));
+
+            const participantEmails = Array.from(
+              new Set(participants.map((p) => p.email.toLowerCase()))
+            );
+
             return {
-              id: raw.id || d.id,
+              id: spId,
               name: raw.name,
               description: raw.description || '',
               ownerId: raw.ownerId || raw.creatorUid || uid,
@@ -609,7 +715,7 @@ function AppInner() {
                   : 0,
             } as Space;
           })
-          .filter((s): s is Space => s !== null);
+        );
         syncSpacesState(cloudSpaces, uid);
       },
       (err) => handleFirestoreError(err, OperationType.LIST, 'spaces')
@@ -633,6 +739,7 @@ function AppInner() {
                 : 'pending';
             const compDate = raw.competenceDate || raw.dueDate || getTodayDateString();
             const invMonth = raw.invoiceMonth || compDate.slice(0, 7);
+            const matchedAcc = cloudAccountsRef.current.find((a) => a.id === raw.accountId);
             return {
               id: raw.id || d.id,
               userId: raw.userId || uid,
@@ -648,8 +755,8 @@ function AppInner() {
               categoryIcon: 'ph-tag',
               categoryColor: 'indigo',
               accountId: raw.accountId || '',
-              accountName: 'Conta',
-              accountType: 'checking',
+              accountName: matchedAcc?.name || (raw.accountId ? 'Conta' : 'Geral'),
+              accountType: matchedAcc?.type || 'checking',
               competenceDate: compDate,
               dueDate: raw.dueDate || compDate,
               invoiceMonth: invMonth,
@@ -1004,7 +1111,8 @@ function AppInner() {
   const handleSaveTransactionSeries = async (
     series: Omit<Transaction, 'id'>[],
     editingTransaction: Transaction | null,
-    cascadeMode: CascadeMode
+    cascadeMode: CascadeMode,
+    extra?: UniversalTransactionExtra
   ) => {
     if (!currentUser) return;
 
@@ -1050,6 +1158,7 @@ function AppInner() {
         })
       );
 
+      setV3RefreshToken((n) => n + 1);
       if (currentUser.isDemo) {
         showToast(
           `Alteração aplicada em ${targets.length} lançamento(s) (${
@@ -1063,46 +1172,137 @@ function AppInner() {
         return;
       }
 
-      showToast('Edição de lançamento individual deve ser feita na aba Lançamentos / Finanças v3.1.');
+      showToast('Edição de lançamento individual deve ser feita na aba Finanças / Lançamentos v3.1.');
       return;
     }
 
     const first = series[0];
     if (!first) return;
 
+    const cleanDesc = first.description.replace(/\s*\(\d+\/\d+\)$/, '').trim();
+    const amountCents = Math.round(first.amount * 100);
+    const dueDate = first.dueDate || first.competenceDate || getTodayDateString();
+    const compDate = first.competenceDate || dueDate;
+    const startMonth = compDate.slice(0, 7);
+    const dueDay = Math.min(Math.max(1, parseInt(dueDate.split('-')[2] || '10', 10)), 31);
+    const nonce = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+
+    // Persistência canônica v3.1 para despesas compartilhadas em espaço
+    if (first.spaceId && first.type === 'expense') {
+      const targetSpace = spaces.find((s) => s.id === first.spaceId);
+      const selectedUids = extra?.sharedParticipantUids;
+      const participants: SplitParticipant[] =
+        selectedUids && selectedUids.length > 0 && targetSpace
+          ? selectedUids.map((uidOrEmail) => {
+              const found = targetSpace.participants.find(
+                (p) =>
+                  (p.uid && p.uid === uidOrEmail) ||
+                  p.email.toLowerCase() === uidOrEmail.toLowerCase()
+              );
+              return {
+                uid: found?.uid || uidOrEmail,
+                name: found?.name || uidOrEmail,
+              };
+            })
+          : (first.splits || []).map((sp) => {
+              const found = targetSpace?.participants.find(
+                (p) => p.email.toLowerCase() === sp.email.toLowerCase()
+              );
+              return {
+                uid: found?.uid || sp.email.toLowerCase(),
+                name: found?.name || sp.name,
+              };
+            });
+
+      const resolvedParticipants =
+        participants.length > 0
+          ? participants
+          : [{ uid: currentUser.uid, name: currentUser.name }];
+
+      await createSharedExpense(
+        first.spaceId,
+        {
+          spaceId: first.spaceId,
+          title: cleanDesc,
+          description: extra?.notes || undefined,
+          totalOriginalAmountCents: amountCents,
+          competenceMonth: startMonth,
+          competenceDate: compDate,
+          dueDate: first.dueDate || undefined,
+          categoryId: first.categoryId || 'cat_shared',
+          categoryName: first.categoryName || 'Geral',
+          createdByUid: currentUser.uid,
+          responsibleUid: extra?.sharedResponsibleUid || currentUser.uid,
+          payerUid: extra?.sharedPayerUid || extra?.sharedResponsibleUid || currentUser.uid,
+          splitMethod: extra?.sharedSplitMethod || 'equal',
+          participants: resolvedParticipants,
+          percentages: extra?.sharedPercentagesByUid,
+          customValues: extra?.sharedCustomValuesCentsByUid,
+          idempotencyKey: `utm_shared_${nonce}`,
+        },
+        !!currentUser.isDemo
+      );
+
+      setV3RefreshToken((n) => n + 1);
+      showToast(
+        `Despesa compartilhada "${cleanDesc}" registrada no espaço ${first.spaceName || ''} e rateio sincronizado!`
+      );
+      return;
+    }
+
     // Persistência canônica v3.1 para lançamentos individuais
     if (!first.spaceId) {
-      const cleanDesc = first.description.replace(/\s*\(\d+\/\d+\)$/, '').trim();
-      const amountCents = Math.round(first.amount * 100);
       const isCredit = first.accountType === 'credit';
-      const dueDate = first.dueDate || first.competenceDate || getTodayDateString();
-      const compDate = first.competenceDate || dueDate;
-      const startMonth = compDate.slice(0, 7);
-      const dueDay = Math.min(Math.max(1, parseInt(dueDate.split('-')[2] || '10', 10)), 31);
-      const nonce = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 
       if (first.recurrenceType === 'installment' && series.length >= 2) {
-        const totalContractAmountCents = series.reduce(
+        const enteredCents = series.reduce(
           (acc, s) => acc + Math.round(s.amount * 100),
           0
         );
+        const totalCount = first.installmentTotal || series.length;
+        const initNum = extra?.installmentOngoing
+          ? Math.max(2, extra.initialInstallmentNumber || 2)
+          : first.installmentIndex || 1;
+        const projectedCount = Math.max(1, totalCount - initNum + 1);
+
+        let totalContractAmountCents = enteredCents;
+        let remainingAmountCents: number | undefined = undefined;
+        if (extra?.installmentOngoing && initNum > 1) {
+          if (extra.installmentAmountMode === 'remaining') {
+            remainingAmountCents = enteredCents;
+            totalContractAmountCents = Math.round((enteredCents / projectedCount) * totalCount);
+          } else {
+            totalContractAmountCents = enteredCents;
+            remainingAmountCents = Math.round((enteredCents / totalCount) * projectedCount);
+          }
+        }
+
+        const fundingSource =
+          extra?.installmentFundingSource || (isCredit ? 'credit_card' : 'personal_loan');
+
         await createInstallmentContract(
           {
             scope: 'personal',
             userId: currentUser.uid,
             title: cleanDesc,
             totalContractAmountCents,
-            totalInstallmentsCount: first.installmentTotal || series.length,
-            initialInstallmentNumber: first.installmentIndex || 1,
-            fundingSource: isCredit ? 'credit_card' : 'personal_loan',
-            sourceCardAccountId: isCredit ? first.accountId : undefined,
+            remainingAmountCents,
+            totalInstallmentsCount: totalCount,
+            initialInstallmentNumber: initNum,
+            fundingSource,
+            sourceCardAccountId: fundingSource === 'credit_card' ? first.accountId : undefined,
             startCompetenceMonth: startMonth,
             dueDay,
             idempotencyKey: `utm_inst_${nonce}`,
           },
           !!currentUser.isDemo
         );
-        showToast(`Parcelamento "${cleanDesc}" (${series.length}x) registrado na arquitetura v3.1!`);
+        setV3RefreshToken((n) => n + 1);
+        showToast(
+          extra?.installmentOngoing && initNum > 1
+            ? `Parcelamento em andamento "${cleanDesc}" (${initNum}/${totalCount} → ${totalCount}/${totalCount}) registrado!`
+            : `Parcelamento "${cleanDesc}" (${totalCount}x) registrado na arquitetura v3.1!`
+        );
         return;
       }
 
@@ -1112,15 +1312,16 @@ function AppInner() {
             scope: 'personal',
             userId: currentUser.uid,
             title: cleanDesc,
+            description: extra?.notes || undefined,
             type: first.type === 'income' ? 'income' : 'expense',
-            nature: 'fixed',
+            nature: extra?.fixedNature || 'fixed',
             amountCents,
-            frequency: 'monthly',
+            frequency: extra?.frequency || 'monthly',
             interval: 1,
             startCompetence: startMonth,
             dueDay,
             categoryId: first.categoryId,
-            defaultAccountId: first.accountId,
+            defaultAccountId: first.accountId || undefined,
             idempotencyKey: `utm_rec_${nonce}`,
           },
           !!currentUser.isDemo
@@ -1129,6 +1330,7 @@ function AppInner() {
           { ruleId: rule.id, competenceMonth: startMonth },
           !!currentUser.isDemo
         );
+        setV3RefreshToken((n) => n + 1);
         showToast(`Regra fixa "${cleanDesc}" e competência ${startMonth} registradas!`);
         return;
       }
@@ -1147,21 +1349,23 @@ function AppInner() {
               : 'pending',
           categoryId: first.categoryId,
           categoryName: first.categoryName,
-          accountId: first.accountId,
+          accountId: first.accountId || undefined,
           competenceDate: compDate,
           dueDate,
           paymentDate:
             first.status === 'paid' ? first.paymentDate || getTodayDateString() : undefined,
+          notes: extra?.notes || undefined,
           originType: 'manual',
           idempotencyKey: `utm_tx_${nonce}`,
         },
         !!currentUser.isDemo
       );
+      setV3RefreshToken((n) => n + 1);
       showToast('Lançamento registrado e sincronizado na arquitetura v3.1!');
       return;
     }
 
-    // Fallback para lançamentos compartilhados legados no modo demo
+    // Fallback para aportes/receitas de espaço compartilhado em modo demo
     const createdWithIds: Transaction[] = series.map((item, idx) => ({
       ...item,
       id: `tx_${Date.now()}_${idx}`,
@@ -1170,10 +1374,11 @@ function AppInner() {
       const filtered = prev.filter((t) => !createdWithIds.some((c) => c.id === t.id));
       return [...createdWithIds, ...filtered];
     });
+    setV3RefreshToken((n) => n + 1);
     if (currentUser.isDemo) {
-      showToast('Lançamento compartilhado registrado no modo demo!');
+      showToast('Aporte/lançamento compartilhado registrado no modo demo!');
     } else {
-      showToast('Para despesas compartilhadas oficiais v3.1, utilize a aba Espaços Compartilhados.');
+      showToast('Para custódias e aportes oficiais v3.1 no espaço, utilize a aba Custódia em Espaços Compartilhados.');
     }
   };
 
@@ -2492,12 +2697,7 @@ function AppInner() {
               userIsAdmin={userIsAdmin}
               activeScope={dashboardScope}
               onChangeScope={setDashboardScope}
-              onOpenNewTransaction={(spaceId) => {
-                setEditingTx(null);
-                setPresetAccountId(undefined);
-                setPresetSpaceId(spaceId);
-                setIsTxModalOpen(true);
-              }}
+              onOpenNewTransaction={(spaceId) => openUniversalModal(spaceId)}
               onOpenSpaceLedger={(space) => {
                 setActiveTab('spaces');
                 setActiveLedgerSpace(space);
@@ -2516,6 +2716,8 @@ function AppInner() {
             <AccountsLedgerViewV3
               userId={currentUser?.uid || 'usr_anonymous'}
               isDemo={!!currentUser?.isDemo}
+              refreshTrigger={v3RefreshToken}
+              onOpenNewTransaction={(preset) => openUniversalModal(preset)}
             />
           )}
 
@@ -2523,6 +2725,10 @@ function AppInner() {
             <PersonalFinanceViewV3
               userId={currentUser?.uid || 'usr_anonymous'}
               isDemo={!!currentUser?.isDemo}
+              selectedMonth={selectedMonth}
+              onChangeMonth={setSelectedMonth}
+              refreshTrigger={v3RefreshToken}
+              onOpenNewTransaction={(preset) => openUniversalModal(preset)}
             />
           )}
 
@@ -2533,6 +2739,43 @@ function AppInner() {
               userEmail={currentUser?.email || ''}
               isDemo={!!currentUser?.isDemo}
               openCreateTrigger={openNewSpaceTrigger}
+              refreshTrigger={v3RefreshToken}
+              onConsumeCreateTrigger={() => setOpenNewSpaceTrigger(0)}
+              onSpacesChanged={(createdSpace) => {
+                if (!currentUser) return;
+                if (createdSpace) {
+                  const emailLower = (currentUser.email || '').toLowerCase();
+                  const mapped: Space = {
+                    id: createdSpace.id,
+                    name: createdSpace.name,
+                    description: createdSpace.description || '',
+                    ownerId: createdSpace.ownerId || createdSpace.creatorUid,
+                    ownerEmail: currentUser.email,
+                    icon: createdSpace.icon || 'ph-users-three',
+                    color: createdSpace.color || 'indigo',
+                    participantEmails: emailLower ? [emailLower] : [],
+                    participants: [
+                      {
+                        uid: currentUser.uid,
+                        email: emailLower,
+                        name: currentUser.name,
+                        status: 'active',
+                      },
+                    ],
+                    enabledModules: createdSpace.enabledModules || ['finance', 'acquisitions'],
+                    monthlyBudget: createdSpace.monthlyBudgetCents
+                      ? createdSpace.monthlyBudgetCents / 100
+                      : 0,
+                  };
+                  syncSpacesState((prev) => {
+                    const byId = new Map<string, Space>();
+                    prev.forEach((p) => byId.set(p.id, p));
+                    byId.set(mapped.id, mapped);
+                    return Array.from(byId.values());
+                  }, currentUser.uid);
+                }
+              }}
+              onOpenNewTransaction={(preset) => openUniversalModal(preset)}
               onOpenSpaceAcquisitions={(spaceId) => {
                 setInspectAcqWorkspaceId(spaceId);
                 setActiveTab('acquisitions');
@@ -2555,13 +2798,11 @@ function AppInner() {
                 setOpenNewSpaceTrigger((n) => n + 1);
               }}
               onCreateExpenseFromPurchase={(payload) => {
-                setEditingTx(null);
-                setPresetAccountId(undefined);
-                setPresetSpaceId(undefined);
-                setPresetTxType('expense');
-                setPresetDescription(payload.description);
-                setPresetAmount(payload.amount);
-                setIsTxModalOpen(true);
+                openUniversalModal({
+                  presetType: 'expense',
+                  presetDescription: payload.description,
+                  presetAmount: payload.amount,
+                });
                 showToast(
                   `Dados de "${payload.description}" carregados no formulário de lançamento!`
                 );
@@ -2677,9 +2918,7 @@ function AppInner() {
         onClose={() => {
           setIsTxModalOpen(false);
           setEditingTx(null);
-          setPresetTxType(undefined);
-          setPresetDescription(undefined);
-          setPresetAmount(undefined);
+          setUniversalPreset({});
         }}
         accounts={accounts}
         categories={categories}
@@ -2689,11 +2928,14 @@ function AppInner() {
         userName={currentUser.name}
         selectedMonth={selectedMonth}
         editingTransaction={editingTx}
-        presetAccountId={presetAccountId}
-        presetSpaceId={presetSpaceId}
-        presetType={presetTxType}
-        presetDescription={presetDescription}
-        presetAmount={presetAmount}
+        presetAccountId={universalPreset.presetAccountId}
+        presetSpaceId={universalPreset.presetSpaceId}
+        presetType={universalPreset.presetType}
+        presetRecurrenceType={universalPreset.presetRecurrenceType}
+        presetFixedNature={universalPreset.presetFixedNature}
+        presetIsPaid={universalPreset.presetIsPaid}
+        presetDescription={universalPreset.presetDescription}
+        presetAmount={universalPreset.presetAmount}
         onSaveSeries={handleSaveTransactionSeries}
         onCreateCategory={handleCreateCategory}
         onNotifyToast={showToast}
@@ -2724,14 +2966,7 @@ function AppInner() {
 
       {/* Botão de Ação Rápida Flutuante (FAB) no Canto Inferior Direito */}
       <QuickActionFAB
-        onOpenNewTransaction={() => {
-          setEditingTx(null);
-          setPresetAccountId(undefined);
-          setPresetSpaceId(undefined);
-          setPresetDescription(undefined);
-          setPresetAmount(undefined);
-          setIsTxModalOpen(true);
-        }}
+        onOpenNewTransaction={() => openUniversalModal()}
         onOpenNewList={() => {
           setActiveTab('acquisitions');
           setOpenNewAcqListTrigger((n) => n + 1);

@@ -373,5 +373,38 @@ test('FASE 4 — Aceitação: Múltiplos Espaços Independentes e Experiência C
         `Componente canônico ${relPath} não pode conter superfícies bg-white hardcoded. Encontrado em: ${whiteSurfaces.join(', ')}`
       );
     }
+
+    // 4. Regressão estrutural: nenhum modal duplicado de lançamento pode permanecer nos módulos v3
+    const personalView = fs.readFileSync(
+      path.resolve(process.cwd(), 'src/components/finance/PersonalFinanceViewV3.tsx'),
+      'utf-8'
+    );
+    const accountsView = fs.readFileSync(
+      path.resolve(process.cwd(), 'src/components/accounts/AccountsLedgerViewV3.tsx'),
+      'utf-8'
+    );
+    const sharedFinanceView = fs.readFileSync(
+      path.resolve(process.cwd(), 'src/components/spaces/SharedFinanceSectionV3.tsx'),
+      'utf-8'
+    );
+    const universalModal = fs.readFileSync(
+      path.resolve(process.cwd(), 'src/components/UniversalTransactionModal.tsx'),
+      'utf-8'
+    );
+
+    assert.equal(personalView.includes('isTxModalOpen'), false, 'PersonalFinanceViewV3 não deve possuir modal duplicado isTxModalOpen');
+    assert.equal(personalView.includes('isRecurrenceModalOpen'), false, 'PersonalFinanceViewV3 não deve possuir modal duplicado isRecurrenceModalOpen');
+    assert.equal(personalView.includes('isInstallmentModalOpen'), false, 'PersonalFinanceViewV3 não deve possuir modal duplicado isInstallmentModalOpen');
+    assert.equal(accountsView.includes('isMovementModalOpen'), false, 'AccountsLedgerViewV3 não deve possuir modal duplicado isMovementModalOpen');
+    assert.equal(sharedFinanceView.includes('isCreateExpenseModalOpen'), false, 'SharedFinanceSectionV3 não deve possuir modal duplicado isCreateExpenseModalOpen');
+
+    // 5. PersonalFinanceViewV3 deve sempre explicitar scope ao consultar recorrências/parcelamentos
+    assert.ok(personalView.includes("scope: 'personal'"), 'PersonalFinanceViewV3 deve passar scope explícito nas queries');
+    assert.ok(personalView.includes("scope: 'shared'"), 'PersonalFinanceViewV3 deve suportar scope shared nas queries autorizadas');
+
+    // 6. UniversalTransactionModal deve manter responsividade (scroll interno + footer fixo + safe area)
+    assert.ok(universalModal.includes('max-h-[95dvh]'), 'UniversalTransactionModal deve limitar altura ao viewport');
+    assert.ok(universalModal.includes('overflow-y-auto'), 'UniversalTransactionModal deve possuir área rolável interna');
+    assert.ok(universalModal.includes('safe-area-inset-bottom'), 'UniversalTransactionModal deve respeitar safe-area mobile');
   });
 });

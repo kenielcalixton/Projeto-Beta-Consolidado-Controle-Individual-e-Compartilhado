@@ -669,6 +669,51 @@ export interface PersonalTransactionFilters {
 }
 
 /**
+ * Normaliza documentos de transação individual (incluindo registros antigos ou incompletos)
+ * sem alterar os valores originais armazenados.
+ */
+export function normalizePersonalTransaction(
+  raw: Partial<PersonalTransaction> & Record<string, any>,
+  docId?: string
+): PersonalTransaction {
+  const rawCreatedAt = raw.createdAt as unknown;
+  const createdAtStr =
+    typeof rawCreatedAt === 'string'
+      ? rawCreatedAt
+      : rawCreatedAt && typeof (rawCreatedAt as { toDate?: () => Date }).toDate === 'function'
+      ? (rawCreatedAt as { toDate: () => Date }).toDate().toISOString()
+      : '';
+  const fallbackDate =
+    raw.competenceDate ||
+    raw.dueDate ||
+    raw.paymentDate ||
+    (createdAtStr ? createdAtStr.slice(0, 10) : '');
+  const safeAmountCents = Number.isFinite(Number(raw.amountCents))
+    ? Math.round(Number(raw.amountCents))
+    : Math.round(Number(raw.amount ?? 0) * 100);
+
+  return {
+    ...(raw as PersonalTransaction),
+    id: raw.id || docId || '',
+    userId: raw.userId || '',
+    description: typeof raw.description === 'string' && raw.description.trim() ? raw.description : 'Lançamento sem descrição',
+    amountCents: Number.isSafeInteger(safeAmountCents) ? safeAmountCents : 0,
+    type: raw.type === 'income' ? 'income' : 'expense',
+    status: raw.status || 'pending',
+    categoryId: raw.categoryId || 'cat_default',
+    categoryName: raw.categoryName || 'Geral',
+    competenceDate: fallbackDate,
+    dueDate: raw.dueDate || fallbackDate,
+    originType: raw.originType || 'manual',
+    createdAt: createdAtStr || new Date().toISOString(),
+    updatedAt:
+      typeof raw.updatedAt === 'string'
+        ? raw.updatedAt
+        : createdAtStr || new Date().toISOString(),
+  };
+}
+
+/**
  * Consulta transações individuais com suporte a filtros de competência, status e categoria.
  */
 export async function getUserPersonalTransactions(
@@ -678,29 +723,40 @@ export async function getUserPersonalTransactions(
 ): Promise<PersonalTransaction[]> {
   if (!userId) return [];
 
-  let list: PersonalTransaction[] = [];
+  const deduped = new Map<string, PersonalTransaction>();
   if (isDemo) {
-    list = loadDemoTransactions().filter((t) => t.userId === userId);
+    for (const raw of loadDemoTransactions()) {
+      if (raw.userId !== userId) continue;
+      const norm = normalizePersonalTransaction(raw, raw.id);
+      if (norm.id) deduped.set(norm.id, norm);
+    }
   } else {
     const collRef = collection(db, 'users', userId, 'personal_transactions');
     const q = query(collRef);
     const snap = await getDocs(q);
-    snap.forEach((d) => list.push({ ...(d.data() as PersonalTransaction), id: d.id }));
+    snap.forEach((d) => {
+      const norm = normalizePersonalTransaction(d.data() as Partial<PersonalTransaction>, d.id);
+      if (norm.id) deduped.set(norm.id, norm);
+    });
   }
 
-  return list
+  return Array.from(deduped.values())
     .filter((t) => {
       if (filters.type && t.type !== filters.type) return false;
       if (filters.status && t.status !== filters.status) return false;
       if (filters.categoryId && t.categoryId !== filters.categoryId) return false;
       if (filters.accountId && t.accountId !== filters.accountId) return false;
       if (filters.competenceMonth) {
-        const txMonth = t.competenceDate?.slice(0, 7);
+        const txMonth = (t.competenceDate || t.dueDate || '').slice(0, 7);
         if (txMonth !== filters.competenceMonth) return false;
       }
       return true;
     })
-    .sort((a, b) => b.competenceDate.localeCompare(a.competenceDate));
+    .sort((a, b) => {
+      const dateCmp = (b.competenceDate || '').localeCompare(a.competenceDate || '');
+      if (dateCmp !== 0) return dateCmp;
+      return (b.createdAt || '').localeCompare(a.createdAt || '');
+    });
 }
 
 /**
