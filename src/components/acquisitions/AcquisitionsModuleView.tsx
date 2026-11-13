@@ -34,6 +34,9 @@ import {
   deleteTaxonomyGroupFromFirestore,
   deleteWorkspaceFromFirestore,
   fetchAcceptedWorkspacesFromFirestore,
+  fetchIndividualListsFromFirestore,
+  fetchItemsForListFromFirestore,
+  fetchSharedListsFromFirestore,
   isAcquisitionAdminUid,
   recordProductInSubcollection,
   saveItemToFirestore,
@@ -78,6 +81,7 @@ interface AcquisitionsModuleViewProps {
   onLogout: () => void;
   initialWorkspaceIdToOpen?: string | null;
   onClearInitialWorkspace?: () => void;
+  openCreateListTrigger?: number;
   unifiedSpaces?: Space[];
   onOpenManageSpaces?: () => void;
   onOpenCreateSpace?: (preset: 'acquisitions' | 'both') => void;
@@ -93,11 +97,17 @@ export const AcquisitionsModuleView: React.FC<AcquisitionsModuleViewProps> = ({
   onLogout,
   initialWorkspaceIdToOpen,
   onClearInitialWorkspace,
+  openCreateListTrigger,
   unifiedSpaces,
   onOpenManageSpaces,
   onOpenCreateSpace,
   onCreateExpenseFromPurchase,
 }) => {
+  const personalWorkspaceId = `ws_personal_${sharedUser.uid}`;
+  const lsListsKey = `app_aquisicoes_lists_${sharedUser.uid}`;
+  const lsItemsKey = `app_aquisicoes_items_${sharedUser.uid}`;
+  const lsTaxKey = `app_aquisicoes_taxonomy_${sharedUser.uid}`;
+
   const [currentUser, setCurrentUser] = useState<UserProfile>(() => {
     const saved = localStorage.getItem('app_aquisicoes_user');
     if (saved) {
@@ -141,8 +151,29 @@ export const AcquisitionsModuleView: React.FC<AcquisitionsModuleViewProps> = ({
     return saved ? JSON.parse(saved) : [];
   });
 
-  // Mapeia os Espaços Unificados (definidos no módulo de Finanças) para Espaços de Aquisições
+  // Espaço Individual Permanente + Espaços Compartilhados Unificados
   const effectiveWorkspaces: Workspace[] = React.useMemo(() => {
+    const personalWs: Workspace = {
+      id: personalWorkspaceId,
+      name: 'Minhas Listas Individuais',
+      description: 'Listas de compras recorrentes, objetivos e desejos de uso exclusivo seu.',
+      type: 'Individual',
+      ownerUid: sharedUser.uid,
+      ownerEmail: (sharedUser.email || '').toLowerCase(),
+      acceptedMemberEmails: [(sharedUser.email || '').toLowerCase()].filter(Boolean),
+      acceptedMemberUids: [sharedUser.uid],
+      members: [
+        {
+          uid: sharedUser.uid,
+          email: (sharedUser.email || '').toLowerCase(),
+          name: sharedUser.name || 'Titular',
+          role: 'Admin' as const,
+          status: 'Aceito' as const,
+        },
+      ],
+      createdAt: '2025-01-01T00:00:00.000Z',
+    };
+
     if (unifiedSpaces !== undefined) {
       const acqSpaces = unifiedSpaces.filter(
         (sp) => !sp.enabledModules || sp.enabledModules.includes('acquisitions')
@@ -203,37 +234,140 @@ export const AcquisitionsModuleView: React.FC<AcquisitionsModuleViewProps> = ({
         };
       });
 
-      return mappedUnified;
+      return [personalWs, ...mappedUnified];
     }
 
-    return workspaces;
-  }, [unifiedSpaces, workspaces, sharedUser.email, sharedUser.uid, sharedUser.name]);
+    return [personalWs, ...workspaces.filter((w) => w.id !== personalWorkspaceId)];
+  }, [unifiedSpaces, workspaces, sharedUser.email, sharedUser.uid, sharedUser.name, personalWorkspaceId]);
 
   const [lists, setLists] = useState<AcquisitionList[]>(() => {
-    const saved = localStorage.getItem('app_aquisicoes_lists');
-    return saved ? JSON.parse(saved) : INITIAL_LISTS;
+    const saved = localStorage.getItem(lsListsKey);
+    if (saved) return JSON.parse(saved);
+    if (sharedUser.isDemo) {
+      return INITIAL_LISTS.map((l) => ({
+        ...l,
+        workspaceId: personalWorkspaceId,
+        scopeType: 'individual' as const,
+        ownerUid: sharedUser.uid,
+      }));
+    }
+    return [];
   });
 
   const [items, setItems] = useState<AcquisitionItem[]>(() => {
-    const saved = localStorage.getItem('app_aquisicoes_items');
-    return saved ? JSON.parse(saved) : INITIAL_ITEMS;
+    const saved = localStorage.getItem(lsItemsKey);
+    if (saved) return JSON.parse(saved);
+    if (sharedUser.isDemo) {
+      return INITIAL_ITEMS.map((i) => ({
+        ...i,
+        workspaceId: personalWorkspaceId,
+        createdByUid: sharedUser.uid,
+      }));
+    }
+    return [];
   });
 
   const [taxonomyGroups, setTaxonomyGroups] = useState<TaxonomyGroup[]>(() => {
-    const saved = localStorage.getItem('app_aquisicoes_taxonomy');
+    const saved = localStorage.getItem(lsTaxKey) || localStorage.getItem('app_aquisicoes_taxonomy');
     return saved ? JSON.parse(saved) : INITIAL_TAXONOMY_GROUPS;
   });
+
+  // Reload user-scoped state when sharedUser.uid changes
+  useEffect(() => {
+    const savedLists = localStorage.getItem(lsListsKey);
+    const savedItems = localStorage.getItem(lsItemsKey);
+    const savedTax = localStorage.getItem(lsTaxKey);
+    if (savedLists) {
+      setLists(JSON.parse(savedLists));
+    } else if (sharedUser.isDemo) {
+      setLists(
+        INITIAL_LISTS.map((l) => ({
+          ...l,
+          workspaceId: personalWorkspaceId,
+          scopeType: 'individual' as const,
+          ownerUid: sharedUser.uid,
+        }))
+      );
+    } else {
+      setLists([]);
+    }
+    if (savedItems) {
+      setItems(JSON.parse(savedItems));
+    } else if (sharedUser.isDemo) {
+      setItems(
+        INITIAL_ITEMS.map((i) => ({
+          ...i,
+          workspaceId: personalWorkspaceId,
+          createdByUid: sharedUser.uid,
+        }))
+      );
+    } else {
+      setItems([]);
+    }
+    if (savedTax) {
+      setTaxonomyGroups(JSON.parse(savedTax));
+    }
+  }, [sharedUser.uid, sharedUser.isDemo, personalWorkspaceId, lsListsKey, lsItemsKey, lsTaxKey]);
+
+  // Hydrate individual & shared lists + items from Firestore when authenticated
+  useEffect(() => {
+    if (sharedUser.isDemo || !sharedUser.uid || sharedUser.uid === 'usr_anonymous') return;
+    let cancelled = false;
+
+    const hydrateFromFirestore = async () => {
+      try {
+        const sharedSpaceIds = effectiveWorkspaces
+          .filter((w) => w.id !== personalWorkspaceId)
+          .map((w) => w.id);
+
+        const [indLists, ...sharedListsNested] = await Promise.all([
+          fetchIndividualListsFromFirestore(sharedUser.uid),
+          ...sharedSpaceIds.map((sid) => fetchSharedListsFromFirestore(sid)),
+        ]);
+
+        const normalizedIndLists = indLists.map((l) => ({
+          ...l,
+          workspaceId: personalWorkspaceId,
+          scopeType: 'individual' as const,
+        }));
+        const normalizedSharedLists = sharedListsNested.flat().map((l) => ({
+          ...l,
+          workspaceId: l.spaceId || l.workspaceId,
+          scopeType: 'shared' as const,
+        }));
+
+        const allFetchedLists = [...normalizedIndLists, ...normalizedSharedLists];
+        const fetchedItemsNested = await Promise.all(
+          allFetchedLists.map((l) => fetchItemsForListFromFirestore(l.id))
+        );
+        const allFetchedItems = fetchedItemsNested.flat().map((item) => {
+          const parentList = allFetchedLists.find((l) => l.id === item.listId);
+          return {
+            ...item,
+            workspaceId: parentList ? parentList.workspaceId : item.workspaceId,
+          };
+        });
+
+        if (!cancelled) {
+          setLists(allFetchedLists);
+          setItems(allFetchedItems);
+        }
+      } catch (err) {
+        console.warn('[AcquisitionsModuleView] Erro ao carregar listas do Firestore:', err);
+      }
+    };
+
+    hydrateFromFirestore();
+    return () => {
+      cancelled = true;
+    };
+  }, [sharedUser.uid, sharedUser.isDemo, personalWorkspaceId, effectiveWorkspaces.length]);
 
   // Navigation State: Default directly to 'workspace_detail' (Kanban das Listas)
   const [activeRoute, setActiveRoute] = useState<ActiveRoute>('workspace_detail');
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string>(() => {
-    if (unifiedSpaces && unifiedSpaces.length > 0) {
-      const match = unifiedSpaces.find(
-        (sp) => !sp.enabledModules || sp.enabledModules.includes('acquisitions')
-      );
-      if (match) return match.id;
-    }
-    return 'ws_residencia';
+    if (initialWorkspaceIdToOpen) return initialWorkspaceIdToOpen;
+    return personalWorkspaceId;
   });
 
   useEffect(() => {
@@ -251,7 +385,7 @@ export const AcquisitionsModuleView: React.FC<AcquisitionsModuleViewProps> = ({
     }
   }, [initialWorkspaceIdToOpen, onClearInitialWorkspace, effectiveWorkspaces, selectedWorkspaceId]);
 
-  // Persist changes locally
+  // Persist changes locally (UID-scoped)
   useEffect(() => {
     localStorage.setItem('app_aquisicoes_user', JSON.stringify(currentUser));
   }, [currentUser]);
@@ -261,16 +395,16 @@ export const AcquisitionsModuleView: React.FC<AcquisitionsModuleViewProps> = ({
   }, [workspaces]);
 
   useEffect(() => {
-    localStorage.setItem('app_aquisicoes_lists', JSON.stringify(lists));
-  }, [lists]);
+    localStorage.setItem(lsListsKey, JSON.stringify(lists));
+  }, [lsListsKey, lists]);
 
   useEffect(() => {
-    localStorage.setItem('app_aquisicoes_items', JSON.stringify(items));
-  }, [items]);
+    localStorage.setItem(lsItemsKey, JSON.stringify(items));
+  }, [lsItemsKey, items]);
 
   useEffect(() => {
-    localStorage.setItem('app_aquisicoes_taxonomy', JSON.stringify(taxonomyGroups));
-  }, [taxonomyGroups]);
+    localStorage.setItem(lsTaxKey, JSON.stringify(taxonomyGroups));
+  }, [lsTaxKey, taxonomyGroups]);
 
   // Ensure current user is included in initial demo workspace when first opened
   useEffect(() => {
@@ -624,13 +758,17 @@ export const AcquisitionsModuleView: React.FC<AcquisitionsModuleViewProps> = ({
     type: ListType,
     description: string
   ) => {
-    const ws = workspaces.find((w) => w.id === workspaceId);
+    const ws = effectiveWorkspaces.find((w) => w.id === workspaceId);
+    const isIndividual = workspaceId === personalWorkspaceId;
     const newList: AcquisitionList = {
       id: `list_${type}_${Date.now()}`,
       workspaceId,
       name,
       type,
       description,
+      scopeType: isIndividual ? 'individual' : 'shared',
+      spaceId: isIndividual ? null : workspaceId,
+      ownerUid: sharedUser.uid,
       acceptedMemberEmails: ws?.acceptedMemberEmails || [currentUser.email],
       createdAt: new Date().toISOString(),
     };
@@ -686,6 +824,7 @@ export const AcquisitionsModuleView: React.FC<AcquisitionsModuleViewProps> = ({
     const newItem: AcquisitionItem = {
       ...newItemData,
       id: `item_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      createdByUid: newItemData.createdByUid || sharedUser.uid,
       productsHistory: [],
       updatedAt: new Date().toISOString(),
     };
@@ -1106,7 +1245,7 @@ export const AcquisitionsModuleView: React.FC<AcquisitionsModuleViewProps> = ({
               >
                 {effectiveWorkspaces.map((ws) => (
                   <option key={ws.id} value={ws.id}>
-                    {ws.name} {ws.monthlyBudget ? `— Teto: ${formatCurrencyBRL(ws.monthlyBudget)}` : ''}
+                    {ws.id === personalWorkspaceId ? 'Individual' : 'Compartilhado'} · {ws.name} {ws.monthlyBudget ? `— Teto: ${formatCurrencyBRL(ws.monthlyBudget)}` : ''}
                   </option>
                 ))}
               </select>
@@ -1150,6 +1289,7 @@ export const AcquisitionsModuleView: React.FC<AcquisitionsModuleViewProps> = ({
             items={items}
             taxonomyGroups={taxonomyGroups}
             currentUser={currentUser}
+            openCreateListTrigger={openCreateListTrigger}
             onBackToHub={() => {
               // Permanece no quadro de listas
             }}

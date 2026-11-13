@@ -16,7 +16,7 @@ interface SettingsModalProps {
     isDemo: boolean;
   };
   userIsAdmin?: boolean;
-  onUpdateUserName: (newName: string) => void;
+  onUpdateUserName: (newName: string) => Promise<void> | void;
   // Categorias de Finanças
   categories: Category[];
   onCreateCategory: (
@@ -91,7 +91,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   // Aba Minha Conta
   const [editingName, setEditingName] = useState(currentUser.name || '');
+  const [isSavingName, setIsSavingName] = useState(false);
   const [nameSavedSuccess, setNameSavedSuccess] = useState(false);
+  const [nameSaveError, setNameSaveError] = useState<string | null>(null);
+
+  React.useEffect(() => {
+    if (isOpen) {
+      setActiveTab(initialTab);
+      setEditingName(currentUser.name || '');
+      setNameSaveError(null);
+    }
+  }, [isOpen, initialTab, currentUser.name]);
 
   // Aba Nova Categoria Financeira
   const [newCatName, setNewCatName] = useState('');
@@ -102,17 +112,27 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   if (!isOpen) return null;
 
-  const handleSaveName = (e: React.FormEvent) => {
+  const handleSaveName = async (e: React.FormEvent) => {
     e.preventDefault();
     const clean = editingName.trim();
-    if (!clean) {
+    if (clean.length < 2) {
+      setNameSaveError('Informe um nome com pelo menos 2 caracteres.');
       onNotifyToast('Informe um nome válido.');
       return;
     }
-    onUpdateUserName(clean);
-    setNameSavedSuccess(true);
-    setTimeout(() => setNameSavedSuccess(false), 3000);
-    onNotifyToast('Nome do perfil atualizado com sucesso!');
+    setIsSavingName(true);
+    setNameSaveError(null);
+    try {
+      await onUpdateUserName(clean);
+      setNameSavedSuccess(true);
+      setTimeout(() => setNameSavedSuccess(false), 3000);
+    } catch (err: any) {
+      const msg = err?.message || 'Não foi possível salvar o nome do perfil.';
+      setNameSaveError(msg);
+      onNotifyToast(msg);
+    } finally {
+      setIsSavingName(false);
+    }
   };
 
   const handleCreateFinanceCat = async (e: React.FormEvent) => {
@@ -268,15 +288,22 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   </p>
                 </div>
 
+                {nameSaveError && (
+                  <p className="text-xs text-rose-400 font-medium bg-rose-500/10 border border-rose-500/30 rounded-xl px-3 py-2">
+                    {nameSaveError}
+                  </p>
+                )}
+
                 <div className="flex items-center gap-3">
                   <button
                     type="submit"
-                    className="px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold shadow-md shadow-indigo-600/20 cursor-pointer flex items-center gap-2"
+                    disabled={isSavingName}
+                    className="px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-bold shadow-md shadow-indigo-600/20 cursor-pointer flex items-center gap-2"
                   >
-                    <i className="ph-bold ph-check"></i>
-                    <span>Salvar Alterações</span>
+                    <i className={`ph-bold ${isSavingName ? 'ph-spinner animate-spin' : 'ph-check'}`}></i>
+                    <span>{isSavingName ? 'Salvando...' : 'Salvar Alterações'}</span>
                   </button>
-                  {nameSavedSuccess && (
+                  {nameSavedSuccess && !nameSaveError && (
                     <span className="text-xs text-emerald-400 font-semibold flex items-center gap-1">
                       <i className="ph-bold ph-check-circle"></i>
                       <span>Atualizado com sucesso!</span>

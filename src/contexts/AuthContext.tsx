@@ -17,6 +17,7 @@ import {
   mapFirebaseUser,
   registerWithEmailPassword,
   sendPasswordReset,
+  updateUserDisplayName,
 } from '../services/authService';
 import { universalStorage } from '../utils/universalStorage';
 
@@ -64,6 +65,8 @@ export interface AuthContextType {
   loginWithGoogle: () => Promise<CanonicalAuthUser>;
   /** Entra em sessão local de demonstração (para testes e transição) */
   enterDemoMode: (profile: { uid: string; name: string; email: string }) => void;
+  /** Atualiza nome de exibição do usuário no Auth, Firestore e sessão local */
+  updateDisplayName: (newName: string) => Promise<string>;
   /** Limpa qualquer mensagem de erro do estado */
   clearError: () => void;
 }
@@ -238,6 +241,37 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     setError(null);
   }, []);
 
+  const updateDisplayName = useCallback(
+    async (newName: string): Promise<string> => {
+      const cleanName = newName.trim().slice(0, 100);
+      if (cleanName.length < 2) {
+        throw new Error('O nome de exibição deve conter pelo menos 2 caracteres.');
+      }
+
+      if (!user) {
+        throw new Error('Nenhum usuário autenticado para atualizar.');
+      }
+
+      if (user.isDemo) {
+        try {
+          const savedRaw = localStorage.getItem('mpf_active_demo_profile');
+          const parsed = savedRaw ? JSON.parse(savedRaw) : { uid: user.uid, email: user.email };
+          localStorage.setItem(
+            'mpf_active_demo_profile',
+            JSON.stringify({ ...parsed, name: cleanName })
+          );
+        } catch {}
+        setUser((prev) => (prev ? { ...prev, displayName: cleanName } : prev));
+        return cleanName;
+      }
+
+      const persistedName = await updateUserDisplayName(cleanName);
+      setUser((prev) => (prev ? { ...prev, displayName: persistedName } : prev));
+      return persistedName;
+    },
+    [user]
+  );
+
   const value = useMemo<AuthContextType>(
     () => ({
       user,
@@ -252,6 +286,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       resetPassword,
       loginWithGoogle,
       enterDemoMode,
+      updateDisplayName,
       clearError,
     }),
     [
@@ -265,6 +300,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       resetPassword,
       loginWithGoogle,
       enterDemoMode,
+      updateDisplayName,
       clearError,
     ]
   );

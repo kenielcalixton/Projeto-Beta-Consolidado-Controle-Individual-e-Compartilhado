@@ -800,26 +800,26 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
             </span>
           </div>
           <div className="bg-slate-800/90 border border-rose-900/60 rounded-xl p-3 shadow-xs bg-rose-950/20">
-            <span className="text-[11px] font-semibold text-rose-600 uppercase tracking-wider block mb-1">
+            <span className="text-[11px] font-semibold text-rose-400 uppercase tracking-wider block mb-1">
               Minhas Obrigações (A Pagar)
             </span>
-            <span className="text-base font-extrabold text-rose-600">
+            <span className="text-base font-extrabold text-rose-400">
               {formatCentsToBRL(summary.totalMyPendingToPayCents)}
             </span>
           </div>
           <div className="bg-slate-800/90 border border-emerald-900/60 rounded-xl p-3 shadow-xs bg-emerald-950/20">
-            <span className="text-[11px] font-semibold text-emerald-600 uppercase tracking-wider block mb-1">
+            <span className="text-[11px] font-semibold text-emerald-400 uppercase tracking-wider block mb-1">
               Créditos a Receber
             </span>
-            <span className="text-base font-extrabold text-emerald-600">
+            <span className="text-base font-extrabold text-emerald-400">
               {formatCentsToBRL(summary.totalMyPendingToReceiveCents)}
             </span>
           </div>
           <div className="bg-slate-800/90 border border-amber-900/60 rounded-xl p-3 shadow-xs bg-amber-950/20">
-            <span className="text-[11px] font-semibold text-amber-700 uppercase tracking-wider block mb-1">
+            <span className="text-[11px] font-semibold text-amber-400 uppercase tracking-wider block mb-1">
               Validações Pendentes
             </span>
-            <span className="text-base font-extrabold text-amber-700">
+            <span className="text-base font-extrabold text-amber-400">
               {summary.pendingValidationsCount}
             </span>
           </div>
@@ -852,7 +852,7 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
 
           {expenses.length === 0 ? (
             <div className="text-center py-8 border border-dashed border-slate-700/80 rounded-xl bg-slate-900/40">
-              <i className="ph ph-receipt text-3xl text-gray-300 mb-2 block" />
+              <i className="ph ph-receipt text-3xl text-slate-400 mb-2 block" />
               <p className="text-xs text-slate-400 font-medium">
                 Nenhuma despesa compartilhada registrada neste espaço.
               </p>
@@ -872,12 +872,12 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
                   >
                     <div className="flex items-start justify-between">
                       <div className="space-y-1">
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
                           <h4 className="text-sm font-bold text-white">{exp.title}</h4>
-                          <span className="text-[10px] px-2 py-0.5 rounded-full font-bold bg-blue-50 text-blue-700 border border-blue-100">
+                          <span className="text-[10px] px-2 py-0.5 rounded-full font-bold bg-blue-950/60 text-blue-300 border border-blue-800/60">
                             {exp.categoryName}
                           </span>
-                          <span className="text-[10px] px-2 py-0.5 rounded-full font-bold bg-gray-100 text-slate-300">
+                          <span className="text-[10px] px-2 py-0.5 rounded-full font-bold bg-slate-800 text-slate-300 border border-slate-700">
                             Competência: {exp.competenceMonth}
                           </span>
                         </div>
@@ -912,7 +912,7 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
                             onClick={() =>
                               setExpandedExpenseId(isExpanded ? null : exp.id)
                             }
-                            className="text-xs text-indigo-600 hover:text-indigo-800 font-semibold flex items-center gap-1"
+                            className="text-xs text-indigo-400 hover:text-indigo-300 font-semibold flex items-center gap-1"
                           >
                             {isExpanded ? 'Ocultar Rateio' : 'Ver Rateio'}
                             <i
@@ -953,7 +953,7 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
                                 <th className="py-1.5 px-2 text-right">Ação</th>
                               </tr>
                             </thead>
-                            <tbody className="divide-y divide-gray-100">
+                            <tbody className="divide-y divide-slate-800">
                               {liabs.map((l) => {
                                 const isMe = l.memberUid === userId;
                                 const remaining =
@@ -971,10 +971,10 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
                                     <td className="py-2 px-2 font-semibold text-slate-200">
                                       {formatCentsToBRL(l.adjustedShareAmountCents)}
                                     </td>
-                                    <td className="py-2 px-2 text-emerald-600 font-semibold">
+                                    <td className="py-2 px-2 text-emerald-400 font-semibold">
                                       {formatCentsToBRL(l.paidAmountCents || 0)}
                                     </td>
-                                    <td className="py-2 px-2 text-rose-600 font-semibold">
+                                    <td className="py-2 px-2 text-rose-400 font-semibold">
                                       {formatCentsToBRL(remaining)}
                                     </td>
                                     <td className="py-2 px-2">
@@ -982,10 +982,10 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
                                         <span
                                           className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
                                             isPaid
-                                              ? 'bg-emerald-50 text-emerald-700'
+                                              ? 'bg-emerald-950/60 text-emerald-300 border border-emerald-800/60'
                                               : l.status === 'in_validation'
-                                              ? 'bg-amber-50 text-amber-700'
-                                              : 'bg-rose-50 text-rose-700'
+                                              ? 'bg-amber-950/60 text-amber-300 border border-amber-800/60'
+                                              : 'bg-rose-950/60 text-rose-300 border border-rose-800/60'
                                           }`}
                                         >
                                           {isPaid
@@ -995,7 +995,7 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
                                             : 'Pendente'}
                                         </span>
                                         {Boolean(l.creditNoteCents && l.creditNoteCents > 0) && (
-                                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-purple-50 text-purple-700 border border-purple-200">
+                                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-purple-950/60 text-purple-300 border border-purple-800/60">
                                             Restituir: {formatCentsToBRL(l.creditNoteCents!)}
                                           </span>
                                         )}
@@ -1007,7 +1007,7 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
                                           onClick={() =>
                                             handleOpenDeclarePayment(exp, l)
                                           }
-                                          className="px-2 py-1 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-lg text-[10px] font-bold hover:bg-indigo-100"
+                                          className="px-2 py-1 bg-indigo-600/20 text-indigo-300 border border-indigo-500/40 rounded-lg text-[10px] font-bold hover:bg-indigo-600/30"
                                         >
                                           Pagar
                                         </button>
@@ -1063,7 +1063,7 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
                     <th className="py-2.5 px-3 text-right">Ação</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-gray-100">
+                <tbody className="divide-y divide-slate-800">
                   {myLiabilitiesList.map(({ liability, expense }) => {
                     const remaining =
                       liability.remainingAmountCents ?? liability.adjustedShareAmountCents;
@@ -1087,10 +1087,10 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
                         <td className="py-3 px-3 font-bold text-white">
                           {formatCentsToBRL(liability.adjustedShareAmountCents)}
                         </td>
-                        <td className="py-3 px-3 text-emerald-600 font-semibold">
+                        <td className="py-3 px-3 text-emerald-400 font-semibold">
                           {formatCentsToBRL(liability.paidAmountCents || 0)}
                         </td>
-                        <td className="py-3 px-3 text-rose-600 font-bold">
+                        <td className="py-3 px-3 text-rose-400 font-bold">
                           {formatCentsToBRL(remaining)}
                         </td>
                         <td className="py-3 px-3">
@@ -1098,10 +1098,10 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
                             <span
                               className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
                                 isPaid
-                                  ? 'bg-emerald-50 text-emerald-700'
+                                  ? 'bg-emerald-950/60 text-emerald-300 border border-emerald-800/60'
                                   : liability.status === 'in_validation'
-                                  ? 'bg-amber-50 text-amber-700'
-                                  : 'bg-rose-50 text-rose-700'
+                                  ? 'bg-amber-950/60 text-amber-300 border border-amber-800/60'
+                                  : 'bg-rose-950/60 text-rose-300 border border-rose-800/60'
                               }`}
                             >
                               {isPaid
@@ -1111,7 +1111,7 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
                                 : 'Pendente'}
                             </span>
                             {Boolean(liability.creditNoteCents && liability.creditNoteCents > 0) && (
-                              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-purple-50 text-purple-700 border border-purple-200">
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-purple-950/60 text-purple-300 border border-purple-800/60">
                                 Restituir: {formatCentsToBRL(liability.creditNoteCents!)}
                               </span>
                             )}
@@ -1166,14 +1166,14 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
                   return (
                     <div
                       key={decl.id}
-                      className="border border-amber-200 bg-amber-50/20 rounded-xl p-4 flex items-center justify-between"
+                      className="border border-amber-700/60 bg-amber-950/30 rounded-xl p-4 flex items-center justify-between"
                     >
                       <div className="space-y-1">
                         <div className="flex items-center gap-2">
                           <span className="font-bold text-sm text-white">
                             {decl.memberName}
                           </span>
-                          <span className="text-[10px] bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full font-bold">
+                          <span className="text-[10px] bg-amber-950/70 text-amber-300 border border-amber-700/60 px-2 py-0.5 rounded-full font-bold">
                             Declarou Pagamento
                           </span>
                         </div>
@@ -1205,7 +1205,7 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
                               setSelectedDeclForRejection(decl);
                               setIsRejectModalOpen(true);
                             }}
-                            className="px-3 py-1.5 bg-rose-50 text-rose-700 border border-rose-200 rounded-lg text-xs font-bold hover:bg-rose-100"
+                            className="px-3 py-1.5 bg-rose-950/50 text-rose-300 border border-rose-800/60 rounded-lg text-xs font-bold hover:bg-rose-900/50"
                           >
                             Rejeitar
                           </button>
@@ -1244,18 +1244,18 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
                       className={`border rounded-xl p-3.5 flex items-start justify-between text-xs ${
                         isRevoked
                           ? 'border-slate-700 bg-slate-900/60'
-                          : 'border-emerald-200 bg-emerald-50/10'
+                          : 'border-emerald-800/60 bg-emerald-950/20'
                       }`}
                     >
                       <div className="space-y-1.5">
                         <div className="font-bold text-white flex flex-wrap items-center gap-2">
                           <span>Aprovação #{appr.id.slice(0, 16)}...</span>
                           {isRevoked ? (
-                            <span className="text-[10px] bg-rose-100 text-rose-800 px-2 py-0.5 rounded-full font-bold">
+                            <span className="text-[10px] bg-rose-950/60 text-rose-300 border border-rose-800/60 px-2 py-0.5 rounded-full font-bold">
                               Revogada (Evento Compensatório)
                             </span>
                           ) : (
-                            <span className="text-[10px] bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full font-bold">
+                            <span className="text-[10px] bg-emerald-950/60 text-emerald-300 border border-emerald-800/60 px-2 py-0.5 rounded-full font-bold">
                               Ativa
                             </span>
                           )}
@@ -1274,14 +1274,14 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
                           </span>
                           <span>Aprovado em: {appr.approvedAt.slice(0, 10)}</span>
                           {appr.financialMovementId && (
-                            <span className="font-mono text-indigo-700">
+                            <span className="font-mono text-indigo-400">
                               Movimento Entrada: #{appr.financialMovementId.slice(0, 14)}...
                             </span>
                           )}
                         </div>
 
                         {revoc && (
-                          <div className="mt-2 pt-2 border-t border-rose-200/60 bg-rose-50/50 rounded-lg p-2.5 space-y-1 text-[11px] text-rose-900">
+                          <div className="mt-2 pt-2 border-t border-rose-800/60 bg-rose-950/40 rounded-lg p-2.5 space-y-1 text-[11px] text-rose-200">
                             <div className="font-bold flex items-center gap-1.5">
                               <i className="ph ph-arrow-counter-clockwise text-sm" />
                               <span>
@@ -1292,7 +1292,7 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
                               Motivo da revogação: <strong>{revoc.reason}</strong>
                             </div>
                             {revoc.compensatoryMovementId && (
-                              <div className="font-mono text-rose-700">
+                              <div className="font-mono text-rose-400">
                                 Movimento Compensatório (Outflow): #{revoc.compensatoryMovementId}
                               </div>
                             )}
@@ -1300,7 +1300,7 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
                               Nota contábil: Este estorno é exclusivamente um ajuste contábil de livro-razão e não executa transferência bancária automática.
                             </div>
                             {revoc.requiresRestitution && (
-                              <div className="mt-1 px-2 py-1 bg-amber-100 border border-amber-300 text-amber-900 rounded-md font-bold text-[10px]">
+                              <div className="mt-1 px-2 py-1 bg-amber-950/70 border border-amber-700/70 text-amber-300 rounded-md font-bold text-[10px]">
                                 ⚠ Restituição Financeira Pendente:{' '}
                                 {formatCentsToBRL(revoc.restitutionPendingCents || revoc.revokedAmountCents)}{' '}
                                 (crédito original já utilizado na conta de destino)
@@ -1317,7 +1317,7 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
                               setSelectedApprovalForRevocation(appr);
                               setIsRevokeModalOpen(true);
                             }}
-                            className="px-2.5 py-1 text-rose-600 hover:text-rose-800 font-bold border border-rose-200 rounded-lg text-xs"
+                            className="px-2.5 py-1 bg-rose-950/50 text-rose-300 hover:bg-rose-900/50 font-bold border border-rose-800/60 rounded-lg text-xs"
                           >
                             Revogar
                           </button>
@@ -1342,11 +1342,11 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
                   return (
                     <div
                       key={rej.id}
-                      className="border border-rose-200 bg-rose-50/20 rounded-xl p-3 text-xs space-y-1"
+                      className="border border-rose-800/60 bg-rose-950/30 rounded-xl p-3 text-xs space-y-1"
                     >
                       <div className="font-bold text-white flex items-center gap-2">
                         <span>Rejeição #{rej.id.slice(0, 16)}...</span>
-                        <span className="text-[10px] bg-rose-100 text-rose-800 px-2 py-0.5 rounded-full font-bold">
+                        <span className="text-[10px] bg-rose-950/60 text-rose-300 border border-rose-800/60 px-2 py-0.5 rounded-full font-bold">
                           Recusado
                         </span>
                       </div>
@@ -1355,7 +1355,7 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
                         <strong>{formatCentsToBRL(rej.amountCents)}</strong> • Data:{' '}
                         {rej.rejectedAt.slice(0, 10)}
                       </div>
-                      <div className="text-rose-700 text-[11px]">
+                      <div className="text-rose-300 text-[11px]">
                         Justificativa: <strong>{rej.reason}</strong>
                       </div>
                     </div>
@@ -1381,7 +1381,7 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
                   return (
                     <div
                       key={rest.id}
-                      className="border border-amber-200 bg-amber-50/20 rounded-xl p-3 text-xs space-y-1.5 flex flex-col md:flex-row md:items-center justify-between gap-3"
+                      className="border border-amber-700/60 bg-amber-950/30 rounded-xl p-3 text-xs space-y-1.5 flex flex-col md:flex-row md:items-center justify-between gap-3"
                     >
                       <div className="space-y-1">
                         <div className="font-bold text-white flex items-center gap-2">
@@ -1389,10 +1389,10 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
                           <span
                             className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${
                               rest.status === 'settled'
-                                ? 'bg-emerald-100 text-emerald-800'
+                                ? 'bg-emerald-950/60 text-emerald-300 border border-emerald-800/60'
                                 : rest.status === 'partial'
-                                ? 'bg-amber-100 text-amber-800'
-                                : 'bg-rose-100 text-rose-800'
+                                ? 'bg-amber-950/60 text-amber-300 border border-amber-800/60'
+                                : 'bg-rose-950/60 text-rose-300 border border-rose-800/60'
                             }`}
                           >
                             {rest.status === 'settled'
@@ -1405,9 +1405,9 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
                         <div className="text-slate-300 text-[11px]">
                           Despesa: <strong>{exp?.title || rest.expenseId}</strong> • Total a Recompor:{' '}
                           <strong>{formatCentsToBRL(rest.amountToRestoreCents)}</strong> • Já Restituído:{' '}
-                          <strong className="text-emerald-700">{formatCentsToBRL(rest.restitutedAmountCents)}</strong> •
+                          <strong className="text-emerald-400">{formatCentsToBRL(rest.restitutedAmountCents)}</strong> •
                           Saldo Restante:{' '}
-                          <strong className="text-rose-700">{formatCentsToBRL(rest.remainingAmountCents)}</strong>
+                          <strong className="text-rose-400">{formatCentsToBRL(rest.remainingAmountCents)}</strong>
                         </div>
                         <div className="text-slate-400 text-[11px] flex flex-wrap gap-3">
                           <span>
@@ -1441,7 +1441,7 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
                         {isCreditor && (rest.restitutedAmountCents || 0) > 0 && !isArchived && (
                           <button
                             onClick={() => handleOpenReverseRestitutionModal(rest)}
-                            className="px-3 py-1.5 bg-rose-50 border border-rose-200 text-rose-700 hover:bg-rose-100 rounded-xl text-xs font-bold whitespace-nowrap shadow-xs"
+                            className="px-3 py-1.5 bg-rose-950/50 border border-rose-800/60 text-rose-300 hover:bg-rose-900/50 rounded-xl text-xs font-bold whitespace-nowrap shadow-xs"
                           >
                             Estornar Recebimento
                           </button>
@@ -1490,7 +1490,7 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
                         setSelectedExpForRefund(exp);
                         setIsRefundModalOpen(true);
                       }}
-                      className="px-3 py-1.5 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-xl text-xs font-bold hover:bg-indigo-100"
+                      className="px-3 py-1.5 bg-indigo-600/20 text-indigo-300 border border-indigo-500/40 rounded-xl text-xs font-bold hover:bg-indigo-600/30"
                     >
                       Registrar Reembolso
                     </button>
@@ -1526,7 +1526,7 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
 
           {/* Resumo consolidado de saldos de custódia */}
           {allCustodyBalances.length > 0 && (
-            <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-2">
+            <div className="bg-slate-900/60 border border-slate-700 rounded-xl p-4 space-y-2">
               <span className="text-[11px] font-bold text-slate-200 uppercase tracking-wider block">
                 Balanço Consolidado entre Participantes
               </span>
@@ -1538,7 +1538,7 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
                     <div key={idx} className="bg-slate-900/80 p-3 rounded-lg border border-slate-700 space-y-1">
                       <div className="flex justify-between font-bold text-white">
                         <span>{sName} ➔ {cName}</span>
-                        <span className="text-indigo-600">Disponível: {formatCentsToBRL(b.availableBalanceCents)}</span>
+                        <span className="text-indigo-400">Disponível: {formatCentsToBRL(b.availableBalanceCents)}</span>
                       </div>
                       <div className="flex justify-between text-slate-400 text-[11px]">
                         <span>Total Confiado: {formatCentsToBRL(b.totalConfirmedCents || b.totalInitialCents)}</span>
@@ -1576,14 +1576,14 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
                         <span
                           className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
                             t.custodyStatus === 'pending_receipt'
-                              ? 'bg-amber-100 text-amber-800'
+                              ? 'bg-amber-950/60 text-amber-300 border border-amber-800/60'
                               : t.custodyStatus === 'return_pending_confirmation'
-                              ? 'bg-amber-100 text-amber-800'
+                              ? 'bg-amber-950/60 text-amber-300 border border-amber-800/60'
                               : t.custodyStatus === 'available'
-                              ? 'bg-emerald-100 text-emerald-800'
+                              ? 'bg-emerald-950/60 text-emerald-300 border border-emerald-800/60'
                               : t.custodyStatus === 'partially_used'
-                              ? 'bg-blue-100 text-blue-800'
-                              : 'bg-gray-100 text-slate-200'
+                              ? 'bg-blue-950/60 text-blue-300 border border-blue-800/60'
+                              : 'bg-slate-800 text-slate-300 border border-slate-700'
                           }`}
                         >
                           {t.custodyStatus === 'pending_receipt' && 'Aguardando Confirmação'}
@@ -1603,11 +1603,11 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
                       </p>
                       <p className="text-xs text-slate-400">
                         Inicial: {formatCentsToBRL(t.initialAmountCents)} • Disponível:{' '}
-                        <strong className="text-emerald-700">{formatCentsToBRL(t.availableBalanceCents)}</strong> • Utilizado:{' '}
+                        <strong className="text-emerald-400">{formatCentsToBRL(t.availableBalanceCents)}</strong> • Utilizado:{' '}
                         {formatCentsToBRL(t.usedAmountCents)} • Devolvido:{' '}
                         {formatCentsToBRL(t.returnedAmountCents)}
                         {(t.reservedForReturnCents || 0) > 0 && (
-                          <span className="text-amber-700 font-semibold"> • Em devolução: {formatCentsToBRL(t.reservedForReturnCents || 0)}</span>
+                          <span className="text-amber-400 font-semibold"> • Em devolução: {formatCentsToBRL(t.reservedForReturnCents || 0)}</span>
                         )}
                       </p>
                     </div>
@@ -1639,7 +1639,7 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
                             );
                             setIsReturnCustodyModalOpen(true);
                           }}
-                          className="px-3 py-1.5 bg-indigo-50 border border-indigo-200 text-indigo-700 hover:bg-indigo-100 rounded-xl text-xs font-bold whitespace-nowrap shadow-xs"
+                          className="px-3 py-1.5 bg-indigo-600/20 border border-indigo-500/40 text-indigo-300 hover:bg-indigo-600/30 rounded-xl text-xs font-bold whitespace-nowrap shadow-xs"
                         >
                           Declarar Devolução
                         </button>
@@ -1667,8 +1667,8 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
       {/* MODAL 1: NOVA DESPESA COMPARTILHADA                                       */}
       {/* ======================================================================== */}
       {isCreateExpenseModalOpen && (
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4 z-50 overflow-y-auto">
-          <div className="bg-slate-900 rounded-2xl max-w-2xl w-full p-6 shadow-2xl border border-slate-700 space-y-4 my-8">
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 overflow-y-auto">
+          <div className="bg-slate-900 rounded-2xl max-w-2xl w-full max-h-[90dvh] overflow-y-auto p-6 shadow-2xl border border-slate-700 space-y-4 my-4">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <h3 className="text-base font-bold text-white">Nova Despesa Compartilhada</h3>
               <button
@@ -1789,8 +1789,8 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
                   <label
                     className={`border rounded-xl p-2.5 flex items-center gap-2 cursor-pointer ${
                       expSplitMethod === 'equal'
-                        ? 'border-indigo-600 bg-indigo-50/30'
-                        : 'border-slate-700'
+                        ? 'border-indigo-500 bg-indigo-950/60'
+                        : 'border-slate-700 bg-slate-800/40'
                     }`}
                   >
                     <input
@@ -1809,8 +1809,8 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
                   <label
                     className={`border rounded-xl p-2.5 flex items-center gap-2 cursor-pointer ${
                       expSplitMethod === 'percentage'
-                        ? 'border-indigo-600 bg-indigo-50/30'
-                        : 'border-slate-700'
+                        ? 'border-indigo-500 bg-indigo-950/60'
+                        : 'border-slate-700 bg-slate-800/40'
                     }`}
                   >
                     <input
@@ -1829,8 +1829,8 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
                   <label
                     className={`border rounded-xl p-2.5 flex items-center gap-2 cursor-pointer ${
                       expSplitMethod === 'custom_value'
-                        ? 'border-indigo-600 bg-indigo-50/30'
-                        : 'border-slate-700'
+                        ? 'border-indigo-500 bg-indigo-950/60'
+                        : 'border-slate-700 bg-slate-800/40'
                     }`}
                   >
                     <input
@@ -1915,20 +1915,20 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
 
               {/* Pré-visualização do Rateio Matemático */}
               {liveSplitError ? (
-                <div className="bg-rose-50 border border-rose-200 text-rose-700 p-2.5 rounded-xl text-xs">
+                <div className="bg-rose-950/50 border border-rose-800/70 text-rose-300 p-2.5 rounded-xl text-xs">
                   {liveSplitError}
                 </div>
               ) : liveSplitPreview.length > 0 ? (
-                <div className="bg-emerald-50/40 border border-emerald-200 rounded-xl p-3 space-y-1.5">
-                  <div className="font-bold text-emerald-800 flex items-center justify-between text-xs">
+                <div className="bg-emerald-950/30 border border-emerald-800/70 rounded-xl p-3 space-y-1.5">
+                  <div className="font-bold text-emerald-300 flex items-center justify-between text-xs">
                     <span>Prévia do Rateio (Desvio Zero Centavos)</span>
-                    <span className="text-[10px] bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full">
+                    <span className="text-[10px] bg-emerald-950/80 border border-emerald-800/60 text-emerald-300 px-2 py-0.5 rounded-full">
                       ✓ Conservação Estrita
                     </span>
                   </div>
                   <div className="grid grid-cols-2 gap-1.5 text-xs">
                     {liveSplitPreview.map((res) => (
-                      <div key={res.memberUid} className="flex justify-between border-b border-emerald-100 pb-0.5">
+                      <div key={res.memberUid} className="flex justify-between border-b border-emerald-800/40 pb-0.5">
                         <span className="text-slate-200">{res.memberName}:</span>
                         <strong className="text-white">
                           {formatCentsToBRL(res.assignedShareAmountCents)}
@@ -1964,8 +1964,8 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
       {/* MODAL 2: INFORMAR PAGAMENTO (DECLARAÇÃO PELO DEVEDOR)                      */}
       {/* ======================================================================== */}
       {isDeclareModalOpen && declExpense && declLiability && (
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4 z-50">
-          <div className="bg-slate-900 rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-700 space-y-4">
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 overflow-y-auto">
+          <div className="bg-slate-900 rounded-2xl max-w-md w-full max-h-[90dvh] overflow-y-auto p-6 shadow-2xl border border-slate-700 space-y-4">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <h3 className="text-base font-bold text-white">Informar Pagamento de Cota</h3>
               <button
@@ -2065,8 +2065,8 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
       {/* MODAL 3: APROVAR PAGAMENTO (RESPONSÁVEL FINANCEIRO)                        */}
       {/* ======================================================================== */}
       {isApproveModalOpen && selectedDeclForApproval && (
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4 z-50">
-          <div className="bg-slate-900 rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-700 space-y-4">
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 overflow-y-auto">
+          <div className="bg-slate-900 rounded-2xl max-w-md w-full max-h-[90dvh] overflow-y-auto p-6 shadow-2xl border border-slate-700 space-y-4">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <h3 className="text-base font-bold text-white">Aprovar Pagamento de Rateio</h3>
               <button
@@ -2078,13 +2078,13 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
             </div>
 
             <div className="space-y-3 text-xs">
-              <div className="bg-slate-900/80 p-3 rounded-xl border border-slate-700 space-y-1">
+              <div className="bg-slate-800/70 p-3 rounded-xl border border-slate-700 space-y-1 text-slate-200">
                 <div>
-                  Membro: <strong>{selectedDeclForApproval.memberName}</strong>
+                  Membro: <strong className="text-white">{selectedDeclForApproval.memberName}</strong>
                 </div>
                 <div>
                   Valor Declarado:{' '}
-                  <strong className="text-emerald-600 text-sm">
+                  <strong className="text-emerald-400 text-sm">
                     {formatCentsToBRL(selectedDeclForApproval.amountCents)}
                   </strong>
                 </div>
@@ -2101,7 +2101,7 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
 
                 if (!isCreditorMe) {
                   return (
-                    <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-[11px] text-amber-800 space-y-1">
+                    <div className="bg-amber-950/50 border border-amber-800/70 rounded-xl p-3 text-[11px] text-amber-300 space-y-1">
                       <div className="font-bold flex items-center gap-1">
                         <i className="ph ph-info text-sm" />
                         Segregação de Beneficiário do Reembolso
@@ -2164,8 +2164,8 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
       {/* MODAL 4: REJEITAR PAGAMENTO                                                */}
       {/* ======================================================================== */}
       {isRejectModalOpen && selectedDeclForRejection && (
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4 z-50">
-          <div className="bg-slate-900 rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-700 space-y-4">
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 overflow-y-auto">
+          <div className="bg-slate-900 rounded-2xl max-w-md w-full max-h-[90dvh] overflow-y-auto p-6 shadow-2xl border border-slate-700 space-y-4">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <h3 className="text-base font-bold text-white">Rejeitar Pagamento</h3>
               <button
@@ -2222,8 +2222,8 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
       {/* MODAL 5: REVOGAR APROVAÇÃO (HISTÓRICO IMUTÁVEL)                            */}
       {/* ======================================================================== */}
       {isRevokeModalOpen && selectedApprovalForRevocation && (
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4 z-50">
-          <div className="bg-slate-900 rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-700 space-y-4">
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 overflow-y-auto">
+          <div className="bg-slate-900 rounded-2xl max-w-md w-full max-h-[90dvh] overflow-y-auto p-6 shadow-2xl border border-slate-700 space-y-4">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <h3 className="text-base font-bold text-white">Revogar Aprovação de Pagamento</h3>
               <button
@@ -2235,7 +2235,7 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
             </div>
 
             <div className="space-y-3 text-xs">
-              <div className="bg-rose-50 border border-rose-200 text-rose-800 p-3 rounded-xl text-xs space-y-1">
+              <div className="bg-rose-950/50 border border-rose-800/70 text-rose-300 p-3 rounded-xl text-xs space-y-1">
                 <strong>Atenção (Histórico Imutável & Ajuste Contábil):</strong> A revogação preserva integralmente o documento original de aprovação sem alterá-lo, registra um evento compensatório independente em <code>approval_revocations</code> e cria uma saída compensatória exclusivamente contábil (não realiza transferência bancária automática). Se o crédito já tiver sido utilizado, será registrada pendência de restituição financeira.
               </div>
 
@@ -2278,8 +2278,8 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
       {/* MODAL 6: REGISTRAR REEMBOLSO DE FORNECEDOR                                */}
       {/* ======================================================================== */}
       {isRefundModalOpen && selectedExpForRefund && (
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4 z-50">
-          <div className="bg-slate-900 rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-700 space-y-4">
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 overflow-y-auto">
+          <div className="bg-slate-900 rounded-2xl max-w-md w-full max-h-[90dvh] overflow-y-auto p-6 shadow-2xl border border-slate-700 space-y-4">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <h3 className="text-base font-bold text-white">Reembolso / Devolução Comercial</h3>
               <button
@@ -2357,8 +2357,8 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
       {/* MODAL 7: CONFIRMAR RECEBIMENTO DE RESTITUIÇÃO                            */}
       {/* ======================================================================== */}
       {isConfirmRestitutionModalOpen && selectedRestitutionForConfirm && (
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4 z-50">
-          <div className="bg-slate-900 rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-700 space-y-4">
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 overflow-y-auto">
+          <div className="bg-slate-900 rounded-2xl max-w-md w-full max-h-[90dvh] overflow-y-auto p-6 shadow-2xl border border-slate-700 space-y-4">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <h3 className="text-base font-bold text-white">Confirmar Restituição Financeira</h3>
               <button
@@ -2370,7 +2370,7 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
             </div>
 
             <form onSubmit={handleConfirmRestitution} className="space-y-3 text-xs">
-              <div className="bg-emerald-50 border border-emerald-200 text-emerald-900 p-3 rounded-xl text-xs space-y-1">
+              <div className="bg-emerald-950/40 border border-emerald-800/70 text-emerald-300 p-3 rounded-xl text-xs space-y-1">
                 <strong>Confirmação Oficial de Entrada:</strong> Ao confirmar, o valor recebido gerará uma entrada financeira oficial (movimento <code>inflow</code>) no livro-razão da sua conta bancária selecionada e abaterá o saldo pendente da restituição.
               </div>
 
@@ -2438,8 +2438,8 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
       {/* MODAL 8: NOVA TRANSFERÊNCIA SOB CUSTÓDIA (FASE 7)                         */}
       {/* ======================================================================== */}
       {isCreateCustodyModalOpen && (
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4 z-50">
-          <div className="bg-slate-900 rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-700 space-y-4">
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 overflow-y-auto">
+          <div className="bg-slate-900 rounded-2xl max-w-md w-full max-h-[90dvh] overflow-y-auto p-6 shadow-2xl border border-slate-700 space-y-4">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <h3 className="text-base font-bold text-white">Nova Transferência sob Custódia</h3>
               <button
@@ -2451,7 +2451,7 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
             </div>
 
             <form onSubmit={handleCreateCustody} className="space-y-3 text-xs">
-              <div className="bg-indigo-50 border border-indigo-200 text-indigo-900 p-3 rounded-xl text-xs space-y-1">
+              <div className="bg-indigo-950/50 border border-indigo-800/70 text-indigo-300 p-3 rounded-xl text-xs space-y-1">
                 <strong>Inexistência de Caixa Coletivo:</strong> O valor transferido sairá da sua conta e ficará sob a custódia do participante escolhido para utilização em despesas ou devolução futura.
               </div>
 
@@ -2556,8 +2556,8 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
       {/* MODAL 9: CONFIRMAR RECEBIMENTO DE CUSTÓDIA                                */}
       {/* ======================================================================== */}
       {isConfirmCustodyModalOpen && selectedCustodyTransfer && (
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4 z-50">
-          <div className="bg-slate-900 rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-700 space-y-4">
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 overflow-y-auto">
+          <div className="bg-slate-900 rounded-2xl max-w-md w-full max-h-[90dvh] overflow-y-auto p-6 shadow-2xl border border-slate-700 space-y-4">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <h3 className="text-base font-bold text-white">Confirmar Recebimento de Custódia</h3>
               <button
@@ -2569,7 +2569,7 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
             </div>
 
             <form onSubmit={handleConfirmCustody} className="space-y-3 text-xs">
-              <div className="bg-emerald-50 border border-emerald-200 text-emerald-900 p-3 rounded-xl text-xs space-y-1">
+              <div className="bg-emerald-950/40 border border-emerald-800/70 text-emerald-300 p-3 rounded-xl text-xs space-y-1">
                 <strong>Confirmação de Crédito:</strong> Ao confirmar, o valor recebido será creditado na sua conta bancária e o saldo ficará disponível para cobertura de despesas compartilhadas.
               </div>
 
@@ -2647,8 +2647,8 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
       {/* MODAL 10: DECLARAR DEVOLUÇÃO DE RECURSOS SOB CUSTÓDIA                     */}
       {/* ======================================================================== */}
       {isReturnCustodyModalOpen && selectedCustodyTransfer && (
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4 z-50">
-          <div className="bg-slate-900 rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-700 space-y-4">
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 overflow-y-auto">
+          <div className="bg-slate-900 rounded-2xl max-w-md w-full max-h-[90dvh] overflow-y-auto p-6 shadow-2xl border border-slate-700 space-y-4">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <h3 className="text-base font-bold text-white">Declarar Devolução de Custódia</h3>
               <button
@@ -2660,13 +2660,13 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
             </div>
 
             <form onSubmit={handleDeclareCustodyReturn} className="space-y-3 text-xs">
-              <div className="bg-indigo-50 border border-indigo-200 text-indigo-900 p-3 rounded-xl text-xs space-y-1">
+              <div className="bg-indigo-950/50 border border-indigo-800/70 text-indigo-300 p-3 rounded-xl text-xs space-y-1">
                 <strong>Devolução de Saldo Não Utilizado (Etapa 1):</strong> Ao declarar a devolução, o valor será reservado e ficará aguardando a confirmação de recebimento pelo remetente original.
               </div>
 
               <div>
                 <span className="text-slate-400 block">Saldo Disponível para Devolução:</span>
-                <strong className="text-emerald-700 text-sm">
+                <strong className="text-emerald-400 text-sm">
                   {formatCentsToBRL(selectedCustodyTransfer.availableBalanceCents)}
                 </strong>
               </div>
@@ -2739,8 +2739,8 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
       {/* MODAL 11: CONFIRMAR RECEBIMENTO DE DEVOLUÇÃO DE CUSTÓDIA                  */}
       {/* ======================================================================== */}
       {isConfirmCustodyReturnModalOpen && selectedCustodyTransfer && selectedCustodyReturnRecord && (
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4 z-50">
-          <div className="bg-slate-900 rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-700 space-y-4">
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 overflow-y-auto">
+          <div className="bg-slate-900 rounded-2xl max-w-md w-full max-h-[90dvh] overflow-y-auto p-6 shadow-2xl border border-slate-700 space-y-4">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <h3 className="text-base font-bold text-white">Confirmar Recebimento de Devolução</h3>
               <button
@@ -2752,13 +2752,13 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
             </div>
 
             <form onSubmit={handleConfirmCustodyReturnReceipt} className="space-y-3 text-xs">
-              <div className="bg-emerald-50 border border-emerald-200 text-emerald-900 p-3 rounded-xl text-xs space-y-1">
+              <div className="bg-emerald-950/40 border border-emerald-800/70 text-emerald-300 p-3 rounded-xl text-xs space-y-1">
                 <strong>Confirmação de Crédito (Etapa 2):</strong> O custodiante declarou a devolução dos recursos. Ao confirmar, o valor será creditado na sua conta bancária e baixado da custódia.
               </div>
 
               <div>
                 <span className="text-slate-400 block">Valor Devolvido Declarado:</span>
-                <strong className="text-emerald-700 text-sm">
+                <strong className="text-emerald-400 text-sm">
                   {formatCentsToBRL(selectedCustodyReturnRecord.amountCents)}
                 </strong>
                 {selectedCustodyReturnRecord.justification && (
@@ -2825,8 +2825,8 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
       {/* MODAL 12: ESTORNAR RECEBIMENTO DE RESTITUIÇÃO                            */}
       {/* ======================================================================== */}
       {isReverseRestitutionModalOpen && selectedRestitutionForReverse && (
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4 z-50">
-          <div className="bg-slate-900 rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-700 space-y-4">
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 overflow-y-auto">
+          <div className="bg-slate-900 rounded-2xl max-w-md w-full max-h-[90dvh] overflow-y-auto p-6 shadow-2xl border border-slate-700 space-y-4">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <h3 className="text-base font-bold text-white">Estornar Recebimento de Restituição</h3>
               <button
@@ -2838,7 +2838,7 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
             </div>
 
             <form onSubmit={handleReverseRestitution} className="space-y-3 text-xs">
-              <div className="bg-amber-50 border border-amber-200 text-amber-900 p-3 rounded-xl text-xs space-y-1">
+              <div className="bg-amber-950/50 border border-amber-800/70 text-amber-300 p-3 rounded-xl text-xs space-y-1">
                 <strong>Atenção:</strong> O estorno irá registrar um movimento financeiro compensatório de saída e restaurará o saldo pendente de restituição do devedor.
               </div>
 

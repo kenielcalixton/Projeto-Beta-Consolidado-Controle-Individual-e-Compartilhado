@@ -8,7 +8,8 @@ import {
   updateDoc,
   where,
 } from 'firebase/firestore';
-import { db } from './firebase';
+import { httpsCallable } from 'firebase/functions';
+import { db, functions } from './firebase';
 import { Account, AccountType, CentsInteger } from '../types/financeV3';
 
 /**
@@ -317,3 +318,104 @@ export async function archiveAccount(
 
   return updated;
 }
+
+export interface ArchiveAccountSafelyParams {
+  accountId: string;
+  userId: string;
+  targetAccountId?: string;
+  migrateOpenObligations?: boolean;
+}
+
+export interface ArchiveAccountSafelyResult {
+  account: Account;
+  migratedTransactionsCount: number;
+  migratedRecurrenceRulesCount: number;
+}
+
+/**
+ * Arquiva uma conta preservando todo o histórico do livro-razão e, opcionalmente,
+ * transfere transações abertas e regras de recorrência ativas para outra conta ativa.
+ */
+export async function archiveAccountSafely(
+  params: ArchiveAccountSafelyParams,
+  isDemo = false
+): Promise<ArchiveAccountSafelyResult> {
+  if (!params.accountId?.trim() || !params.userId?.trim()) {
+    throw new Error('accountId e userId são obrigatórios para encerramento seguro.');
+  }
+  const migrate = Boolean(params.migrateOpenObligations && params.targetAccountId?.trim());
+  if (migrate && params.targetAccountId === params.accountId) {
+    throw new Error('Selecione uma conta de destino diferente da conta que está sendo arquivada.');
+  }
+
+  if (isDemo) {
+    const existing = await getAccountById(params.accountId, params.userId, true);
+    if (!existing) throw new Error('Conta não encontrada.');
+    if (migrate && params.targetAccountId) {
+      const target = await getAccountById(params.targetAccountId, params.userId, true);
+      if (!target || target.isArchived) {
+        throw new Error('Conta de destino inválida ou arquivada.');
+      }
+    }
+
+    let migratedTransactionsCount = 0;
+    let migratedRecurrenceRulesCount = 0;
+    const now = new Date().toISOString();
+
+    if (migrate && params.targetAccountId) {
+      try {
+        const rawTxs = universalStorage.getItem('mpf_v3_demo_personal_transactions');
+        if (rawTxs) {
+          const txs = JSON.parse(rawTxs) as any[];
+          const nextTxs = txs.map((t) => {
+            if (
+              t.userId === params.userId &&
+              t.accountId === params.accountId &&
+              ['pending', 'forecast', 'partially_paid', 'overdue'].includes(t.status)
+            ) {
+              migratedTransactionsCount++;
+              return { ...t, accountId: params.targetAccountId, updatedAt: now };
+            }
+            return t;
+          });
+          universalStorage.setItem('mpf_v3_demo_personal_transactions', JSON.stringify(nextTxs));
+        }
+      } catch {}
+
+      try {
+        const rawRules = universalStorage.getItem('demo_recurrence_rules_v3');
+        if (rawRules) {
+          const rules = JSON.parse(rawRules) as any[];
+          const nextRules = rules.map((r) => {
+            if (
+              r.userId === params.userId &&
+              r.defaultAccountId === params.accountId &&
+              r.status === 'active'
+            ) {
+              migratedRecurrenceRulesCount++;
+              return { ...r, defaultAccountId: params.targetAccountId };
+            }
+            return r;
+          });
+          universalStorage.setItem('demo_recurrence_rules_v3', JSON.stringify(nextRules));
+        }
+      } catch {}
+    }
+
+    const updated = await archiveAccount(params.accountId, params.userId, true, true);
+    return {
+      account: updated,
+      migratedTransactionsCount,
+      migratedRecurrenceRulesCount,
+    };
+  }
+
+  const fn = httpsCallable(functions, 'archiveAccountSafelyOfficial');
+  const res = await fn({
+    accountId: params.accountId,
+    targetAccountId: params.targetAccountId,
+    migrateOpenObligations: migrate,
+  });
+  return res.data as ArchiveAccountSafelyResult;
+}
+

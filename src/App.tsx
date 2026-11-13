@@ -67,6 +67,24 @@ import {
   saveTaxonomyGroupToFirestore,
   deleteTaxonomyGroupFromFirestore,
 } from './services/acquisitionsFirebase';
+import {
+  archiveCategory as archiveCategoryV3,
+  createCategory as createCategoryV3,
+  ensureDefaultCategories,
+} from './services/categoryService';
+import { createPersonalTransaction } from './services/personalTransactionService';
+import {
+  createInstallmentContract,
+  createRecurrenceRule,
+  generateRecurrenceInstance,
+} from './services/recurrenceService';
+import {
+  Account as AccountV3,
+  PersonalCategory,
+  PersonalTransaction,
+  Space as SpaceV3,
+} from './types/financeV3';
+import { resolveAutomatedV3Status } from './utils/financeEngine';
 
 type NavTab =
   | 'admin'
@@ -116,8 +134,10 @@ export const saveLocalMpfData = <T,>(key: string, data: T): void => {
 };
 
 function AppInner() {
-  const { user, isAuthenticated, authReady, logout, enterDemoMode } = useAuth();
+  const { user, isAuthenticated, authReady, logout, enterDemoMode, updateDisplayName } = useAuth();
   const [profileDisplayName, setProfileDisplayName] = useState<string | null>(null);
+  const [openNewSpaceTrigger, setOpenNewSpaceTrigger] = useState(0);
+  const [openNewAcqListTrigger, setOpenNewAcqListTrigger] = useState(0);
 
   const currentUser = useMemo(() => {
     if (!user) return null;
@@ -358,6 +378,7 @@ function AppInner() {
 
   // Sincroniza dados locais em cache para o usuário autenticado atual
   useEffect(() => {
+    setProfileDisplayName(null);
     if (!user) {
       setAccounts([]);
       setCategories([]);
@@ -370,15 +391,23 @@ function AppInner() {
     const userIsAdmin = isAdminUid(uid);
     setActiveTab((prev) => (userIsAdmin && prev === 'dashboard' ? 'admin' : prev));
 
-    const cachedTxs = loadLocalMpfData<Transaction[]>(`mpf_txs_${uid}`, []);
-    if (cachedTxs.length > 0) syncTransactionsState(cachedTxs, uid);
-    const cachedAccs = loadLocalMpfData<Account[]>(`mpf_accs_${uid}`, []);
-    if (cachedAccs.length > 0) syncAccountsState(cachedAccs, uid);
-    const cachedCats = loadLocalMpfData<Category[]>(`mpf_cats_${uid}`, []);
-    if (cachedCats.length > 0) syncCategoriesState(cachedCats, uid);
-    const cachedSpaces = loadLocalMpfData<Space[]>(`mpf_spaces_${uid}`, []);
-    if (cachedSpaces.length > 0) syncSpacesState(cachedSpaces, uid);
-  }, [user?.uid]);
+    if (user.isDemo) {
+      const cachedTxs = loadLocalMpfData<Transaction[]>(`mpf_txs_${uid}`, []);
+      if (cachedTxs.length > 0) syncTransactionsState(cachedTxs, uid);
+      const cachedAccs = loadLocalMpfData<Account[]>(`mpf_accs_${uid}`, []);
+      if (cachedAccs.length > 0) syncAccountsState(cachedAccs, uid);
+      const cachedCats = loadLocalMpfData<Category[]>(`mpf_cats_${uid}`, []);
+      if (cachedCats.length > 0) syncCategoriesState(cachedCats, uid);
+      const cachedSpaces = loadLocalMpfData<Space[]>(`mpf_spaces_${uid}`, []);
+      if (cachedSpaces.length > 0) syncSpacesState(cachedSpaces, uid);
+    } else {
+      // Para sessões reais, limpa estado em memória até que os snapshots canônicos do usuário atual respondam
+      setAccounts([]);
+      setCategories([]);
+      setSpaces([]);
+      setTransactions([]);
+    }
+  }, [user?.uid, user?.isDemo]);
 
   const enterDemoSession = (profile: {
     uid: string;
@@ -398,27 +427,15 @@ function AppInner() {
     syncTransactionsState(cachedTxs.length > 0 ? cachedTxs : seed.transactions, profile.uid);
   };
 
-  // Listeners onSnapshot em tempo real para usuários autenticados no Firebase
+  // Listeners onSnapshot canônicos v3.1 em tempo real para usuários autenticados no Firebase
   useEffect(() => {
     if (!currentUser || currentUser.isDemo) return;
 
     const uid = currentUser.uid;
     const email = currentUser.email.toLowerCase();
     const userIsAdmin = isAdminUid(uid);
-    const seed = getInitialDemoData(uid, email, currentUser.name);
-    const seedFlagKey = `mpf_seeded_v2_${uid}`;
     let creatingUserDoc = false;
-
-    // Garante dados imediatos do cache local ou seed inicial
-    const cachedAccs = loadLocalMpfData<Account[]>(`mpf_accs_${uid}`, []);
-    const cachedCats = loadLocalMpfData<Category[]>(`mpf_cats_${uid}`, []);
-    const cachedSpaces = loadLocalMpfData<Space[]>(`mpf_spaces_${uid}`, []);
-    const cachedTxs = loadLocalMpfData<Transaction[]>(`mpf_txs_${uid}`, []);
-
-    syncAccountsState((prev) => (prev.length === 0 ? (cachedAccs.length > 0 ? cachedAccs : seed.accounts) : prev), uid);
-    syncCategoriesState((prev) => (prev.length === 0 ? (cachedCats.length > 0 ? cachedCats : seed.categories) : prev), uid);
-    syncSpacesState((prev) => (prev.length === 0 ? (cachedSpaces.length > 0 ? cachedSpaces : seed.spaces) : prev), uid);
-    syncTransactionsState((prev) => (prev.length === 0 ? (cachedTxs.length > 0 ? cachedTxs : seed.transactions) : prev), uid);
+    let initializingDefaultCats = false;
 
     if (userIsAdmin) {
       const adminDemo = getAdminDemoDataset();
@@ -435,7 +452,7 @@ function AppInner() {
       );
     }
 
-    // Listener em tempo real do perfil do usuário em users/{uid}
+    // 1. Perfil do usuário em users/{uid}
     const unsubUserDoc = onSnapshot(
       doc(db, 'users', uid),
       async (snap) => {
@@ -455,8 +472,10 @@ function AppInner() {
             await setDoc(doc(db, 'users', uid), {
               uid,
               name: effectiveName,
+              displayName: effectiveName,
               email: email.slice(0, 160),
               createdAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
             });
             sessionStorage.removeItem('mpf_pending_signup_name');
           } catch (e) {
@@ -466,212 +485,202 @@ function AppInner() {
           return;
         }
         const data = snap.data();
-        if (data?.name) {
-          setProfileDisplayName(String(data.name));
+        const persisted = data?.name || data?.displayName;
+        if (persisted) {
+          setProfileDisplayName(String(persisted));
         }
       },
       (err) => handleFirestoreError(err, OperationType.GET, `users/${uid}`)
     );
 
+    // 2. Contas v3.1 em accounts (somente leitura reativa no App shell; escritas via accountService)
     const accQuery = query(collection(db, 'accounts'), where('userId', '==', uid));
     const unsubAcc = onSnapshot(
       accQuery,
-      async (snap) => {
-        if (snap.empty && !localStorage.getItem(`${seedFlagKey}_acc`)) {
-          localStorage.setItem(`${seedFlagKey}_acc`, '1');
-          for (const acc of seed.accounts) {
-            const { id, ...rest } = acc;
-            const docId = `${uid}_${id}`;
-            try {
-              await setDoc(doc(db, 'accounts', docId), {
-                ...rest,
-                userId: uid,
-                createdAt: serverTimestamp(),
-              });
-            } catch (e) {
-              handleFirestoreError(e, OperationType.CREATE, `accounts/${docId}`);
-            }
-          }
-          return;
-        }
-        const cloudAccs = snap.docs.map((d) => ({ ...(d.data() as Account), id: d.id }));
-        syncAccountsState((prev) => {
-          const cloudIds = new Set(cloudAccs.map((a) => a.id));
-          const localOnly = prev.filter((a) => !cloudIds.has(a.id));
-          return [...cloudAccs, ...localOnly];
-        }, uid);
+      (snap) => {
+        const cloudAccs: Account[] = snap.docs
+          .map((d) => {
+            const raw = d.data() as AccountV3 & { balance?: number; limit?: number };
+            if (raw.isArchived) return null;
+            return {
+              id: raw.id || d.id,
+              userId: raw.userId,
+              name: raw.name,
+              type: raw.type,
+              balance:
+                typeof raw.projectedBalanceCents === 'number'
+                  ? raw.projectedBalanceCents / 100
+                  : Number(raw.balance ?? 0),
+              limit:
+                typeof raw.creditLimitCents === 'number'
+                  ? raw.creditLimitCents / 100
+                  : raw.limit,
+              closingDay: raw.closingDay,
+              dueDay: raw.dueDay,
+              color: raw.color || '#6366f1',
+              icon: raw.icon || 'ph-bank',
+            } as Account;
+          })
+          .filter((a): a is Account => a !== null);
+        syncAccountsState(cloudAccs, uid);
       },
       (err) => handleFirestoreError(err, OperationType.LIST, 'accounts')
     );
 
-    const catQuery = query(
-      collection(db, 'categories'),
-      where('userId', '==', uid)
-    );
+    // 3. Categorias canônicas v3.1 em users/{uid}/categories
+    const catColRef = collection(db, 'users', uid, 'categories');
     const unsubCat = onSnapshot(
-      catQuery,
+      catColRef,
       async (snap) => {
-        if (snap.empty && !localStorage.getItem(`${seedFlagKey}_cat`)) {
-          localStorage.setItem(`${seedFlagKey}_cat`, '1');
-          for (const cat of seed.categories) {
-            const { id, ...rest } = cat;
-            const docId = `${uid}_${id}`;
-            try {
-              await setDoc(doc(db, 'categories', docId), {
-                ...rest,
-                userId: uid,
-                createdAt: serverTimestamp(),
-              });
-            } catch (e) {
-              handleFirestoreError(e, OperationType.CREATE, `categories/${docId}`);
-            }
+        if (snap.empty && !initializingDefaultCats) {
+          initializingDefaultCats = true;
+          try {
+            await ensureDefaultCategories(uid, false);
+          } catch (e) {
+            initializingDefaultCats = false;
+            handleFirestoreError(e, OperationType.CREATE, `users/${uid}/categories`);
           }
           return;
         }
-        const cloudCats = snap.docs.map((d) => ({ ...(d.data() as Category), id: d.id }));
-        syncCategoriesState((prev) => {
-          const cloudIds = new Set(cloudCats.map((c) => c.id));
-          const localOnly = prev.filter((c) => !cloudIds.has(c.id));
-          return [...cloudCats, ...localOnly];
-        }, uid);
+        const cloudCats: Category[] = snap.docs
+          .map((d) => {
+            const raw = d.data() as PersonalCategory;
+            if (raw.isArchived === true) return null;
+            return {
+              id: raw.id || d.id,
+              userId: raw.userId || uid,
+              name: raw.name,
+              type: raw.type === 'income' ? 'income' : 'expense',
+              icon: raw.icon || 'ph-tag',
+              color: raw.color || 'indigo',
+            } as Category;
+          })
+          .filter((c): c is Category => c !== null);
+        syncCategoriesState(cloudCats, uid);
       },
-      (err) => handleFirestoreError(err, OperationType.LIST, 'categories')
+      (err) => handleFirestoreError(err, OperationType.LIST, `users/${uid}/categories`)
     );
 
+    // 4. Espaços compartilhados canônicos v3.1 em spaces (via memberUids)
     const spQuery = query(
       collection(db, 'spaces'),
-      where('participantEmails', 'array-contains', email)
+      where('memberUids', 'array-contains', uid)
     );
     const unsubSp = onSnapshot(
       spQuery,
-      async (snap) => {
-        if (snap.empty && !localStorage.getItem(`${seedFlagKey}_sp`)) {
-          localStorage.setItem(`${seedFlagKey}_sp`, '1');
-          for (const sp of seed.spaces) {
-            const { id, ...rest } = sp;
-            const docId = `${uid}_${id}`;
-            try {
-              await setDoc(doc(db, 'spaces', docId), {
-                ...rest,
-                ownerId: uid,
-                ownerEmail: email,
-                createdAt: serverTimestamp(),
-              });
-            } catch (e) {
-              handleFirestoreError(e, OperationType.CREATE, `spaces/${docId}`);
+      (snap) => {
+        const cloudSpaces: Space[] = snap.docs
+          .map((d) => {
+            const raw = d.data() as SpaceV3 & {
+              ownerEmail?: string;
+              participantEmails?: string[];
+              participants?: any[];
+              monthlyBudget?: number;
+            };
+            if (raw.spaceStatus === 'dissolved' || raw.spaceStatus === 'archived') {
+              return null;
             }
-          }
-          return;
-        }
-        const cloudSpaces = snap.docs.map((d) => ({ ...(d.data() as Space), id: d.id }));
-        syncSpacesState((prev) => {
-          const cloudIds = new Set(cloudSpaces.map((s) => s.id));
-          const localOnly = prev.filter((s) => !cloudIds.has(s.id));
-          return [...cloudSpaces, ...localOnly];
-        }, uid);
+            const participantEmails = Array.isArray(raw.participantEmails)
+              ? raw.participantEmails
+              : [email];
+            const participants = Array.isArray(raw.participants)
+              ? raw.participants
+              : participantEmails.map((em) => ({
+                  email: em,
+                  name: em.split('@')[0],
+                  status: 'active' as const,
+                }));
+            return {
+              id: raw.id || d.id,
+              name: raw.name,
+              description: raw.description || '',
+              ownerId: raw.ownerId || raw.creatorUid || uid,
+              ownerEmail: raw.ownerEmail || email,
+              icon: raw.icon || 'ph-users-three',
+              color: raw.color || 'indigo',
+              participantEmails,
+              participants,
+              enabledModules: raw.enabledModules || ['finance', 'acquisitions'],
+              monthlyBudget:
+                typeof raw.monthlyBudget === 'number'
+                  ? raw.monthlyBudget
+                  : typeof raw.monthlyBudgetCents === 'number'
+                  ? raw.monthlyBudgetCents / 100
+                  : 0,
+            } as Space;
+          })
+          .filter((s): s is Space => s !== null);
+        syncSpacesState(cloudSpaces, uid);
       },
       (err) => handleFirestoreError(err, OperationType.LIST, 'spaces')
     );
 
-    const txQuery = query(
-      collection(db, 'transactions'),
-      where('participantEmails', 'array-contains', email)
-    );
+    // 5. Transações individuais canônicas v3.1 em users/{uid}/personal_transactions
+    const txColRef = collection(db, 'users', uid, 'personal_transactions');
     const unsubTx = onSnapshot(
-      txQuery,
-      async (snap) => {
-        if (snap.empty && !localStorage.getItem(`${seedFlagKey}_tx`)) {
-          localStorage.setItem(`${seedFlagKey}_tx`, '1');
-          for (const tx of seed.transactions) {
-            const { id, ...rest } = tx;
-            const docId = `${uid}_${id}`;
-            try {
-              await setDoc(doc(db, 'transactions', docId), {
-                ...rest,
-                userId: uid,
-                accountId: `${uid}_${rest.accountId}`,
-                categoryId: `${uid}_${rest.categoryId}`,
-                spaceId: rest.spaceId ? `${uid}_${rest.spaceId}` : '',
-                createdAt: serverTimestamp(),
-                updatedAt: serverTimestamp(),
-              });
-            } catch (e) {
-              handleFirestoreError(e, OperationType.CREATE, `transactions/${docId}`);
-            }
-          }
-          return;
-        }
-        const cloudTxs = snap.docs.map((d) => ({ ...(d.data() as Transaction), id: d.id }));
-        syncTransactionsState((prev) => {
-          const cloudIds = new Set(cloudTxs.map((t) => t.id));
-          const localOnly = prev.filter((t) => !cloudIds.has(t.id));
-          return [...cloudTxs, ...localOnly];
-        }, uid);
+      txColRef,
+      (snap) => {
+        const cloudTxs: Transaction[] = snap.docs
+          .map((d) => {
+            const raw = d.data() as PersonalTransaction;
+            if (raw.status === 'cancelled') return null;
+            const auto = resolveAutomatedV3Status(raw);
+            const dashStatus: TransactionStatus =
+              auto.key === 'paid'
+                ? 'paid'
+                : auto.key === 'overdue'
+                ? 'overdue'
+                : 'pending';
+            const compDate = raw.competenceDate || raw.dueDate || getTodayDateString();
+            const invMonth = raw.invoiceMonth || compDate.slice(0, 7);
+            return {
+              id: raw.id || d.id,
+              userId: raw.userId || uid,
+              ownerEmail: email,
+              ownerName: currentUser.name,
+              description: raw.description,
+              amount: (raw.amountCents ?? 0) / 100,
+              type: raw.type === 'income' ? 'income' : 'expense',
+              status: dashStatus,
+              paymentDate: raw.paymentDate || '',
+              categoryId: raw.categoryId || 'cat_default',
+              categoryName: raw.categoryName || 'Outros',
+              categoryIcon: 'ph-tag',
+              categoryColor: 'indigo',
+              accountId: raw.accountId || '',
+              accountName: 'Conta',
+              accountType: 'checking',
+              competenceDate: compDate,
+              dueDate: raw.dueDate || compDate,
+              invoiceMonth: invMonth,
+              recurrenceType:
+                raw.originType === 'installment'
+                  ? 'installment'
+                  : raw.originType === 'recurrence'
+                  ? 'fixed'
+                  : 'single',
+              recurrenceGroupId: raw.originRefId || raw.id,
+              installmentIndex: 1,
+              installmentTotal: 1,
+              spaceId: '',
+              spaceName: '',
+              paidByEmail: email,
+              participantEmails: [email],
+              splits: [],
+              disputeReason: '',
+              proposedAmount: 0,
+            } as Transaction;
+          })
+          .filter((t): t is Transaction => t !== null);
+        syncTransactionsState(cloudTxs, uid);
       },
-      (err) => handleFirestoreError(err, OperationType.LIST, 'transactions')
+      (err) =>
+        handleFirestoreError(
+          err,
+          OperationType.LIST,
+          `users/${uid}/personal_transactions`
+        )
     );
-
-    // Se o usuário autenticado for o Administrador (ADMIN_UID), assina todas as coleções para o Painel Admin
-    let unsubAdminUsers: (() => void) | undefined;
-    let unsubAdminAcc: (() => void) | undefined;
-    let unsubAdminCat: (() => void) | undefined;
-    let unsubAdminSp: (() => void) | undefined;
-    let unsubAdminTx: (() => void) | undefined;
-
-    if (userIsAdmin) {
-      unsubAdminUsers = onSnapshot(
-        collection(db, 'users'),
-        (snap) => {
-          setAdminUsers(
-            snap.docs.map((d) => ({
-              ...(d.data() as UserProfile),
-              uid: d.data().uid || d.id,
-            }))
-          );
-        },
-        (err) => handleFirestoreError(err, OperationType.LIST, 'users')
-      );
-
-      unsubAdminAcc = onSnapshot(
-        collection(db, 'accounts'),
-        (snap) => {
-          setAdminAccounts(
-            snap.docs.map((d) => ({ ...(d.data() as Account), id: d.id }))
-          );
-        },
-        (err) => handleFirestoreError(err, OperationType.LIST, 'accounts')
-      );
-
-      unsubAdminCat = onSnapshot(
-        collection(db, 'categories'),
-        (snap) => {
-          setAdminCategories(
-            snap.docs.map((d) => ({ ...(d.data() as Category), id: d.id }))
-          );
-        },
-        (err) => handleFirestoreError(err, OperationType.LIST, 'categories')
-      );
-
-      unsubAdminSp = onSnapshot(
-        collection(db, 'spaces'),
-        (snap) => {
-          setAdminSpaces(
-            snap.docs.map((d) => ({ ...(d.data() as Space), id: d.id }))
-          );
-        },
-        (err) => handleFirestoreError(err, OperationType.LIST, 'spaces')
-      );
-
-      unsubAdminTx = onSnapshot(
-        collection(db, 'transactions'),
-        (snap) => {
-          setAdminTransactions(
-            snap.docs.map((d) => ({ ...(d.data() as Transaction), id: d.id }))
-          );
-        },
-        (err) => handleFirestoreError(err, OperationType.LIST, 'transactions')
-      );
-    }
 
     return () => {
       unsubUserDoc();
@@ -679,11 +688,6 @@ function AppInner() {
       unsubCat();
       unsubSp();
       unsubTx();
-      if (unsubAdminUsers) unsubAdminUsers();
-      if (unsubAdminAcc) unsubAdminAcc();
-      if (unsubAdminCat) unsubAdminCat();
-      if (unsubAdminSp) unsubAdminSp();
-      if (unsubAdminTx) unsubAdminTx();
     };
   }, [currentUser?.uid, currentUser?.email, currentUser?.isDemo]);
 
@@ -840,59 +844,46 @@ function AppInner() {
     catData: Omit<Category, 'id' | 'userId'>
   ): Promise<Category> => {
     const uid = currentUser?.uid || 'demo_uid';
-    const id = `cat_${Date.now()}`;
-    const newCat: Category = { ...catData, id, userId: uid };
-    syncCategoriesState((prev) => [...prev, newCat]);
-
-    if (!currentUser || currentUser.isDemo) {
-      return newCat;
-    }
-
-    try {
-      await setDoc(doc(db, 'categories', id), {
-        ...catData,
-        userId: uid,
-        createdAt: serverTimestamp(),
-      });
-      return newCat;
-    } catch (e) {
-      handleFirestoreError(e, OperationType.CREATE, `categories/${id}`);
-      return newCat;
-    }
+    const created = await createCategoryV3(
+      uid,
+      {
+        name: catData.name,
+        type: catData.type,
+        color: catData.color,
+        icon: catData.icon,
+      },
+      !!currentUser?.isDemo
+    );
+    const mapped: Category = {
+      id: created.id,
+      userId: created.userId,
+      name: created.name,
+      type: created.type === 'income' ? 'income' : 'expense',
+      icon: created.icon || 'ph-tag',
+      color: created.color || 'indigo',
+    };
+    syncCategoriesState((prev) => {
+      const exists = prev.some((c) => c.id === mapped.id);
+      return exists ? prev : [...prev, mapped];
+    }, uid);
+    return mapped;
   };
 
   const handleDeleteCategory = async (catId: string) => {
     if (!currentUser) return;
-    if (currentUser.isDemo) {
-      setCategories((prev) => prev.filter((c) => c.id !== catId));
-      showToast('Categoria removida com sucesso.');
-      return;
-    }
-    try {
-      await deleteDoc(doc(db, 'categories', catId));
-      showToast('Categoria removida do Firestore.');
-    } catch (e) {
-      handleFirestoreError(e, OperationType.DELETE, `categories/${catId}`);
-      setCategories((prev) => prev.filter((c) => c.id !== catId));
-      showToast('Categoria removida localmente.');
-    }
+    await archiveCategoryV3(currentUser.uid, catId, !!currentUser.isDemo);
+    syncCategoriesState((prev) => prev.filter((c) => c.id !== catId), currentUser.uid);
+    showToast('Categoria arquivada com sucesso.');
   };
 
   const handleUpdateUserName = async (newName: string) => {
     if (!currentUser) return;
     const trimmed = newName.trim();
-    if (!trimmed) return;
-    setProfileDisplayName(trimmed);
-    if (!currentUser.isDemo && auth.currentUser) {
-      try {
-        await updateDoc(doc(db, 'users', currentUser.uid), {
-          displayName: trimmed,
-          name: trimmed,
-        });
-      } catch (err) {
-        console.warn('Could not persist updated name to Firestore:', err);
-      }
+    if (!trimmed) {
+      throw new Error('Informe um nome válido.');
     }
+    const persisted = await updateDisplayName(trimmed);
+    setProfileDisplayName(persisted);
     showToast('Nome atualizado com sucesso!');
   };
 
@@ -1072,80 +1063,117 @@ function AppInner() {
         return;
       }
 
-      try {
-        for (const t of targets) {
-          const suffix =
-            t.recurrenceType === 'installment'
-              ? ` (${t.installmentIndex}/${t.installmentTotal})`
-              : '';
-          const cleanBase = updatedSample.description.replace(
-            /\s*\(\d+\/\d+\)$/,
-            ''
-          );
-          await updateDoc(doc(db, 'transactions', t.id), {
-            description: `${cleanBase}${suffix}`.slice(0, 140),
-            amount: updatedSample.amount,
-            status: updatedSample.status,
-            paymentDate: updatedSample.paymentDate || '',
-            categoryId: updatedSample.categoryId,
-            categoryName: updatedSample.categoryName,
-            categoryIcon: updatedSample.categoryIcon,
-            categoryColor: updatedSample.categoryColor,
-            accountId: updatedSample.accountId,
-            accountName: updatedSample.accountName,
-            accountType: updatedSample.accountType,
-            spaceId: updatedSample.spaceId,
-            spaceName: updatedSample.spaceName,
-            paidByEmail: updatedSample.paidByEmail,
-            recipientEmail: updatedSample.recipientEmail || '',
-            participantEmails: updatedSample.participantEmails,
-            splits: updatedSample.splits,
-            updatedAt: serverTimestamp(),
-          });
-        }
-        showToast(`Edição em cascata concluída (${targets.length} itens).`);
-      } catch (e) {
-        handleFirestoreError(e, OperationType.UPDATE, 'transactions');
-        showToast('Edição em cascata salva com segurança localmente.');
-      }
+      showToast('Edição de lançamento individual deve ser feita na aba Lançamentos / Finanças v3.1.');
       return;
     }
 
-    // Criação de novo lançamento (ou série fixa/parcelada)
+    const first = series[0];
+    if (!first) return;
+
+    // Persistência canônica v3.1 para lançamentos individuais
+    if (!first.spaceId) {
+      const cleanDesc = first.description.replace(/\s*\(\d+\/\d+\)$/, '').trim();
+      const amountCents = Math.round(first.amount * 100);
+      const isCredit = first.accountType === 'credit';
+      const dueDate = first.dueDate || first.competenceDate || getTodayDateString();
+      const compDate = first.competenceDate || dueDate;
+      const startMonth = compDate.slice(0, 7);
+      const dueDay = Math.min(Math.max(1, parseInt(dueDate.split('-')[2] || '10', 10)), 31);
+      const nonce = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+
+      if (first.recurrenceType === 'installment' && series.length >= 2) {
+        const totalContractAmountCents = series.reduce(
+          (acc, s) => acc + Math.round(s.amount * 100),
+          0
+        );
+        await createInstallmentContract(
+          {
+            scope: 'personal',
+            userId: currentUser.uid,
+            title: cleanDesc,
+            totalContractAmountCents,
+            totalInstallmentsCount: first.installmentTotal || series.length,
+            initialInstallmentNumber: first.installmentIndex || 1,
+            fundingSource: isCredit ? 'credit_card' : 'personal_loan',
+            sourceCardAccountId: isCredit ? first.accountId : undefined,
+            startCompetenceMonth: startMonth,
+            dueDay,
+            idempotencyKey: `utm_inst_${nonce}`,
+          },
+          !!currentUser.isDemo
+        );
+        showToast(`Parcelamento "${cleanDesc}" (${series.length}x) registrado na arquitetura v3.1!`);
+        return;
+      }
+
+      if (first.recurrenceType === 'fixed') {
+        const { rule } = await createRecurrenceRule(
+          {
+            scope: 'personal',
+            userId: currentUser.uid,
+            title: cleanDesc,
+            type: first.type === 'income' ? 'income' : 'expense',
+            nature: 'fixed',
+            amountCents,
+            frequency: 'monthly',
+            interval: 1,
+            startCompetence: startMonth,
+            dueDay,
+            categoryId: first.categoryId,
+            defaultAccountId: first.accountId,
+            idempotencyKey: `utm_rec_${nonce}`,
+          },
+          !!currentUser.isDemo
+        );
+        await generateRecurrenceInstance(
+          { ruleId: rule.id, competenceMonth: startMonth },
+          !!currentUser.isDemo
+        );
+        showToast(`Regra fixa "${cleanDesc}" e competência ${startMonth} registradas!`);
+        return;
+      }
+
+      await createPersonalTransaction(
+        currentUser.uid,
+        {
+          description: cleanDesc,
+          amountCents,
+          type: first.type === 'income' ? 'income' : 'expense',
+          status:
+            first.status === 'paid'
+              ? 'paid'
+              : first.status === 'overdue'
+              ? 'overdue'
+              : 'pending',
+          categoryId: first.categoryId,
+          categoryName: first.categoryName,
+          accountId: first.accountId,
+          competenceDate: compDate,
+          dueDate,
+          paymentDate:
+            first.status === 'paid' ? first.paymentDate || getTodayDateString() : undefined,
+          originType: 'manual',
+          idempotencyKey: `utm_tx_${nonce}`,
+        },
+        !!currentUser.isDemo
+      );
+      showToast('Lançamento registrado e sincronizado na arquitetura v3.1!');
+      return;
+    }
+
+    // Fallback para lançamentos compartilhados legados no modo demo
     const createdWithIds: Transaction[] = series.map((item, idx) => ({
       ...item,
       id: `tx_${Date.now()}_${idx}`,
     }));
-
-    // Persiste instantaneamente no estado e no cache local (nunca se perde no reload)
     syncTransactionsState((prev) => {
       const filtered = prev.filter((t) => !createdWithIds.some((c) => c.id === t.id));
       return [...createdWithIds, ...filtered];
     });
-
     if (currentUser.isDemo) {
-      showToast(
-        createdWithIds.length > 1
-          ? `${createdWithIds.length} parcelas/recorrências geradas com sucesso!`
-          : 'Lançamento registrado com sucesso!'
-      );
-      return;
-    }
-
-    try {
-      for (const item of createdWithIds) {
-        const { id, ...rest } = item;
-        await setDoc(doc(db, 'transactions', id), {
-          ...rest,
-          paymentDate: rest.paymentDate || '',
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
-      }
-      showToast('Lançamento registrado e sincronizado com sucesso!');
-    } catch (e) {
-      handleFirestoreError(e, OperationType.CREATE, 'transactions');
-      showToast('Lançamento gravado localmente com segurança no dispositivo!');
+      showToast('Lançamento compartilhado registrado no modo demo!');
+    } else {
+      showToast('Para despesas compartilhadas oficiais v3.1, utilize a aba Espaços Compartilhados.');
     }
   };
 
@@ -2504,6 +2532,11 @@ function AppInner() {
               userName={currentUser?.name || 'Usuário'}
               userEmail={currentUser?.email || ''}
               isDemo={!!currentUser?.isDemo}
+              openCreateTrigger={openNewSpaceTrigger}
+              onOpenSpaceAcquisitions={(spaceId) => {
+                setInspectAcqWorkspaceId(spaceId);
+                setActiveTab('acquisitions');
+              }}
             />
           )}
 
@@ -2513,11 +2546,13 @@ function AppInner() {
               onLogout={handleLogout}
               initialWorkspaceIdToOpen={inspectAcqWorkspaceId}
               onClearInitialWorkspace={() => setInspectAcqWorkspaceId(null)}
+              openCreateListTrigger={openNewAcqListTrigger}
               unifiedSpaces={spaces}
               onOpenManageSpaces={() => setActiveTab('spaces')}
               onOpenCreateSpace={(preset) => {
                 setCreateSpacePreset(preset);
                 setActiveTab('spaces');
+                setOpenNewSpaceTrigger((n) => n + 1);
               }}
               onCreateExpenseFromPurchase={(payload) => {
                 setEditingTx(null);
@@ -2699,10 +2734,12 @@ function AppInner() {
         }}
         onOpenNewList={() => {
           setActiveTab('acquisitions');
+          setOpenNewAcqListTrigger((n) => n + 1);
         }}
         onOpenNewSpace={() => {
           setCreateSpacePreset('both');
           setActiveTab('spaces');
+          setOpenNewSpaceTrigger((n) => n + 1);
         }}
       />
     </div>

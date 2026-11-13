@@ -47,11 +47,13 @@ import {
   PersonalTransactionStatus,
   PersonalTransactionType,
   RecurrenceRule,
+  RecurrenceRuleNature,
   InstallmentContract,
   InstallmentContractFundingSource,
   InstallmentOccurrence,
   RecurrenceInstance,
 } from '../../types/financeV3';
+import { resolveAutomatedV3Status } from '../../utils/financeEngine';
 import { getUserAccounts } from '../../services/accountService';
 import {
   getUserCategories,
@@ -131,6 +133,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [modalError, setModalError] = useState<string | null>(null);
   const [successToast, setSuccessToast] = useState<string | null>(null);
 
   // Dados carregados
@@ -225,23 +228,29 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
   const [contractOccurrences, setContractOccurrences] = useState<Record<string, InstallmentOccurrence[]>>({});
   const [loadingOccurrences, setLoadingOccurrences] = useState<Record<string, boolean>>({});
 
-  // Modal Recorrência
+  // Modal Recorrência / Fixos
   const [isRecurrenceModalOpen, setIsRecurrenceModalOpen] = useState(false);
   const [recTitle, setRecTitle] = useState('');
   const [recDesc, setRecDesc] = useState('');
+  const [recType, setRecType] = useState<PersonalTransactionType>('expense');
+  const [recNature, setRecNature] = useState<RecurrenceRuleNature>('fixed');
   const [recAmount, setRecAmount] = useState('');
   const [recFrequency, setRecFrequency] = useState<'monthly' | 'weekly' | 'yearly'>('monthly');
   const [recStartCompetence, setRecStartCompetence] = useState(() => selectedMonth);
   const [recDueDay, setRecDueDay] = useState(10);
   const [recCategory, setRecCategory] = useState('');
   const [recAccount, setRecAccount] = useState('');
+  const [recGenerateInitial, setRecGenerateInitial] = useState(true);
   const [recSubmitting, setRecSubmitting] = useState(false);
 
-  // Modal Parcelamento
+  // Modal Parcelamento (incluindo parcelamentos já em andamento)
   const [isInstallmentModalOpen, setIsInstallmentModalOpen] = useState(false);
   const [instTitle, setInstTitle] = useState('');
   const [instAmount, setInstAmount] = useState('');
   const [instCount, setInstCount] = useState(2);
+  const [instOngoing, setInstOngoing] = useState(false);
+  const [instCurrentNumber, setInstCurrentNumber] = useState(2);
+  const [instAmountMode, setInstAmountMode] = useState<'remaining' | 'total'>('remaining');
   const [instFundingSource, setInstFundingSource] = useState<InstallmentContractFundingSource>('credit_card');
   const [instCardAccount, setInstCardAccount] = useState('');
   const [instStartMonth, setInstStartMonth] = useState(() => selectedMonth);
@@ -348,7 +357,14 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
   const filteredTransactions = useMemo(() => {
     return transactions.filter((t) => {
       if (filterType !== 'all' && t.type !== filterType) return false;
-      if (filterStatus !== 'all' && t.status !== filterStatus) return false;
+      if (filterStatus !== 'all') {
+        const autoKey = resolveAutomatedV3Status(t).key;
+        if (filterStatus === ('overdue' as PersonalTransactionStatus)) {
+          if (autoKey !== 'overdue') return false;
+        } else if (t.status !== filterStatus) {
+          return false;
+        }
+      }
       if (filterCategory !== 'all' && t.categoryId !== filterCategory) return false;
       return true;
     });
@@ -358,7 +374,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
   const handleCreateTransaction = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!txDesc.trim()) {
-      setError('Descrição é obrigatória.');
+      setModalError('Descrição é obrigatória.');
       return;
     }
     let cents = 0;
@@ -367,17 +383,17 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
       validatePositiveCents(cents);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Valor inválido';
-      setError(msg);
+      setModalError(msg);
       return;
     }
 
     if (!txCategory) {
-      setError('Selecione uma categoria.');
+      setModalError('Selecione uma categoria.');
       return;
     }
 
     setTxSubmitting(true);
-    setError(null);
+    setModalError(null);
     try {
       const activeKey =
         txIdempotencyKey ||
@@ -412,13 +428,14 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
       await loadAllData();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Falha ao registrar transação';
-      setError(msg);
+      setModalError(msg);
     } finally {
       setTxSubmitting(false);
     }
   };
 
   const resetTxForm = () => {
+    setModalError(null);
     setTxDesc('');
     setTxAmount('');
     setTxCategory('');
@@ -441,17 +458,17 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
       validatePositiveCents(cents);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Valor inválido';
-      setError(msg);
+      setModalError(msg);
       return;
     }
 
     if (!partialAccount) {
-      setError('Selecione a conta para débito/crédito.');
+      setModalError('Selecione a conta para débito/crédito.');
       return;
     }
 
     setPartialSubmitting(true);
-    setError(null);
+    setModalError(null);
     try {
       const activeKey =
         partialIdempotencyKey ||
@@ -480,7 +497,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
       await loadAllData();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Falha na amortização';
-      setError(msg);
+      setModalError(msg);
     } finally {
       setPartialSubmitting(false);
     }
@@ -507,11 +524,11 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
   const handleExecuteTransfer = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!xferSource || !xferDest) {
-      setError('Selecione conta de origem e conta de destino.');
+      setModalError('Selecione conta de origem e conta de destino.');
       return;
     }
     if (xferSource === xferDest) {
-      setError('Origem e destino não podem ser a mesma conta.');
+      setModalError('Origem e destino não podem ser a mesma conta.');
       return;
     }
 
@@ -521,12 +538,12 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
       validatePositiveCents(cents);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Valor inválido';
-      setError(msg);
+      setModalError(msg);
       return;
     }
 
     setXferSubmitting(true);
-    setError(null);
+    setModalError(null);
     try {
       const activeKey =
         xferIdempotencyKey ||
@@ -554,7 +571,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
       await loadAllData();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Falha na transferência';
-      setError(msg);
+      setModalError(msg);
     } finally {
       setXferSubmitting(false);
     }
@@ -565,7 +582,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
     e.preventDefault();
     if (!payInvoiceModal) return;
     if (!payInvSourceAcc) {
-      setError('Selecione a conta corrente/carteira pagadora.');
+      setModalError('Selecione a conta corrente/carteira pagadora.');
       return;
     }
 
@@ -575,12 +592,12 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
       validatePositiveCents(cents);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Valor inválido';
-      setError(msg);
+      setModalError(msg);
       return;
     }
 
     setPayInvSubmitting(true);
-    setError(null);
+    setModalError(null);
     try {
       const activeKey =
         payInvIdempotencyKey ||
@@ -607,7 +624,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
       await loadAllData();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Falha no pagamento da fatura';
-      setError(msg);
+      setModalError(msg);
     } finally {
       setPayInvSubmitting(false);
     }
@@ -617,11 +634,11 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
   const handleCreateBudget = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!budgetName.trim()) {
-      setError('Nome do orçamento é obrigatório.');
+      setModalError('Nome do orçamento é obrigatório.');
       return;
     }
     if (budgetCatIds.length === 0) {
-      setError('Selecione ao menos uma categoria para o orçamento.');
+      setModalError('Selecione ao menos uma categoria para o orçamento.');
       return;
     }
     let cents = 0;
@@ -630,12 +647,12 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
       validatePositiveCents(cents);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Valor inválido';
-      setError(msg);
+      setModalError(msg);
       return;
     }
 
     setBudgetSubmitting(true);
-    setError(null);
+    setModalError(null);
     try {
       await createPersonalBudget(
         userId,
@@ -656,7 +673,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
       await loadAllData();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Falha ao criar orçamento';
-      setError(msg);
+      setModalError(msg);
     } finally {
       setBudgetSubmitting(false);
     }
@@ -666,11 +683,11 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
   const handleCreateRefund = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!refDebtor.trim()) {
-      setError('Nome do devedor é obrigatório.');
+      setModalError('Nome do devedor é obrigatório.');
       return;
     }
     if (!refTxId) {
-      setError('Selecione a despesa original vinculada.');
+      setModalError('Selecione a despesa original vinculada.');
       return;
     }
     let cents = 0;
@@ -679,12 +696,12 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
       validatePositiveCents(cents);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Valor inválido';
-      setError(msg);
+      setModalError(msg);
       return;
     }
 
     setRefSubmitting(true);
-    setError(null);
+    setModalError(null);
     try {
       const activeKey =
         refIdempotencyKey ||
@@ -713,7 +730,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
       await loadAllData();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Falha ao registrar reembolso';
-      setError(msg);
+      setModalError(msg);
     } finally {
       setRefSubmitting(false);
     }
@@ -724,7 +741,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
     e.preventDefault();
     if (!receiveRefundModal) return;
     if (!receiveAccount) {
-      setError('Selecione a conta para recebimento do crédito.');
+      setModalError('Selecione a conta para recebimento do crédito.');
       return;
     }
     let cents = 0;
@@ -733,12 +750,12 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
       validatePositiveCents(cents);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Valor inválido';
-      setError(msg);
+      setModalError(msg);
       return;
     }
 
     setReceiveSubmitting(true);
-    setError(null);
+    setModalError(null);
     try {
       const activeKey =
         receiveIdempotencyKey ||
@@ -765,7 +782,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
       await loadAllData();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Falha ao receber reembolso';
-      setError(msg);
+      setModalError(msg);
     } finally {
       setReceiveSubmitting(false);
     }
@@ -775,12 +792,12 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
   const handleCreateCategory = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newCatName.trim()) {
-      setError('Nome da categoria é obrigatório.');
+      setModalError('Nome da categoria é obrigatório.');
       return;
     }
 
     setNewCatSubmitting(true);
-    setError(null);
+    setModalError(null);
     try {
       await createCategory(
         userId,
@@ -798,17 +815,17 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
       await loadAllData();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Falha ao criar categoria';
-      setError(msg);
+      setModalError(msg);
     } finally {
       setNewCatSubmitting(false);
     }
   };
 
-  // 10. Criar Regra de Recorrência
+  // 10. Criar Regra de Recorrência ou Lançamento Fixo
   const handleCreateRecurrence = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!recTitle.trim()) {
-      setError('Título da recorrência é obrigatório.');
+      setModalError('Título da recorrência é obrigatório.');
       return;
     }
     let cents = 0;
@@ -817,20 +834,22 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
       validatePositiveCents(cents);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Valor inválido';
-      setError(msg);
+      setModalError(msg);
       return;
     }
 
     setRecSubmitting(true);
-    setError(null);
+    setModalError(null);
     try {
       const idempotencyKey = `idem_ui_rec_${userId}_${Date.now()}`;
-      await createRecurrenceRule(
+      const res = await createRecurrenceRule(
         {
           scope: 'personal',
           userId,
           title: recTitle.trim(),
           description: recDesc.trim() || undefined,
+          type: recType,
+          nature: recNature,
           amountCents: cents,
           frequency: recFrequency,
           startCompetence: recStartCompetence,
@@ -841,18 +860,33 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
         },
         isDemo
       );
-      showToast('Regra de recorrência criada com sucesso!');
+
+      if (recGenerateInitial && res.rule?.id) {
+        await generateRecurrenceInstance(
+          { ruleId: res.rule.id, competenceMonth: recStartCompetence },
+          isDemo
+        );
+      }
+
+      showToast(
+        recGenerateInitial
+          ? `Regra "${recTitle.trim()}" criada e lançamento de ${recStartCompetence} gerado!`
+          : `Regra "${recTitle.trim()}" criada com sucesso!`
+      );
       setIsRecurrenceModalOpen(false);
       setRecTitle('');
       setRecDesc('');
+      setRecType('expense');
+      setRecNature('fixed');
       setRecAmount('');
       setRecDueDay(10);
       setRecCategory('');
       setRecAccount('');
+      setRecGenerateInitial(true);
       await loadAllData();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Falha ao criar recorrência';
-      setError(msg);
+      setModalError(msg);
     } finally {
       setRecSubmitting(false);
     }
@@ -874,8 +908,12 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
   // 12. Gerar Instância do Mês Atual
   const handleGenerateRecurrenceInstance = async (ruleId: string) => {
     try {
-      await generateRecurrenceInstance({ ruleId, competenceMonth: selectedMonth }, isDemo);
-      showToast(`Instância de ${selectedMonth} gerada com sucesso!`);
+      const res = await generateRecurrenceInstance({ ruleId, competenceMonth: selectedMonth }, isDemo);
+      showToast(
+        res.isIdempotentReplay
+          ? `O lançamento de ${selectedMonth} para esta regra já havia sido gerado.`
+          : `Lançamento da competência ${selectedMonth} materializado em Receitas & Despesas!`
+      );
       await loadAllData();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Falha ao gerar instância';
@@ -895,15 +933,15 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
     }
   };
 
-  // 14. Criar Contrato de Parcelamento
+  // 14. Criar Contrato de Parcelamento (Novo ou Em Andamento)
   const handleCreateInstallment = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!instTitle.trim()) {
-      setError('Título do parcelamento é obrigatório.');
+      setModalError('Título do parcelamento é obrigatório.');
       return;
     }
     if (instFundingSource === 'credit_card' && !instCardAccount) {
-      setError('Selecione o cartão de crédito emissor.');
+      setModalError('Selecione o cartão de crédito emissor.');
       return;
     }
     let cents = 0;
@@ -912,12 +950,37 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
       validatePositiveCents(cents);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Valor inválido';
-      setError(msg);
+      setModalError(msg);
       return;
     }
 
+    const totalCount = Number(instCount);
+    const initialInstallmentNumber = instOngoing ? Number(instCurrentNumber) : 1;
+    if (
+      !Number.isInteger(initialInstallmentNumber) ||
+      initialInstallmentNumber < 1 ||
+      initialInstallmentNumber > totalCount
+    ) {
+      setModalError(`A parcela inicial deve estar entre 1 e ${totalCount}.`);
+      return;
+    }
+
+    const projectedCount = totalCount - initialInstallmentNumber + 1;
+    let totalContractAmountCents = cents;
+    let remainingAmountCents: CentsInteger | undefined = undefined;
+
+    if (instOngoing && initialInstallmentNumber > 1) {
+      if (instAmountMode === 'remaining') {
+        remainingAmountCents = cents;
+        totalContractAmountCents = Math.round((cents / projectedCount) * totalCount);
+      } else {
+        totalContractAmountCents = cents;
+        remainingAmountCents = Math.round((cents / totalCount) * projectedCount);
+      }
+    }
+
     setInstSubmitting(true);
-    setError(null);
+    setModalError(null);
     try {
       const idempotencyKey = `idem_ui_inst_${userId}_${Date.now()}`;
       await createInstallmentContract(
@@ -925,8 +988,10 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
           scope: 'personal',
           userId,
           title: instTitle.trim(),
-          totalContractAmountCents: cents,
-          totalInstallmentsCount: Number(instCount),
+          totalContractAmountCents,
+          remainingAmountCents,
+          totalInstallmentsCount: totalCount,
+          initialInstallmentNumber,
           fundingSource: instFundingSource,
           sourceCardAccountId: instFundingSource === 'credit_card' ? instCardAccount : undefined,
           startCompetenceMonth: instStartMonth,
@@ -935,17 +1000,24 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
         },
         isDemo
       );
-      showToast(`Parcelamento em ${instCount}x registrado com sucesso!`);
+      showToast(
+        instOngoing && initialInstallmentNumber > 1
+          ? `Parcelamento em andamento registrado (${initialInstallmentNumber}/${totalCount} até ${totalCount}/${totalCount})!`
+          : `Parcelamento em ${totalCount}x registrado com sucesso!`
+      );
       setIsInstallmentModalOpen(false);
       setInstTitle('');
       setInstAmount('');
       setInstCount(2);
+      setInstOngoing(false);
+      setInstCurrentNumber(2);
+      setInstAmountMode('remaining');
       setInstCardAccount('');
       setInstDueDay(10);
       await loadAllData();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Falha ao registrar parcelamento';
-      setError(msg);
+      setModalError(msg);
     } finally {
       setInstSubmitting(false);
     }
@@ -977,7 +1049,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
     if (!cancelContractModal) return;
 
     setCancelContractSubmitting(true);
-    setError(null);
+    setModalError(null);
     try {
       const res = await cancelInstallmentContract(
         {
@@ -997,7 +1069,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
       await loadAllData();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Falha ao cancelar contrato';
-      setError(msg);
+      setModalError(msg);
     } finally {
       setCancelContractSubmitting(false);
     }
@@ -1017,12 +1089,12 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
       {error && (
         <div className="flex items-center justify-between p-4 bg-rose-950/60 border border-rose-800/80 text-rose-300 rounded-xl">
           <div className="flex items-center gap-2">
-            <AlertCircle className="w-5 h-5 shrink-0 text-rose-600" />
+            <AlertCircle className="w-5 h-5 shrink-0 text-rose-400" />
             <span className="text-sm font-medium">{error}</span>
           </div>
           <button
             onClick={() => setError(null)}
-            className="text-rose-400 hover:text-rose-200 text-sm font-bold ml-4"
+            className="text-rose-400 hover:text-rose-200 text-sm font-bold ml-4 cursor-pointer"
           >
             ✕
           </button>
@@ -1045,7 +1117,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
           <h1 className="text-2xl font-black text-white mt-1">
             Gestão Financeira Pessoal
           </h1>
-          <p className="text-xs text-slate-500 mt-0.5">
+          <p className="text-xs text-slate-400 mt-0.5">
             Controle independente de receitas, despesas, faturas, transferências, orçamentos e reembolsos.
           </p>
         </div>
@@ -1053,7 +1125,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
         {/* Seletor de Mês e Botão de Ação Rápida */}
         <div className="flex flex-wrap items-center gap-3">
           <div className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 rounded-xl text-xs font-semibold text-slate-300 border border-slate-700">
-            <Calendar className="w-4 h-4 text-slate-500" />
+            <Calendar className="w-4 h-4 text-slate-400" />
             <input
               type="month"
               value={selectedMonth}
@@ -1068,7 +1140,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
               resetTxForm();
               setIsTxModalOpen(true);
             }}
-            className="flex items-center gap-1.5 px-3.5 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold rounded-xl shadow-xs transition-all"
+            className="flex items-center gap-1.5 px-3.5 py-2 bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold rounded-xl shadow-xs transition-all cursor-pointer"
           >
             <ArrowUpRight className="w-4 h-4" />
             Nova Despesa
@@ -1080,7 +1152,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
               resetTxForm();
               setIsTxModalOpen(true);
             }}
-            className="flex items-center gap-1.5 px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold rounded-xl shadow-xs transition-all"
+            className="flex items-center gap-1.5 px-3.5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold rounded-xl shadow-xs transition-all cursor-pointer"
           >
             <ArrowDownLeft className="w-4 h-4" />
             Nova Receita
@@ -1118,7 +1190,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
               <ArrowDownLeft className="w-4 h-4" />
             </div>
           </div>
-          <div className="mt-2 text-2xl font-black text-emerald-600">
+          <div className="mt-2 text-2xl font-black text-emerald-400">
             {formatCentsToBRL(monthIncomeCents)}
           </div>
           <div className="text-[11px] text-slate-400 mt-1">
@@ -1136,7 +1208,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
               <ArrowUpRight className="w-4 h-4" />
             </div>
           </div>
-          <div className="mt-2 text-2xl font-black text-rose-600">
+          <div className="mt-2 text-2xl font-black text-rose-400">
             {formatCentsToBRL(monthExpenseCents)}
           </div>
           <div className="text-[11px] text-slate-400 mt-1">
@@ -1154,7 +1226,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
               <Clock className="w-4 h-4" />
             </div>
           </div>
-          <div className="mt-2 text-2xl font-black text-amber-600">
+          <div className="mt-2 text-2xl font-black text-amber-400">
             {formatCentsToBRL(pendingExpenseCents)}
           </div>
           <div className="text-[11px] text-slate-400 mt-1">
@@ -1168,7 +1240,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
         <div className="flex flex-wrap items-center gap-1.5 p-1 bg-slate-800 rounded-xl border border-slate-700">
           <button
             onClick={() => setActiveTab('transactions')}
-            className={`flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all ${
+            className={`flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
               activeTab === 'transactions'
                 ? 'bg-indigo-600 text-white shadow-xs'
                 : 'text-slate-400 hover:text-white'
@@ -1180,7 +1252,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
 
           <button
             onClick={() => setActiveTab('invoices')}
-            className={`flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all ${
+            className={`flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
               activeTab === 'invoices'
                 ? 'bg-indigo-600 text-white shadow-xs'
                 : 'text-slate-400 hover:text-white'
@@ -1192,7 +1264,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
 
           <button
             onClick={() => setActiveTab('transfers')}
-            className={`flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all ${
+            className={`flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
               activeTab === 'transfers'
                 ? 'bg-indigo-600 text-white shadow-xs'
                 : 'text-slate-400 hover:text-white'
@@ -1204,7 +1276,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
 
           <button
             onClick={() => setActiveTab('budgets')}
-            className={`flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all ${
+            className={`flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
               activeTab === 'budgets'
                 ? 'bg-indigo-600 text-white shadow-xs'
                 : 'text-slate-400 hover:text-white'
@@ -1216,7 +1288,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
 
           <button
             onClick={() => setActiveTab('refunds')}
-            className={`flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all ${
+            className={`flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
               activeTab === 'refunds'
                 ? 'bg-indigo-600 text-white shadow-xs'
                 : 'text-slate-400 hover:text-white'
@@ -1228,7 +1300,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
 
           <button
             onClick={() => setActiveTab('categories')}
-            className={`flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all ${
+            className={`flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
               activeTab === 'categories'
                 ? 'bg-indigo-600 text-white shadow-xs'
                 : 'text-slate-400 hover:text-white'
@@ -1240,19 +1312,19 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
 
           <button
             onClick={() => setActiveTab('recurrences')}
-            className={`flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all ${
+            className={`flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
               activeTab === 'recurrences'
                 ? 'bg-indigo-600 text-white shadow-xs'
                 : 'text-slate-400 hover:text-white'
             }`}
           >
             <Repeat className="w-3.5 h-3.5" />
-            Recorrências ({recurrenceRules.length})
+            Fixos & Recorrentes ({recurrenceRules.length})
           </button>
 
           <button
             onClick={() => setActiveTab('installments')}
-            className={`flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all ${
+            className={`flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
               activeTab === 'installments'
                 ? 'bg-indigo-600 text-white shadow-xs'
                 : 'text-slate-400 hover:text-white'
@@ -1266,7 +1338,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
         <button
           onClick={loadAllData}
           disabled={loading}
-          className="flex items-center gap-1.5 text-xs font-medium text-slate-300 hover:text-white px-3 py-1.5 rounded-lg border border-slate-700 bg-slate-800"
+          className="flex items-center gap-1.5 text-xs font-medium text-slate-300 hover:text-white px-3 py-1.5 rounded-lg border border-slate-700 bg-slate-800 cursor-pointer"
         >
           <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
           Atualizar Dados
@@ -1279,13 +1351,13 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
           {/* Barra de Filtros */}
           <div className="bg-slate-800/90 p-4 rounded-xl border border-slate-700/80 shadow-xs flex flex-wrap items-center justify-between gap-3">
             <div className="flex flex-wrap items-center gap-2">
-              <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
+              <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
                 Filtros:
               </span>
               <select
                 value={filterType}
                 onChange={(e) => setFilterType(e.target.value as any)}
-                className="px-3 py-1.5 text-xs bg-slate-800 border border-slate-700 text-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="px-3 py-1.5 text-xs bg-slate-900 border border-slate-700 text-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
               >
                 <option value="all">Todos os Tipos</option>
                 <option value="income">Apenas Receitas</option>
@@ -1295,11 +1367,12 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
               <select
                 value={filterStatus}
                 onChange={(e) => setFilterStatus(e.target.value as any)}
-                className="px-3 py-1.5 text-xs bg-slate-800 border border-slate-700 text-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="px-3 py-1.5 text-xs bg-slate-900 border border-slate-700 text-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
               >
                 <option value="all">Todos os Status</option>
                 <option value="paid">Pagas / Recebidas</option>
-                <option value="pending">Pendentes</option>
+                <option value="pending">Pendentes / A Vencer</option>
+                <option value="overdue">Vencidas</option>
                 <option value="partially_paid">Parcialmente Pagas</option>
                 <option value="forecast">Previstas</option>
                 <option value="cancelled">Canceladas</option>
@@ -1308,7 +1381,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
               <select
                 value={filterCategory}
                 onChange={(e) => setFilterCategory(e.target.value)}
-                className="px-3 py-1.5 text-xs bg-slate-800 border border-slate-700 text-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="px-3 py-1.5 text-xs bg-slate-900 border border-slate-700 text-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
               >
                 <option value="all">Todas as Categorias</option>
                 {categories.map((c) => (
@@ -1319,20 +1392,20 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
               </select>
             </div>
 
-            <div className="text-xs text-slate-500 font-medium">
-              Exibindo <strong>{filteredTransactions.length}</strong> lançamento(s)
+            <div className="text-xs text-slate-400 font-medium">
+              Exibindo <strong className="text-white">{filteredTransactions.length}</strong> lançamento(s)
             </div>
           </div>
 
           {/* Listagem de Transações */}
           {loading ? (
             <div className="text-center py-12 bg-slate-800/90 rounded-xl border border-slate-700/80">
-              <RefreshCw className="w-6 h-6 animate-spin text-blue-600 mx-auto" />
+              <RefreshCw className="w-6 h-6 animate-spin text-indigo-400 mx-auto" />
               <p className="text-xs text-slate-400 mt-2">Carregando transações...</p>
             </div>
           ) : filteredTransactions.length === 0 ? (
             <div className="text-center py-12 bg-slate-800/90 rounded-2xl border border-dashed border-slate-700/80 p-8">
-              <FileText className="w-10 h-10 text-slate-300 mx-auto mb-2" />
+              <FileText className="w-10 h-10 text-slate-500 mx-auto mb-2" />
               <p className="text-sm font-semibold text-slate-200">
                 Nenhum lançamento encontrado
               </p>
@@ -1344,9 +1417,10 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
             <div className="space-y-3">
               {filteredTransactions.map((tx) => {
                 const isIncome = tx.type === 'income';
-                const isPaid = tx.status === 'paid';
-                const isPartiallyPaid = tx.status === 'partially_paid';
-                const isCancelled = tx.status === 'cancelled';
+                const statusInfo = resolveAutomatedV3Status(tx);
+                const isPaid = statusInfo.key === 'paid';
+                const isPartiallyPaid = statusInfo.key === 'partially_paid';
+                const isCancelled = statusInfo.key === 'cancelled';
 
                 return (
                   <div
@@ -1361,10 +1435,10 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                       <div
                         className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 mt-0.5 ${
                           isCancelled
-                            ? 'bg-slate-200 text-slate-600'
+                            ? 'bg-slate-800 text-slate-400 border border-slate-700'
                             : isIncome
-                            ? 'bg-emerald-100 text-emerald-800'
-                            : 'bg-rose-100 text-rose-800'
+                            ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
+                            : 'bg-rose-500/15 text-rose-300 border border-rose-500/30'
                         }`}
                       >
                         {isCancelled ? (
@@ -1381,24 +1455,16 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                           <span className="font-bold text-white text-sm">
                             {tx.description}
                           </span>
-                          <span className="px-2 py-0.5 text-[10px] font-semibold bg-slate-100 text-slate-700 rounded-md">
+                          <span className="px-2 py-0.5 text-[10px] font-semibold bg-slate-800 text-slate-300 border border-slate-700 rounded-md">
                             {tx.categoryName}
                           </span>
                           <span
-                            className={`px-2 py-0.5 text-[10px] font-bold rounded-md ${
-                              isPaid
-                                ? 'bg-emerald-50 text-emerald-700'
-                                : isPartiallyPaid
-                                ? 'bg-amber-50 text-amber-700'
-                                : isCancelled
-                                ? 'bg-slate-200 text-slate-700'
-                                : 'bg-blue-50 text-blue-700'
-                            }`}
+                            className={`px-2 py-0.5 text-[10px] font-bold rounded-md ${statusInfo.badgeClass}`}
                           >
-                            {tx.status.toUpperCase()}
+                            {statusInfo.label}
                           </span>
                           {tx.invoiceMonth && (
-                            <span className="px-2 py-0.5 text-[10px] font-medium bg-purple-50 text-purple-700 rounded-md">
+                            <span className="px-2 py-0.5 text-[10px] font-medium bg-purple-500/15 text-purple-300 border border-purple-500/30 rounded-md">
                               Fatura: {tx.invoiceMonth}
                             </span>
                           )}
@@ -1410,7 +1476,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                             <span>• Vence: {tx.dueDate}</span>
                           )}
                           {isPartiallyPaid && (
-                            <span className="text-amber-700 font-semibold">
+                            <span className="text-amber-300 font-semibold">
                               • Amortizado: {formatCentsToBRL(tx.paidAmountCents || 0)} (Resta:{' '}
                               {formatCentsToBRL(tx.remainingAmountCents || 0)})
                             </span>
@@ -1422,8 +1488,8 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                     <div className="flex items-center justify-between sm:justify-end gap-3 shrink-0 pt-2 sm:pt-0 border-t sm:border-t-0 border-slate-700/60">
                       <div className="text-right">
                         <span
-                          className={`text-base font-black ${
-                            isIncome ? 'text-emerald-600' : 'text-rose-600'
+                          className={`text-base font-black font-mono ${
+                            isIncome ? 'text-emerald-400' : 'text-rose-400'
                           }`}
                         >
                           {isIncome ? '+ ' : '- '}
@@ -1436,12 +1502,13 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                         {!isPaid && !isCancelled && (
                           <button
                             onClick={() => {
+                              setModalError(null);
                               setPartialTx(tx);
                               setPartialAmount('');
                               setPartialNotes('');
                               setPartialAccount(tx.accountId || '');
                             }}
-                            className="px-2.5 py-1 text-xs font-semibold bg-blue-50 text-blue-700 hover:bg-blue-100 rounded-lg transition-all"
+                            className="px-2.5 py-1 text-xs font-semibold bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 hover:bg-indigo-500/25 rounded-lg transition-all cursor-pointer"
                             title="Registrar pagamento ou recebimento parcial"
                           >
                             Amortizar
@@ -1451,7 +1518,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                         {!isCancelled && (
                           <button
                             onClick={() => handleCancelTx(tx)}
-                            className="px-2.5 py-1 text-xs font-semibold text-rose-700 bg-rose-50 hover:bg-rose-100 rounded-lg transition-all"
+                            className="px-2.5 py-1 text-xs font-semibold text-rose-300 bg-rose-500/15 border border-rose-500/30 hover:bg-rose-500/25 rounded-lg transition-all cursor-pointer"
                             title="Cancelar lançamento"
                           >
                             Cancelar
@@ -1475,7 +1542,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
               <h2 className="text-lg font-bold text-white">
                 Faturas de Cartões de Crédito
               </h2>
-              <p className="text-xs text-slate-500">
+              <p className="text-xs text-slate-400">
                 Compras alocadas e pagamentos de fatura sem dupla contagem contábil.
               </p>
             </div>
@@ -1483,7 +1550,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
 
           {invoices.length === 0 ? (
             <div className="text-center py-12 bg-slate-800/90 rounded-2xl border border-dashed border-slate-700/80 p-8">
-              <CreditCard className="w-10 h-10 text-slate-300 mx-auto mb-2" />
+              <CreditCard className="w-10 h-10 text-slate-500 mx-auto mb-2" />
               <p className="text-sm font-semibold text-slate-200">
                 Nenhuma fatura encontrada
               </p>
@@ -1498,6 +1565,18 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                 const isPaid = inv.invoiceStatus === 'paid';
                 const isCarriedOver = inv.invoiceStatus === 'carried_over';
                 const isSettled = isPaid || isCarriedOver;
+                const invStatusLabel =
+                  inv.invoiceStatus === 'paid'
+                    ? 'Paga'
+                    : inv.invoiceStatus === 'carried_over'
+                    ? 'Saldo Transportado'
+                    : inv.invoiceStatus === 'partially_paid'
+                    ? 'Parcialmente Paga'
+                    : inv.invoiceStatus === 'closed'
+                    ? 'Fechada'
+                    : inv.invoiceStatus === 'overdue'
+                    ? 'Vencida'
+                    : 'Aberta';
 
                 return (
                   <div
@@ -1507,7 +1586,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                     <div>
                       <div className="flex items-start justify-between">
                         <div className="flex items-center gap-2.5">
-                          <div className="p-2 bg-purple-50 text-purple-700 rounded-xl">
+                          <div className="p-2 bg-purple-500/15 text-purple-300 border border-purple-500/30 rounded-xl">
                             <CreditCard className="w-5 h-5" />
                           </div>
                           <div>
@@ -1523,67 +1602,70 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                         <span
                           className={`px-2 py-0.5 text-[10px] font-bold rounded-md ${
                             isPaid
-                              ? 'bg-emerald-50 text-emerald-700'
+                              ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
                               : isCarriedOver
-                              ? 'bg-amber-100 text-amber-800 border border-amber-300'
+                              ? 'bg-amber-500/15 text-amber-300 border border-amber-500/30'
                               : inv.invoiceStatus === 'partially_paid'
-                              ? 'bg-amber-50 text-amber-700'
-                              : 'bg-purple-50 text-purple-700'
+                              ? 'bg-sky-500/15 text-sky-300 border border-sky-500/30'
+                              : inv.invoiceStatus === 'overdue'
+                              ? 'bg-rose-500/15 text-rose-300 border border-rose-500/30'
+                              : 'bg-purple-500/15 text-purple-300 border border-purple-500/30'
                           }`}
                         >
-                          {isCarriedOver ? 'SALDO TRANSPORTADO' : inv.invoiceStatus.toUpperCase()}
+                          {invStatusLabel}
                         </span>
                       </div>
 
                       {/* Valores da Fatura */}
-                      <div className="mt-4 pt-3 border-t border-slate-800 space-y-1.5 text-xs">
-                        <div className="flex justify-between text-slate-500">
+                      <div className="mt-4 pt-3 border-t border-slate-700/70 space-y-1.5 text-xs">
+                        <div className="flex justify-between text-slate-400">
                           <span>Compras do período:</span>
-                          <span className="font-semibold text-slate-800">
+                          <span className="font-semibold text-white font-mono">
                             {formatCentsToBRL(inv.totalPurchasesAmountCents)}
                           </span>
                         </div>
                         {inv.carriedOverBalanceCents > 0 && (
-                          <div className="flex justify-between text-amber-700 font-medium">
+                          <div className="flex justify-between text-amber-300 font-medium">
                             <span>Saldo rotativo transportado:</span>
-                            <span>{formatCentsToBRL(inv.carriedOverBalanceCents)}</span>
+                            <span className="font-mono">{formatCentsToBRL(inv.carriedOverBalanceCents)}</span>
                           </div>
                         )}
                         {inv.interestAndFeesCents > 0 && (
-                          <div className="flex justify-between text-rose-700 font-medium">
+                          <div className="flex justify-between text-rose-400 font-medium">
                             <span>Juros e encargos:</span>
-                            <span>{formatCentsToBRL(inv.interestAndFeesCents)}</span>
+                            <span className="font-mono">{formatCentsToBRL(inv.interestAndFeesCents)}</span>
                           </div>
                         )}
-                        <div className="flex justify-between text-slate-500">
+                        <div className="flex justify-between text-slate-400">
                           <span>Total pago:</span>
-                          <span className="font-semibold text-emerald-600">
+                          <span className="font-semibold text-emerald-400 font-mono">
                             {formatCentsToBRL(inv.totalPaidAmountCents)}
                           </span>
                         </div>
-                        <div className="flex justify-between text-sm font-bold pt-2 border-t border-slate-800">
-                          <span>Saldo Restante:</span>
-                          <span className={inv.remainingBalanceCents > 0 ? 'text-rose-400' : 'text-slate-300'}>
+                        <div className="flex justify-between text-sm font-bold pt-2 border-t border-slate-700/70">
+                          <span className="text-slate-200">Saldo Restante:</span>
+                          <span className={`font-mono ${inv.remainingBalanceCents > 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
                             {formatCentsToBRL(inv.remainingBalanceCents)}
                           </span>
                         </div>
                       </div>
 
                       <div className="text-[11px] text-slate-400 mt-3">
-                        Vencimento: <strong>{inv.dueDate}</strong> • Fechamento: {inv.closingDate}
+                        Vencimento: <strong className="text-slate-200">{inv.dueDate}</strong> • Fechamento: {inv.closingDate}
                       </div>
                     </div>
 
                     {/* Botão Pagar Fatura */}
-                    <div className="mt-4 pt-3 border-t border-slate-800 flex items-center gap-2">
+                    <div className="mt-4 pt-3 border-t border-slate-700/70 flex items-center gap-2">
                       {!isSettled && (
                         <button
                           onClick={() => {
+                            setModalError(null);
                             setPayInvoiceModal(inv);
                             setPayInvAmount('');
                             setPayInvSourceAcc('');
                           }}
-                          className="w-full py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-xl transition-all shadow-xs"
+                          className="w-full py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-xl transition-all shadow-xs cursor-pointer"
                         >
                           Pagar Fatura
                         </button>
@@ -1605,14 +1687,17 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
               <h2 className="text-lg font-bold text-white">
                 Transferências entre Contas Próprias
               </h2>
-              <p className="text-xs text-slate-500">
+              <p className="text-xs text-slate-400">
                 Movimentação interna entre contas do usuário sem afetar receita ou despesa.
               </p>
             </div>
 
             <button
-              onClick={() => setIsTransferModalOpen(true)}
-              className="flex items-center gap-1.5 px-3.5 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-xl shadow-xs transition-all"
+              onClick={() => {
+                setModalError(null);
+                setIsTransferModalOpen(true);
+              }}
+              className="flex items-center gap-1.5 px-3.5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-xl shadow-xs transition-all cursor-pointer"
             >
               <ArrowLeftRight className="w-4 h-4" />
               Nova Transferência
@@ -1621,7 +1706,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
 
           {transfers.length === 0 ? (
             <div className="text-center py-12 bg-slate-800/90 rounded-2xl border border-dashed border-slate-700/80 p-8">
-              <ArrowLeftRight className="w-10 h-10 text-slate-300 mx-auto mb-2" />
+              <ArrowLeftRight className="w-10 h-10 text-slate-500 mx-auto mb-2" />
               <p className="text-sm font-semibold text-slate-200">
                 Nenhuma transferência realizada
               </p>
@@ -1641,20 +1726,20 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                     className="p-4 bg-slate-800/90 rounded-xl border border-slate-700/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs"
                   >
                     <div className="flex items-center gap-3">
-                      <div className="w-9 h-9 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center shrink-0">
+                      <div className="w-9 h-9 rounded-xl bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 flex items-center justify-center shrink-0">
                         <ArrowLeftRight className="w-4 h-4" />
                       </div>
                       <div>
                         <div className="text-sm font-bold text-white">
                           {xfer.description}
                         </div>
-                        <div className="text-xs text-slate-500 mt-0.5 flex items-center gap-2">
+                        <div className="text-xs text-slate-400 mt-0.5 flex flex-wrap items-center gap-2">
                           <span>
-                            De: <strong>{srcAcc?.name || xfer.sourceAccountId}</strong>
+                            De: <strong className="text-slate-200">{srcAcc?.name || xfer.sourceAccountId}</strong>
                           </span>
                           <span>→</span>
                           <span>
-                            Para: <strong>{dstAcc?.name || xfer.destinationAccountId}</strong>
+                            Para: <strong className="text-slate-200">{dstAcc?.name || xfer.destinationAccountId}</strong>
                           </span>
                           <span>• {xfer.transferDate}</span>
                         </div>
@@ -1662,7 +1747,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                     </div>
 
                     <div className="text-right">
-                      <div className="text-base font-black text-white">
+                      <div className="text-base font-black text-white font-mono">
                         {formatCentsToBRL(xfer.amountCents)}
                       </div>
                       <span className="text-[10px] text-slate-400 uppercase font-semibold">
@@ -1685,14 +1770,17 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
               <h2 className="text-lg font-bold text-white">
                 Orçamentos Planejados ({selectedMonth})
               </h2>
-              <p className="text-xs text-slate-500">
+              <p className="text-xs text-slate-400">
                 Acompanhamento de consumo derivado das despesas efetivas da competência.
               </p>
             </div>
 
             <button
-              onClick={() => setIsBudgetModalOpen(true)}
-              className="flex items-center gap-1.5 px-3.5 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-xl shadow-xs transition-all"
+              onClick={() => {
+                setModalError(null);
+                setIsBudgetModalOpen(true);
+              }}
+              className="flex items-center gap-1.5 px-3.5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-xl shadow-xs transition-all cursor-pointer"
             >
               <Plus className="w-4 h-4" />
               Novo Orçamento
@@ -1701,7 +1789,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
 
           {budgets.length === 0 ? (
             <div className="text-center py-12 bg-slate-800/90 rounded-2xl border border-dashed border-slate-700/80 p-8">
-              <Target className="w-10 h-10 text-slate-300 mx-auto mb-2" />
+              <Target className="w-10 h-10 text-slate-500 mx-auto mb-2" />
               <p className="text-sm font-semibold text-slate-200">
                 Nenhum orçamento definido para este mês
               </p>
@@ -1739,10 +1827,10 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                         <span
                           className={`px-2 py-0.5 text-[10px] font-bold rounded-md ${
                             isExceeded
-                              ? 'bg-rose-100 text-rose-700'
+                              ? 'bg-rose-500/15 text-rose-300 border border-rose-500/30'
                               : isWarning
-                              ? 'bg-amber-100 text-amber-700'
-                              : 'bg-emerald-100 text-emerald-700'
+                              ? 'bg-amber-500/15 text-amber-300 border border-amber-500/30'
+                              : 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
                           }`}
                         >
                           {b.percentageUsed}%
@@ -1751,7 +1839,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
 
                       {/* Barra de Progresso */}
                       <div className="mt-4">
-                        <div className="h-2 w-full bg-slate-100 rounded-full overflow-hidden">
+                        <div className="h-2 w-full bg-slate-900 rounded-full overflow-hidden border border-slate-700/60">
                           <div
                             className={`h-full rounded-full transition-all ${
                               isExceeded
@@ -1766,40 +1854,40 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                       </div>
 
                       {/* Valores: 3 indicadores distintos (Realizado, Comprometido, Previsto) */}
-                      <div className="mt-4 pt-3 border-t border-slate-800 space-y-1 text-xs">
-                        <div className="flex justify-between text-slate-500">
+                      <div className="mt-4 pt-3 border-t border-slate-700/70 space-y-1 text-xs">
+                        <div className="flex justify-between text-slate-400">
                           <span>Planejado:</span>
-                          <span className="font-semibold text-white">
+                          <span className="font-semibold text-white font-mono">
                             {formatCentsToBRL(b.plannedAmountCents)}
                           </span>
                         </div>
-                        <div className="flex justify-between text-slate-500">
+                        <div className="flex justify-between text-slate-400">
                           <span>Realizado (Pago):</span>
-                          <span className="font-semibold text-rose-600">
+                          <span className="font-semibold text-rose-400 font-mono">
                             {formatCentsToBRL(b.realizedAmountCents ?? b.spentAmountCents)}
                           </span>
                         </div>
-                        <div className="flex justify-between text-slate-500">
+                        <div className="flex justify-between text-slate-400">
                           <span>Comprometido (Pendente):</span>
-                          <span className="font-semibold text-amber-600">
+                          <span className="font-semibold text-amber-400 font-mono">
                             {formatCentsToBRL(b.committedAmountCents ?? 0)}
                           </span>
                         </div>
-                        <div className="flex justify-between text-slate-500">
+                        <div className="flex justify-between text-slate-400">
                           <span>Previsto (Projeção Total):</span>
-                          <span className="font-semibold text-blue-600">
+                          <span className="font-semibold text-indigo-400 font-mono">
                             {formatCentsToBRL(b.forecastedAmountCents ?? b.spentAmountCents)} ({b.percentageForecasted ?? b.percentageUsed}%)
                           </span>
                         </div>
-                        <div className="flex justify-between text-xs font-bold pt-1.5 border-t border-slate-800">
-                          <span>Saldo Disponível (Real):</span>
-                          <span className={b.remainingAmountCents < 0 ? 'text-rose-600' : 'text-emerald-600'}>
+                        <div className="flex justify-between text-xs font-bold pt-1.5 border-t border-slate-700/70">
+                          <span className="text-slate-200">Saldo Disponível (Real):</span>
+                          <span className={`font-mono ${b.remainingAmountCents < 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
                             {formatCentsToBRL(b.remainingAmountCents)}
                           </span>
                         </div>
-                        <div className="flex justify-between text-[11px] font-medium text-slate-500">
+                        <div className="flex justify-between text-[11px] font-medium text-slate-400">
                           <span>Saldo Projetado Final:</span>
-                          <span className={(b.projectedRemainingAmountCents ?? b.remainingAmountCents) < 0 ? 'text-rose-600' : 'text-slate-700'}>
+                          <span className={`font-mono ${(b.projectedRemainingAmountCents ?? b.remainingAmountCents) < 0 ? 'text-rose-400' : 'text-slate-200'}`}>
                             {formatCentsToBRL(b.projectedRemainingAmountCents ?? b.remainingAmountCents)}
                           </span>
                         </div>
@@ -1821,14 +1909,17 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
               <h2 className="text-lg font-bold text-white">
                 Reembolsos Vinculados a Despesas
               </h2>
-              <p className="text-xs text-slate-500">
+              <p className="text-xs text-slate-400">
                 Controle de valores antecipados com crédito em caixa no recebimento.
               </p>
             </div>
 
             <button
-              onClick={() => setIsRefundModalOpen(true)}
-              className="flex items-center gap-1.5 px-3.5 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-xl shadow-xs transition-all"
+              onClick={() => {
+                setModalError(null);
+                setIsRefundModalOpen(true);
+              }}
+              className="flex items-center gap-1.5 px-3.5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-xl shadow-xs transition-all cursor-pointer"
             >
               <Plus className="w-4 h-4" />
               Novo Reembolso
@@ -1837,7 +1928,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
 
           {refunds.length === 0 ? (
             <div className="text-center py-12 bg-slate-800/90 rounded-2xl border border-dashed border-slate-700/80 p-8">
-              <RotateCcw className="w-10 h-10 text-slate-300 mx-auto mb-2" />
+              <RotateCcw className="w-10 h-10 text-slate-500 mx-auto mb-2" />
               <p className="text-sm font-semibold text-slate-200">
                 Nenhum reembolso cadastrado
               </p>
@@ -1856,15 +1947,15 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                     className="p-4 bg-slate-800/90 rounded-xl border border-slate-700/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs"
                   >
                     <div className="flex items-center gap-3">
-                      <div className="w-9 h-9 rounded-xl bg-purple-50 text-purple-700 flex items-center justify-center shrink-0">
+                      <div className="w-9 h-9 rounded-xl bg-purple-500/15 text-purple-300 border border-purple-500/30 flex items-center justify-center shrink-0">
                         <RotateCcw className="w-4 h-4" />
                       </div>
                       <div>
                         <div className="text-sm font-bold text-white">
-                          {ref.description} (Devedor: <strong>{ref.debtorName}</strong>)
+                          {ref.description} (Devedor: <strong className="text-indigo-300">{ref.debtorName}</strong>)
                         </div>
-                        <div className="text-xs text-slate-500 mt-0.5">
-                          Status: <strong>{ref.status.toUpperCase()}</strong> • Recebido:{' '}
+                        <div className="text-xs text-slate-400 mt-0.5">
+                          Status: <strong className="text-slate-200">{ref.status === 'received' ? 'Recebido' : ref.status === 'partially_received' ? 'Parcialmente Recebido' : 'A Receber'}</strong> • Recebido:{' '}
                           {formatCentsToBRL(ref.amountReceivedCents)} de {formatCentsToBRL(ref.amountDueCents)}
                         </div>
                       </div>
@@ -1872,7 +1963,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
 
                     <div className="flex items-center justify-between sm:justify-end gap-3 shrink-0">
                       <div className="text-right">
-                        <div className="text-sm font-black text-white">
+                        <div className="text-sm font-black text-white font-mono">
                           Resta: {formatCentsToBRL(ref.remainingAmountCents)}
                         </div>
                       </div>
@@ -1880,11 +1971,12 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                       {!isReceived && (
                         <button
                           onClick={() => {
+                            setModalError(null);
                             setReceiveRefundModal(ref);
                             setReceiveAmount('');
                             setReceiveAccount('');
                           }}
-                          className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold rounded-lg shadow-xs transition-all"
+                          className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold rounded-lg shadow-xs transition-all cursor-pointer"
                         >
                           Receber
                         </button>
@@ -1906,14 +1998,17 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
               <h2 className="text-lg font-bold text-white">
                 Categorias Individuais
               </h2>
-              <p className="text-xs text-slate-500">
+              <p className="text-xs text-slate-400">
                 Classificação própria para receitas e despesas com suporte a arquivamento seguro.
               </p>
             </div>
 
             <button
-              onClick={() => setIsCategoryModalOpen(true)}
-              className="flex items-center gap-1.5 px-3.5 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-xl shadow-xs transition-all"
+              onClick={() => {
+                setModalError(null);
+                setIsCategoryModalOpen(true);
+              }}
+              className="flex items-center gap-1.5 px-3.5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-xl shadow-xs transition-all cursor-pointer"
             >
               <Plus className="w-4 h-4" />
               Nova Categoria
@@ -1950,7 +2045,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                     showToast(`Categoria ${nextState ? 'arquivada' : 'ativada'}.`);
                     await loadAllData();
                   }}
-                  className="text-[11px] text-slate-400 hover:text-slate-200 px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700"
+                  className="text-[11px] text-slate-300 hover:text-white px-2 py-1 rounded bg-slate-900 hover:bg-slate-700 border border-slate-700 cursor-pointer"
                 >
                   {cat.isArchived ? 'Desarquivar' : 'Arquivar'}
                 </button>
@@ -1960,34 +2055,38 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
         </div>
       )}
 
-      {/* ABA 7: RECORRÊNCIAS */}
+      {/* ABA 7: FIXOS & RECORRENTES */}
       {activeTab === 'recurrences' && (
         <div className="space-y-4">
           <div className="flex items-center justify-between">
             <div>
               <h2 className="text-lg font-bold text-white">
-                Regras de Recorrência
+                Lançamentos Fixos & Recorrentes
               </h2>
-              <p className="text-xs text-slate-500">
-                Assinaturas e contas fixas periódicas. Gere instâncias mensais sob demanda sem duplicar obrigações.
+              <p className="text-xs text-slate-400">
+                Receitas ou despesas fixas (ex: salário, aluguel) e assinaturas recorrentes com geração materializada na competência.
               </p>
             </div>
 
             <button
-              onClick={() => setIsRecurrenceModalOpen(true)}
-              className="flex items-center gap-1.5 px-3.5 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-xl shadow-xs transition-all"
+              onClick={() => {
+                setModalError(null);
+                setRecStartCompetence(selectedMonth);
+                setIsRecurrenceModalOpen(true);
+              }}
+              className="flex items-center gap-1.5 px-3.5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-xl shadow-xs transition-all cursor-pointer"
             >
               <Plus className="w-4 h-4" />
-              Nova Recorrência
+              Novo Fixo / Recorrência
             </button>
           </div>
 
           {recurrenceRules.length === 0 ? (
             <div className="p-8 text-center bg-slate-800/90 rounded-2xl border border-slate-700/80 shadow-xs">
-              <Repeat className="w-10 h-10 text-slate-300 mx-auto mb-2" />
-              <div className="text-sm font-semibold text-slate-200">Nenhuma regra de recorrência cadastrada</div>
+              <Repeat className="w-10 h-10 text-slate-500 mx-auto mb-2" />
+              <div className="text-sm font-semibold text-slate-200">Nenhuma regra fixa ou recorrente cadastrada</div>
               <p className="text-xs text-slate-400 mt-1">
-                Cadastre assinaturas como Netflix, Spotify, plano de saúde, aluguel ou internet.
+                Cadastre contas fixas (aluguel, salário, internet) ou assinaturas recorrentes (Netflix, academia).
               </p>
             </div>
           ) : (
@@ -1995,6 +2094,8 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
               {recurrenceRules.map((rule) => {
                 const cat = categories.find((c) => c.id === rule.categoryId);
                 const acc = accounts.find((a) => a.id === rule.defaultAccountId);
+                const isFixed = rule.nature === 'fixed';
+                const isRuleIncome = rule.type === 'income';
                 return (
                   <div
                     key={rule.id}
@@ -2002,32 +2103,52 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                   >
                     <div className="flex items-start justify-between gap-2">
                       <div>
+                        <div className="flex items-center gap-1.5 flex-wrap mb-1">
+                          <span
+                            className={`text-[10px] font-bold px-2 py-0.5 rounded-md border ${
+                              isFixed
+                                ? 'bg-indigo-500/15 text-indigo-300 border-indigo-500/30'
+                                : 'bg-purple-500/15 text-purple-300 border-purple-500/30'
+                            }`}
+                          >
+                            {isFixed ? 'Fixo Mensal' : 'Recorrente / Assinatura'}
+                          </span>
+                          <span
+                            className={`text-[10px] font-bold px-2 py-0.5 rounded-md border ${
+                              isRuleIncome
+                                ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                                : 'bg-rose-500/15 text-rose-300 border-rose-500/30'
+                            }`}
+                          >
+                            {isRuleIncome ? 'Receita' : 'Despesa'}
+                          </span>
+                        </div>
                         <div className="text-sm font-bold text-white">{rule.title}</div>
                         {rule.description && (
                           <div className="text-xs text-slate-400 mt-0.5">{rule.description}</div>
                         )}
                       </div>
                       <span
-                        className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider ${
+                        className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider shrink-0 ${
                           rule.status === 'active'
-                            ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                            ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
                             : rule.status === 'paused'
-                            ? 'bg-amber-50 text-amber-700 border border-amber-200'
-                            : 'bg-rose-50 text-rose-700 border border-rose-200'
+                            ? 'bg-amber-500/15 text-amber-300 border border-amber-500/30'
+                            : 'bg-rose-500/15 text-rose-300 border border-rose-500/30'
                         }`}
                       >
                         {rule.status === 'active' ? 'Ativa' : rule.status === 'paused' ? 'Pausada' : 'Cancelada'}
                       </span>
                     </div>
 
-                    <div className="text-xl font-black text-white">
+                    <div className="text-xl font-black text-white font-mono">
                       {formatCentsToBRL(rule.amountCents)}
-                      <span className="text-xs font-normal text-slate-400 ml-1">
+                      <span className="text-xs font-sans font-normal text-slate-400 ml-1">
                         / {rule.frequency === 'monthly' ? 'mês' : rule.frequency === 'weekly' ? 'semana' : 'ano'}
                       </span>
                     </div>
 
-                    <div className="grid grid-cols-2 gap-2 text-[11px] text-slate-500 pt-2 border-t border-slate-50">
+                    <div className="grid grid-cols-2 gap-2 text-[11px] text-slate-400 pt-2 border-t border-slate-700/70">
                       <div>
                         <span className="font-semibold text-slate-200">Vencimento:</span> Dia {rule.dueDay}
                       </div>
@@ -2037,29 +2158,29 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                       {cat && (
                         <div className="col-span-2 flex items-center gap-1.5">
                           <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: cat.color || '#2563EB' }} />
-                          <span className="text-slate-600 font-medium">{cat.name}</span>
+                          <span className="text-slate-300 font-medium">{cat.name}</span>
                         </div>
                       )}
                       {acc && (
-                        <div className="col-span-2 text-slate-500">
+                        <div className="col-span-2 text-slate-400">
                           <span className="font-semibold text-slate-200">Conta:</span> {acc.name}
                         </div>
                       )}
                     </div>
 
                     {rule.status !== 'cancelled' && (
-                      <div className="pt-2 border-t border-slate-800 flex items-center justify-between gap-1">
+                      <div className="pt-2 border-t border-slate-700/70 flex items-center justify-between gap-1">
                         <button
                           onClick={() => handleToggleRecurrenceStatus(rule.id, rule.status)}
-                          className="flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-slate-600 hover:text-slate-900 bg-slate-50 hover:bg-slate-100 rounded-lg"
+                          className="flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-slate-200 hover:text-white bg-slate-900 hover:bg-slate-700 border border-slate-700 rounded-lg cursor-pointer"
                         >
                           {rule.status === 'active' ? (
                             <>
-                              <Pause className="w-3 h-3 text-amber-500" /> Pausar
+                              <Pause className="w-3 h-3 text-amber-400" /> Pausar
                             </>
                           ) : (
                             <>
-                              <Play className="w-3 h-3 text-emerald-500" /> Reativar
+                              <Play className="w-3 h-3 text-emerald-400" /> Reativar
                             </>
                           )}
                         </button>
@@ -2067,8 +2188,8 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                         {rule.status === 'active' && (
                           <button
                             onClick={() => handleGenerateRecurrenceInstance(rule.id)}
-                            className="flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-blue-600 hover:text-blue-800 bg-blue-50 hover:bg-blue-100 rounded-lg"
-                            title={`Lançar competência ${selectedMonth}`}
+                            className="flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-indigo-300 hover:text-white bg-indigo-500/15 hover:bg-indigo-500/25 border border-indigo-500/30 rounded-lg cursor-pointer"
+                            title={`Materializar lançamento em Receitas & Despesas para ${selectedMonth}`}
                           >
                             <CalendarClock className="w-3 h-3" /> Gerar ({selectedMonth})
                           </button>
@@ -2076,7 +2197,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
 
                         <button
                           onClick={() => handleCancelRecurrenceRule(rule.id)}
-                          className="px-2 py-1 text-xs text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded-lg"
+                          className="px-2 py-1 text-xs text-rose-400 hover:text-rose-200 hover:bg-rose-500/15 rounded-lg cursor-pointer"
                         >
                           Cancelar
                         </button>
@@ -2098,14 +2219,18 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
               <h2 className="text-lg font-bold text-white">
                 Contratos de Parcelamento
               </h2>
-              <p className="text-xs text-slate-500">
-                Financiamentos e compras parceladas com conservação contábil de centavos e integração a faturas de cartão.
+              <p className="text-xs text-slate-400">
+                Financiamentos e compras parceladas (novas ou em andamento) com conservação contábil de centavos e integração a faturas de cartão.
               </p>
             </div>
 
             <button
-              onClick={() => setIsInstallmentModalOpen(true)}
-              className="flex items-center gap-1.5 px-3.5 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-xl shadow-xs transition-all"
+              onClick={() => {
+                setModalError(null);
+                setInstStartMonth(selectedMonth);
+                setIsInstallmentModalOpen(true);
+              }}
+              className="flex items-center gap-1.5 px-3.5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-xl shadow-xs transition-all cursor-pointer"
             >
               <Plus className="w-4 h-4" />
               Novo Parcelamento
@@ -2114,10 +2239,10 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
 
           {installmentContracts.length === 0 ? (
             <div className="p-8 text-center bg-slate-800/90 rounded-2xl border border-slate-700/80 shadow-xs">
-              <Layers className="w-10 h-10 text-slate-300 mx-auto mb-2" />
+              <Layers className="w-10 h-10 text-slate-500 mx-auto mb-2" />
               <div className="text-sm font-semibold text-slate-200">Nenhum contrato de parcelamento ativo</div>
               <p className="text-xs text-slate-400 mt-1">
-                Registre compras parceladas no cartão de crédito, empréstimos bancários ou carnês.
+                Registre compras parceladas no cartão de crédito, empréstimos ou parcelamentos já em andamento.
               </p>
             </div>
           ) : (
@@ -2127,6 +2252,9 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                 const occs = contractOccurrences[contract.id] || [];
                 const isLoadingOccs = loadingOccurrences[contract.id];
                 const card = accounts.find((a) => a.id === contract.sourceCardAccountId);
+                const startIdx = contract.initialInstallmentNumber || 1;
+                const projectedInstallments = Math.max(1, contract.totalInstallmentsCount - startIdx + 1);
+                const activeAllocationCents = contract.remainingAmountCents ?? contract.totalContractAmountCents;
 
                 return (
                   <div
@@ -2135,43 +2263,48 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                   >
                     <div className="flex flex-wrap items-start justify-between gap-2">
                       <div>
-                        <div className="flex items-center gap-2">
+                        <div className="flex flex-wrap items-center gap-2">
                           <span className="text-sm font-bold text-white">{contract.title}</span>
                           <span
                             className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider ${
                               contract.status === 'active'
-                                ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                                : 'bg-rose-50 text-rose-700 border border-rose-200'
+                                ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
+                                : 'bg-rose-500/15 text-rose-300 border border-rose-500/30'
                             }`}
                           >
                             {contract.status === 'active' ? 'Ativo' : 'Cancelado Antecipadamente'}
                           </span>
+                          {startIdx > 1 && (
+                            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-indigo-500/15 text-indigo-300 border border-indigo-500/30">
+                              Em andamento ({startIdx}/{contract.totalInstallmentsCount} → {contract.totalInstallmentsCount}/{contract.totalInstallmentsCount})
+                            </span>
+                          )}
                         </div>
-                        <div className="text-xs text-slate-400 mt-0.5 flex items-center gap-2">
+                        <div className="text-xs text-slate-400 mt-0.5 flex flex-wrap items-center gap-2">
                           <span>
                             {contract.fundingSource === 'credit_card'
                               ? `Cartão de Crédito ${card ? `(${card.name})` : ''}`
                               : 'Empréstimo Pessoal'}
                           </span>
                           <span>•</span>
-                          <span>Início: {contract.startCompetenceMonth}</span>
+                          <span>Início projeção: {contract.startCompetenceMonth}</span>
                         </div>
                       </div>
 
                       <div className="text-right">
-                        <div className="text-lg font-black text-white">
-                          {formatCentsToBRL(contract.totalContractAmountCents)}
+                        <div className="text-lg font-black text-white font-mono">
+                          {formatCentsToBRL(activeAllocationCents)}
                         </div>
                         <div className="text-xs text-slate-400">
-                          {contract.totalInstallmentsCount} parcelas de ~{formatCentsToBRL(Math.round(contract.totalContractAmountCents / contract.totalInstallmentsCount))}
+                          {projectedInstallments} parcela(s) de ~{formatCentsToBRL(Math.round(activeAllocationCents / projectedInstallments))}
                         </div>
                       </div>
                     </div>
 
-                    <div className="pt-2 border-t border-slate-800 flex items-center justify-between">
+                    <div className="pt-2 border-t border-slate-700/70 flex items-center justify-between">
                       <button
                         onClick={() => handleToggleContractOccurrences(contract.id)}
-                        className="flex items-center gap-1 text-xs font-semibold text-blue-600 hover:text-blue-800"
+                        className="flex items-center gap-1 text-xs font-semibold text-indigo-400 hover:text-indigo-300 cursor-pointer"
                       >
                         {isExpanded ? (
                           <>
@@ -2179,7 +2312,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                           </>
                         ) : (
                           <>
-                            <ChevronDown className="w-4 h-4" /> Ver Parcelas ({contract.totalInstallmentsCount})
+                            <ChevronDown className="w-4 h-4" /> Ver Parcelas ({projectedInstallments})
                           </>
                         )}
                       </button>
@@ -2187,10 +2320,11 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                       {contract.status === 'active' && (
                         <button
                           onClick={() => {
+                            setModalError(null);
                             setCancelContractModal(contract);
                             setCancelContractReason('');
                           }}
-                          className="px-2.5 py-1 text-xs font-medium text-rose-400 hover:text-rose-200 hover:bg-rose-50 rounded-lg"
+                          className="px-2.5 py-1 text-xs font-medium text-rose-400 hover:text-rose-200 hover:bg-rose-500/15 rounded-lg cursor-pointer"
                         >
                           Cancelar Antecipadamente
                         </button>
@@ -2198,7 +2332,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                     </div>
 
                     {isExpanded && (
-                      <div className="mt-3 pt-3 border-t border-slate-800 space-y-2">
+                      <div className="mt-3 pt-3 border-t border-slate-700/70 space-y-2">
                         {isLoadingOccs ? (
                           <div className="text-xs text-slate-400 py-2 text-center">Carregando parcelas...</div>
                         ) : occs.length === 0 ? (
@@ -2212,23 +2346,23 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                                   occ.status === 'cancelled'
                                     ? 'bg-slate-900/40 border-slate-700/60 opacity-60'
                                     : occ.status === 'paid'
-                                    ? 'bg-emerald-50/50 border-emerald-100'
-                                    : 'bg-slate-800/90 border-slate-700/80'
+                                    ? 'bg-emerald-500/10 border-emerald-500/30'
+                                    : 'bg-slate-900/80 border-slate-700/80'
                                 }`}
                               >
                                 <div className="flex items-center justify-between font-semibold">
-                                  <span className="text-slate-700">
+                                  <span className="text-slate-200">
                                     Parcela {occ.installmentNumber}/{contract.totalInstallmentsCount}
                                   </span>
                                   <span
                                     className={`text-[9px] px-1.5 py-0.5 rounded-full font-bold uppercase ${
                                       occ.status === 'paid'
-                                        ? 'bg-emerald-100 text-emerald-800'
+                                        ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
                                         : occ.status === 'billed'
-                                        ? 'bg-blue-100 text-blue-800'
+                                        ? 'bg-sky-500/15 text-sky-300 border border-sky-500/30'
                                         : occ.status === 'cancelled'
-                                        ? 'bg-slate-200 text-slate-600 line-through'
-                                        : 'bg-amber-100 text-amber-800'
+                                        ? 'bg-slate-800 text-slate-400 line-through'
+                                        : 'bg-amber-500/15 text-amber-300 border border-amber-500/30'
                                     }`}
                                   >
                                     {occ.status === 'paid'
@@ -2240,7 +2374,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                                       : 'Agendada'}
                                   </span>
                                 </div>
-                                <div className="mt-1 font-bold text-white">
+                                <div className="mt-1 font-bold text-white font-mono">
                                   {formatCentsToBRL(occ.totalInstallmentAmountCents)}
                                 </div>
                                 <div className="text-[10px] text-slate-400 mt-0.5">
@@ -2263,18 +2397,28 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
       {/* MODAL: NOVA TRANSAÇÃO */}
       {isTxModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-xs">
-          <div className="bg-slate-900 rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-700">
+          <div className="bg-slate-900 rounded-2xl max-w-md w-full max-h-[90dvh] overflow-y-auto p-6 shadow-2xl border border-slate-700">
             <div className="flex items-center justify-between pb-3 border-b border-slate-800">
               <h3 className="text-base font-bold text-white">
                 {txType === 'income' ? 'Nova Receita' : 'Nova Despesa'}
               </h3>
               <button
-                onClick={() => setIsTxModalOpen(false)}
-                className="p-1 text-slate-400 hover:text-slate-200 rounded-lg"
+                onClick={() => {
+                  setModalError(null);
+                  setIsTxModalOpen(false);
+                }}
+                className="p-1 text-slate-400 hover:text-slate-200 rounded-lg cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
+
+            {modalError && (
+              <div className="mt-3 p-3 rounded-xl bg-rose-500/15 border border-rose-500/30 text-rose-200 text-xs flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                <span>{modalError}</span>
+              </div>
+            )}
 
             <form onSubmit={handleCreateTransaction} className="space-y-3.5 mt-3">
               <div>
@@ -2395,15 +2539,18 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
               <div className="pt-3 border-t border-slate-800 flex items-center justify-end gap-2">
                 <button
                   type="button"
-                  onClick={() => setIsTxModalOpen(false)}
-                  className="px-3 py-2 text-xs font-semibold text-slate-400 hover:text-slate-200"
+                  onClick={() => {
+                    setModalError(null);
+                    setIsTxModalOpen(false);
+                  }}
+                  className="px-3 py-2 text-xs font-semibold text-slate-400 hover:text-slate-200 cursor-pointer"
                 >
                   Cancelar
                 </button>
                 <button
                   type="submit"
                   disabled={txSubmitting}
-                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-xl shadow-xs disabled:opacity-50"
+                  className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-xl shadow-xs disabled:opacity-50 cursor-pointer"
                 >
                   {txSubmitting ? 'Salvando...' : 'Gravar Lançamento'}
                 </button>
@@ -2416,25 +2563,35 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
       {/* MODAL: AMORTIZAÇÃO / PAGAMENTO PARCIAL */}
       {partialTx && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-xs">
-          <div className="bg-slate-900 rounded-2xl max-w-md w-full p-6 shadow-2xl border border-blue-800/60">
+          <div className="bg-slate-900 rounded-2xl max-w-md w-full max-h-[90dvh] overflow-y-auto p-6 shadow-2xl border border-indigo-800/60">
             <div className="flex items-center justify-between pb-3 border-b border-slate-800">
               <h3 className="text-base font-bold text-white">
                 Amortização Parcial
               </h3>
               <button
-                onClick={() => setPartialTx(null)}
-                className="p-1 text-slate-400 hover:text-slate-200 rounded-lg"
+                onClick={() => {
+                  setModalError(null);
+                  setPartialTx(null);
+                }}
+                className="p-1 text-slate-400 hover:text-slate-200 rounded-lg cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            <div className="my-3 p-3 bg-blue-50 rounded-xl text-xs space-y-1 text-blue-900">
-              <div>Lançamento: <strong>{partialTx.description}</strong></div>
-              <div>Valor Original: <strong>{formatCentsToBRL(partialTx.amountCents)}</strong></div>
+            {modalError && (
+              <div className="mt-3 p-3 rounded-xl bg-rose-500/15 border border-rose-500/30 text-rose-200 text-xs flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                <span>{modalError}</span>
+              </div>
+            )}
+
+            <div className="my-3 p-3 bg-indigo-950/50 border border-indigo-800/50 rounded-xl text-xs space-y-1 text-indigo-200">
+              <div>Lançamento: <strong className="text-white">{partialTx.description}</strong></div>
+              <div>Valor Original: <strong className="text-white">{formatCentsToBRL(partialTx.amountCents)}</strong></div>
               <div>
                 Saldo Devedor Restante:{' '}
-                <strong className="text-rose-600">
+                <strong className="text-rose-400">
                   {formatCentsToBRL(partialTx.remainingAmountCents ?? partialTx.amountCents)}
                 </strong>
               </div>
@@ -2492,15 +2649,18 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
               <div className="pt-3 border-t border-slate-800 flex items-center justify-end gap-2">
                 <button
                   type="button"
-                  onClick={() => setPartialTx(null)}
-                  className="px-3 py-2 text-xs font-semibold text-slate-400 hover:text-slate-200"
+                  onClick={() => {
+                    setModalError(null);
+                    setPartialTx(null);
+                  }}
+                  className="px-3 py-2 text-xs font-semibold text-slate-400 hover:text-slate-200 cursor-pointer"
                 >
                   Cancelar
                 </button>
                 <button
                   type="submit"
                   disabled={partialSubmitting}
-                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-xl shadow-xs disabled:opacity-50"
+                  className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-xl shadow-xs disabled:opacity-50 cursor-pointer"
                 >
                   {partialSubmitting ? 'Gravando...' : 'Confirmar Amortização'}
                 </button>
@@ -2513,18 +2673,28 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
       {/* MODAL: TRANSFERÊNCIA ENTRE CONTAS PRÓPRIAS */}
       {isTransferModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-xs">
-          <div className="bg-slate-900 rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-700">
+          <div className="bg-slate-900 rounded-2xl max-w-md w-full max-h-[90dvh] overflow-y-auto p-6 shadow-2xl border border-slate-700">
             <div className="flex items-center justify-between pb-3 border-b border-slate-800">
               <h3 className="text-base font-bold text-white">
                 Transferência entre Contas Próprias
               </h3>
               <button
-                onClick={() => setIsTransferModalOpen(false)}
-                className="p-1 text-slate-400 hover:text-slate-200 rounded-lg"
+                onClick={() => {
+                  setModalError(null);
+                  setIsTransferModalOpen(false);
+                }}
+                className="p-1 text-slate-400 hover:text-slate-200 rounded-lg cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
+
+            {modalError && (
+              <div className="mt-3 p-3 rounded-xl bg-rose-500/15 border border-rose-500/30 text-rose-200 text-xs flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                <span>{modalError}</span>
+              </div>
+            )}
 
             <form onSubmit={handleExecuteTransfer} className="space-y-3.5 mt-3">
               <div>
@@ -2614,15 +2784,18 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
               <div className="pt-3 border-t border-slate-800 flex items-center justify-end gap-2">
                 <button
                   type="button"
-                  onClick={() => setIsTransferModalOpen(false)}
-                  className="px-3 py-2 text-xs font-semibold text-slate-400 hover:text-slate-200"
+                  onClick={() => {
+                    setModalError(null);
+                    setIsTransferModalOpen(false);
+                  }}
+                  className="px-3 py-2 text-xs font-semibold text-slate-400 hover:text-slate-200 cursor-pointer"
                 >
                   Cancelar
                 </button>
                 <button
                   type="submit"
                   disabled={xferSubmitting}
-                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-xl shadow-xs disabled:opacity-50"
+                  className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-xl shadow-xs disabled:opacity-50 cursor-pointer"
                 >
                   {xferSubmitting ? 'Transferindo...' : 'Executar Transferência'}
                 </button>
@@ -2635,25 +2808,35 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
       {/* MODAL: PAGAR FATURA DE CARTÃO */}
       {payInvoiceModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-xs">
-          <div className="bg-slate-900 rounded-2xl max-w-md w-full p-6 shadow-2xl border border-purple-800/60">
+          <div className="bg-slate-900 rounded-2xl max-w-md w-full max-h-[90dvh] overflow-y-auto p-6 shadow-2xl border border-purple-800/60">
             <div className="flex items-center justify-between pb-3 border-b border-slate-800">
               <h3 className="text-base font-bold text-white">
                 Pagar Fatura {payInvoiceModal.invoiceMonth}
               </h3>
               <button
-                onClick={() => setPayInvoiceModal(null)}
-                className="p-1 text-slate-400 hover:text-slate-200 rounded-lg"
+                onClick={() => {
+                  setModalError(null);
+                  setPayInvoiceModal(null);
+                }}
+                className="p-1 text-slate-400 hover:text-slate-200 rounded-lg cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            <div className="my-3 p-3 bg-purple-50 rounded-xl text-xs space-y-1 text-purple-900">
-              <div>Total Devido: <strong>{formatCentsToBRL(payInvoiceModal.totalDueAmountCents)}</strong></div>
-              <div>Já Pago: <strong>{formatCentsToBRL(payInvoiceModal.totalPaidAmountCents)}</strong></div>
+            {modalError && (
+              <div className="mt-3 p-3 rounded-xl bg-rose-500/15 border border-rose-500/30 text-rose-200 text-xs flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                <span>{modalError}</span>
+              </div>
+            )}
+
+            <div className="my-3 p-3 bg-purple-950/40 border border-purple-800/50 rounded-xl text-xs space-y-1 text-purple-200">
+              <div>Total Devido: <strong className="text-white">{formatCentsToBRL(payInvoiceModal.totalDueAmountCents)}</strong></div>
+              <div>Já Pago: <strong className="text-white">{formatCentsToBRL(payInvoiceModal.totalPaidAmountCents)}</strong></div>
               <div>
                 Saldo Devedor Restante:{' '}
-                <strong className="text-rose-600">
+                <strong className="text-rose-400">
                   {formatCentsToBRL(payInvoiceModal.remainingBalanceCents)}
                 </strong>
               </div>
@@ -2713,15 +2896,18 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
               <div className="pt-3 border-t border-slate-800 flex items-center justify-end gap-2">
                 <button
                   type="button"
-                  onClick={() => setPayInvoiceModal(null)}
-                  className="px-3 py-2 text-xs font-semibold text-slate-400 hover:text-slate-200"
+                  onClick={() => {
+                    setModalError(null);
+                    setPayInvoiceModal(null);
+                  }}
+                  className="px-3 py-2 text-xs font-semibold text-slate-400 hover:text-slate-200 cursor-pointer"
                 >
                   Cancelar
                 </button>
                 <button
                   type="submit"
                   disabled={payInvSubmitting}
-                  className="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white text-xs font-semibold rounded-xl shadow-xs disabled:opacity-50"
+                  className="px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white text-xs font-semibold rounded-xl shadow-xs disabled:opacity-50 cursor-pointer"
                 >
                   {payInvSubmitting ? 'Processando...' : 'Confirmar Pagamento'}
                 </button>
@@ -2734,18 +2920,28 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
       {/* MODAL: NOVO ORÇAMENTO */}
       {isBudgetModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-xs">
-          <div className="bg-slate-900 rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-700">
+          <div className="bg-slate-900 rounded-2xl max-w-md w-full max-h-[90dvh] overflow-y-auto p-6 shadow-2xl border border-slate-700">
             <div className="flex items-center justify-between pb-3 border-b border-slate-800">
               <h3 className="text-base font-bold text-white">
                 Novo Orçamento Mensal ({selectedMonth})
               </h3>
               <button
-                onClick={() => setIsBudgetModalOpen(false)}
-                className="p-1 text-slate-400 hover:text-slate-200 rounded-lg"
+                onClick={() => {
+                  setModalError(null);
+                  setIsBudgetModalOpen(false);
+                }}
+                className="p-1 text-slate-400 hover:text-slate-200 rounded-lg cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
+
+            {modalError && (
+              <div className="mt-3 p-3 rounded-xl bg-rose-500/15 border border-rose-500/30 text-rose-200 text-xs flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                <span>{modalError}</span>
+              </div>
+            )}
 
             <form onSubmit={handleCreateBudget} className="space-y-3.5 mt-3">
               <div>
@@ -2788,7 +2984,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                       return (
                         <label
                           key={c.id}
-                          className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer"
+                          className="flex items-center gap-2 text-xs text-slate-200 hover:text-white cursor-pointer"
                         >
                           <input
                             type="checkbox"
@@ -2797,7 +2993,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                               if (e.target.checked) setBudgetCatIds([...budgetCatIds, c.id]);
                               else setBudgetCatIds(budgetCatIds.filter((id) => id !== c.id));
                             }}
-                            className="rounded text-blue-600 focus:ring-blue-500"
+                            className="rounded text-indigo-600 focus:ring-indigo-500"
                           />
                           <span>{c.name}</span>
                         </label>
@@ -2809,15 +3005,18 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
               <div className="pt-3 border-t border-slate-800 flex items-center justify-end gap-2">
                 <button
                   type="button"
-                  onClick={() => setIsBudgetModalOpen(false)}
-                  className="px-3 py-2 text-xs font-semibold text-slate-400 hover:text-slate-200"
+                  onClick={() => {
+                    setModalError(null);
+                    setIsBudgetModalOpen(false);
+                  }}
+                  className="px-3 py-2 text-xs font-semibold text-slate-400 hover:text-slate-200 cursor-pointer"
                 >
                   Cancelar
                 </button>
                 <button
                   type="submit"
                   disabled={budgetSubmitting}
-                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-xl shadow-xs disabled:opacity-50"
+                  className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-xl shadow-xs disabled:opacity-50 cursor-pointer"
                 >
                   {budgetSubmitting ? 'Salvando...' : 'Salvar Orçamento'}
                 </button>
@@ -2830,18 +3029,28 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
       {/* MODAL: NOVO REEMBOLSO */}
       {isRefundModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-xs">
-          <div className="bg-slate-900 rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-700">
+          <div className="bg-slate-900 rounded-2xl max-w-md w-full max-h-[90dvh] overflow-y-auto p-6 shadow-2xl border border-slate-700">
             <div className="flex items-center justify-between pb-3 border-b border-slate-800">
               <h3 className="text-base font-bold text-white">
                 Novo Reembolso a Receber
               </h3>
               <button
-                onClick={() => setIsRefundModalOpen(false)}
-                className="p-1 text-slate-400 hover:text-slate-200 rounded-lg"
+                onClick={() => {
+                  setModalError(null);
+                  setIsRefundModalOpen(false);
+                }}
+                className="p-1 text-slate-400 hover:text-slate-200 rounded-lg cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
+
+            {modalError && (
+              <div className="mt-3 p-3 rounded-xl bg-rose-500/15 border border-rose-500/30 text-rose-200 text-xs flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                <span>{modalError}</span>
+              </div>
+            )}
 
             <form onSubmit={handleCreateRefund} className="space-y-3 mt-3">
               <div>
@@ -2909,15 +3118,18 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
               <div className="pt-3 border-t border-slate-800 flex items-center justify-end gap-2">
                 <button
                   type="button"
-                  onClick={() => setIsRefundModalOpen(false)}
-                  className="px-3 py-2 text-xs font-semibold text-slate-400 hover:text-slate-200"
+                  onClick={() => {
+                    setModalError(null);
+                    setIsRefundModalOpen(false);
+                  }}
+                  className="px-3 py-2 text-xs font-semibold text-slate-400 hover:text-slate-200 cursor-pointer"
                 >
                   Cancelar
                 </button>
                 <button
                   type="submit"
                   disabled={refSubmitting}
-                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-xl shadow-xs disabled:opacity-50"
+                  className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-xl shadow-xs disabled:opacity-50 cursor-pointer"
                 >
                   {refSubmitting ? 'Salvando...' : 'Salvar Reembolso'}
                 </button>
@@ -2930,23 +3142,33 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
       {/* MODAL: RECEBER REEMBOLSO */}
       {receiveRefundModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-xs">
-          <div className="bg-slate-900 rounded-2xl max-w-md w-full p-6 shadow-2xl border border-emerald-800/60">
+          <div className="bg-slate-900 rounded-2xl max-w-md w-full max-h-[90dvh] overflow-y-auto p-6 shadow-2xl border border-emerald-800/60">
             <div className="flex items-center justify-between pb-3 border-b border-slate-800">
               <h3 className="text-base font-bold text-white">
                 Receber Reembolso ({receiveRefundModal.debtorName})
               </h3>
               <button
-                onClick={() => setReceiveRefundModal(null)}
-                className="p-1 text-slate-400 hover:text-slate-200 rounded-lg"
+                onClick={() => {
+                  setModalError(null);
+                  setReceiveRefundModal(null);
+                }}
+                className="p-1 text-slate-400 hover:text-slate-200 rounded-lg cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            <div className="my-3 p-3 bg-emerald-50 rounded-xl text-xs space-y-1 text-emerald-900">
-              <div>Total Devido: <strong>{formatCentsToBRL(receiveRefundModal.amountDueCents)}</strong></div>
-              <div>Já Recebido: <strong>{formatCentsToBRL(receiveRefundModal.amountReceivedCents)}</strong></div>
-              <div>Resta: <strong className="text-emerald-700">{formatCentsToBRL(receiveRefundModal.remainingAmountCents)}</strong></div>
+            {modalError && (
+              <div className="mt-3 p-3 rounded-xl bg-rose-500/15 border border-rose-500/30 text-rose-200 text-xs flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                <span>{modalError}</span>
+              </div>
+            )}
+
+            <div className="my-3 p-3 bg-emerald-950/40 border border-emerald-800/50 rounded-xl text-xs space-y-1 text-emerald-200">
+              <div>Total Devido: <strong className="text-white">{formatCentsToBRL(receiveRefundModal.amountDueCents)}</strong></div>
+              <div>Já Recebido: <strong className="text-white">{formatCentsToBRL(receiveRefundModal.amountReceivedCents)}</strong></div>
+              <div>Resta: <strong className="text-emerald-300">{formatCentsToBRL(receiveRefundModal.remainingAmountCents)}</strong></div>
             </div>
 
             <form onSubmit={handleExecuteReceiveRefund} className="space-y-3">
@@ -3003,15 +3225,18 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
               <div className="pt-3 border-t border-slate-800 flex items-center justify-end gap-2">
                 <button
                   type="button"
-                  onClick={() => setReceiveRefundModal(null)}
-                  className="px-3 py-2 text-xs font-semibold text-slate-400 hover:text-slate-200"
+                  onClick={() => {
+                    setModalError(null);
+                    setReceiveRefundModal(null);
+                  }}
+                  className="px-3 py-2 text-xs font-semibold text-slate-400 hover:text-slate-200 cursor-pointer"
                 >
                   Cancelar
                 </button>
                 <button
                   type="submit"
                   disabled={receiveSubmitting}
-                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold rounded-xl shadow-xs disabled:opacity-50"
+                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold rounded-xl shadow-xs disabled:opacity-50 cursor-pointer"
                 >
                   {receiveSubmitting ? 'Gravando...' : 'Confirmar Recebimento'}
                 </button>
@@ -3024,18 +3249,28 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
       {/* MODAL: NOVA CATEGORIA */}
       {isCategoryModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-xs">
-          <div className="bg-slate-900 rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-700">
+          <div className="bg-slate-900 rounded-2xl max-w-md w-full max-h-[90dvh] overflow-y-auto p-6 shadow-2xl border border-slate-700">
             <div className="flex items-center justify-between pb-3 border-b border-slate-800">
               <h3 className="text-base font-bold text-white">
                 Nova Categoria Individual
               </h3>
               <button
-                onClick={() => setIsCategoryModalOpen(false)}
-                className="p-1 text-slate-400 hover:text-slate-200 rounded-lg"
+                onClick={() => {
+                  setModalError(null);
+                  setIsCategoryModalOpen(false);
+                }}
+                className="p-1 text-slate-400 hover:text-slate-200 rounded-lg cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
+
+            {modalError && (
+              <div className="mt-3 p-3 rounded-xl bg-rose-500/15 border border-rose-500/30 text-rose-200 text-xs flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                <span>{modalError}</span>
+              </div>
+            )}
 
             <form onSubmit={handleCreateCategory} className="space-y-3 mt-3">
               <div>
@@ -3077,22 +3312,25 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                     onChange={(e) => setNewCatColor(e.target.value)}
                     className="w-9 h-9 rounded-xl cursor-pointer border border-slate-700 p-0.5 bg-slate-800"
                   />
-                  <span className="text-xs font-mono text-slate-500">{newCatColor}</span>
+                  <span className="text-xs font-mono text-slate-400">{newCatColor}</span>
                 </div>
               </div>
 
               <div className="pt-3 border-t border-slate-800 flex items-center justify-end gap-2">
                 <button
                   type="button"
-                  onClick={() => setIsCategoryModalOpen(false)}
-                  className="px-3 py-2 text-xs font-semibold text-slate-400 hover:text-slate-200"
+                  onClick={() => {
+                    setModalError(null);
+                    setIsCategoryModalOpen(false);
+                  }}
+                  className="px-3 py-2 text-xs font-semibold text-slate-400 hover:text-slate-200 cursor-pointer"
                 >
                   Cancelar
                 </button>
                 <button
                   type="submit"
                   disabled={newCatSubmitting}
-                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-xl shadow-xs disabled:opacity-50"
+                  className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-xl shadow-xs disabled:opacity-50 cursor-pointer"
                 >
                   {newCatSubmitting ? 'Salvando...' : 'Salvar Categoria'}
                 </button>
@@ -3101,34 +3339,78 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
           </div>
         </div>
       )}
-      {/* MODAL: NOVA RECORRÊNCIA */}
+
+      {/* MODAL: NOVA RECORRÊNCIA OU LANÇAMENTO FIXO */}
       {isRecurrenceModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-xs">
-          <div className="bg-slate-900 rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-700">
+          <div className="bg-slate-900 rounded-2xl max-w-md w-full max-h-[90dvh] overflow-y-auto p-6 shadow-2xl border border-slate-700">
             <div className="flex items-center justify-between pb-3 border-b border-slate-800">
               <h3 className="text-base font-bold text-white">
-                Nova Regra de Recorrência
+                Novo Lançamento Fixo ou Recorrente
               </h3>
               <button
-                onClick={() => setIsRecurrenceModalOpen(false)}
-                className="p-1 text-slate-400 hover:text-slate-200 rounded-lg"
+                onClick={() => {
+                  setModalError(null);
+                  setIsRecurrenceModalOpen(false);
+                }}
+                className="p-1 text-slate-400 hover:text-slate-200 rounded-lg cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
+            {modalError && (
+              <div className="mt-3 p-3 rounded-xl bg-rose-500/15 border border-rose-500/30 text-rose-200 text-xs flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                <span>{modalError}</span>
+              </div>
+            )}
+
             <form onSubmit={handleCreateRecurrence} className="space-y-3 mt-3">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
+                    Natureza *
+                  </label>
+                  <select
+                    value={recNature}
+                    onChange={(e) => setRecNature(e.target.value as RecurrenceRuleNature)}
+                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  >
+                    <option value="fixed">Fixo Mensal (Ex: Aluguel, Salário)</option>
+                    <option value="recurring">Recorrente / Assinatura (Ex: Streaming)</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
+                    Tipo *
+                  </label>
+                  <select
+                    value={recType}
+                    onChange={(e) => {
+                      setRecType(e.target.value as PersonalTransactionType);
+                      setRecCategory('');
+                    }}
+                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  >
+                    <option value="expense">Despesa</option>
+                    <option value="income">Receita</option>
+                  </select>
+                </div>
+              </div>
+
               <div>
                 <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
-                  Título da Despesa Periódica *
+                  Título *
                 </label>
                 <input
                   type="text"
                   required
-                  placeholder="Ex: Netflix, Internet Fibra, Aluguel..."
+                  placeholder={recType === 'income' ? 'Ex: Salário Mensal, Aluguel Recebido...' : 'Ex: Aluguel, Internet Fibra, Netflix...'}
                   value={recTitle}
                   onChange={(e) => setRecTitle(e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                 />
               </div>
 
@@ -3143,7 +3425,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                     placeholder="0,00"
                     value={recAmount}
                     onChange={(e) => setRecAmount(e.target.value)}
-                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500 font-bold"
+                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500 font-bold"
                   />
                 </div>
 
@@ -3154,7 +3436,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                   <select
                     value={recFrequency}
                     onChange={(e) => setRecFrequency(e.target.value as any)}
-                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                   >
                     <option value="monthly">Mensal</option>
                     <option value="weekly">Semanal</option>
@@ -3175,7 +3457,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                     required
                     value={recDueDay}
                     onChange={(e) => setRecDueDay(Number(e.target.value))}
-                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                   />
                 </div>
 
@@ -3190,7 +3472,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                     placeholder="2026-11"
                     value={recStartCompetence}
                     onChange={(e) => setRecStartCompetence(e.target.value)}
-                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono"
                   />
                 </div>
               </div>
@@ -3202,11 +3484,11 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                 <select
                   value={recCategory}
                   onChange={(e) => setRecCategory(e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                 >
                   <option value="">Selecione...</option>
                   {categories
-                    .filter((c) => !c.isArchived && (c.type === 'expense' || c.type === 'both'))
+                    .filter((c) => !c.isArchived && (c.type === recType || c.type === 'both'))
                     .map((c) => (
                       <option key={c.id} value={c.id}>
                         {c.name}
@@ -3222,7 +3504,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                 <select
                   value={recAccount}
                   onChange={(e) => setRecAccount(e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                 >
                   <option value="">Nenhuma / Definir no lançamento</option>
                   {accounts
@@ -3244,24 +3526,39 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                   placeholder="Ex: Assinatura premium família..."
                   value={recDesc}
                   onChange={(e) => setRecDesc(e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                 />
               </div>
+
+              <label className="flex items-start gap-2.5 p-3 rounded-xl bg-slate-800/80 border border-slate-700/80 cursor-pointer text-xs text-slate-200">
+                <input
+                  type="checkbox"
+                  checked={recGenerateInitial}
+                  onChange={(e) => setRecGenerateInitial(e.target.checked)}
+                  className="mt-0.5 rounded text-indigo-600 focus:ring-indigo-500"
+                />
+                <span>
+                  Já gerar lançamento materializado para o mês inicial (<strong className="text-indigo-300 font-mono">{recStartCompetence}</strong>) em Receitas &amp; Despesas
+                </span>
+              </label>
 
               <div className="pt-3 border-t border-slate-800 flex items-center justify-end gap-2">
                 <button
                   type="button"
-                  onClick={() => setIsRecurrenceModalOpen(false)}
-                  className="px-3 py-2 text-xs font-semibold text-slate-400 hover:text-slate-200"
+                  onClick={() => {
+                    setModalError(null);
+                    setIsRecurrenceModalOpen(false);
+                  }}
+                  className="px-3 py-2 text-xs font-semibold text-slate-400 hover:text-slate-200 cursor-pointer"
                 >
                   Cancelar
                 </button>
                 <button
                   type="submit"
                   disabled={recSubmitting}
-                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-xl shadow-xs disabled:opacity-50"
+                  className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-xl shadow-xs disabled:opacity-50 cursor-pointer"
                 >
-                  {recSubmitting ? 'Salvando...' : 'Criar Recorrência'}
+                  {recSubmitting ? 'Salvando...' : 'Criar Regra'}
                 </button>
               </div>
             </form>
@@ -3269,21 +3566,31 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
         </div>
       )}
 
-      {/* MODAL: NOVO PARCELAMENTO */}
+      {/* MODAL: NOVO PARCELAMENTO (NOVO OU EM ANDAMENTO) */}
       {isInstallmentModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-xs">
-          <div className="bg-slate-900 rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-700">
+          <div className="bg-slate-900 rounded-2xl max-w-md w-full max-h-[90dvh] overflow-y-auto p-6 shadow-2xl border border-slate-700">
             <div className="flex items-center justify-between pb-3 border-b border-slate-800">
               <h3 className="text-base font-bold text-white">
                 Novo Contrato de Parcelamento
               </h3>
               <button
-                onClick={() => setIsInstallmentModalOpen(false)}
-                className="p-1 text-slate-400 hover:text-slate-200 rounded-lg"
+                onClick={() => {
+                  setModalError(null);
+                  setIsInstallmentModalOpen(false);
+                }}
+                className="p-1 text-slate-400 hover:text-slate-200 rounded-lg cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
+
+            {modalError && (
+              <div className="mt-3 p-3 rounded-xl bg-rose-500/15 border border-rose-500/30 text-rose-200 text-xs flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                <span>{modalError}</span>
+              </div>
+            )}
 
             <form onSubmit={handleCreateInstallment} className="space-y-3 mt-3">
               <div>
@@ -3296,14 +3603,75 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                   placeholder="Ex: Smartphone Novo, IPVA 2026, Sofá da Sala..."
                   value={instTitle}
                   onChange={(e) => setInstTitle(e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                 />
               </div>
+
+              <label className="flex items-start gap-2.5 p-3 rounded-xl bg-slate-800/80 border border-slate-700/80 cursor-pointer text-xs text-slate-200">
+                <input
+                  type="checkbox"
+                  checked={instOngoing}
+                  onChange={(e) => {
+                    const checked = e.target.checked;
+                    setInstOngoing(checked);
+                    if (checked && instCurrentNumber < 2) {
+                      setInstCurrentNumber(2);
+                    }
+                  }}
+                  className="mt-0.5 rounded text-indigo-600 focus:ring-indigo-500"
+                />
+                <span>
+                  Parcelamento já está em andamento (parcela inicial &gt; 1 — ex: estou na 5/10)
+                </span>
+              </label>
+
+              {instOngoing && (
+                <div className="p-3 rounded-xl bg-indigo-950/40 border border-indigo-800/50 space-y-3">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-[10px] font-semibold text-indigo-200 uppercase mb-1">
+                        Parcela Atual (k) *
+                      </label>
+                      <input
+                        type="number"
+                        min="2"
+                        max={instCount}
+                        required
+                        value={instCurrentNumber}
+                        onChange={(e) => setInstCurrentNumber(Number(e.target.value))}
+                        className="w-full px-3 py-1.5 bg-slate-900 border border-indigo-700/60 rounded-xl text-xs text-white font-bold focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-semibold text-indigo-200 uppercase mb-1">
+                        Modo do Valor *
+                      </label>
+                      <select
+                        value={instAmountMode}
+                        onChange={(e) => setInstAmountMode(e.target.value as 'remaining' | 'total')}
+                        className="w-full px-2.5 py-1.5 bg-slate-900 border border-indigo-700/60 rounded-xl text-xs text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      >
+                        <option value="remaining">Saldo restante (k..N)</option>
+                        <option value="total">Valor total original (1..N)</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div className="text-[11px] text-indigo-200 leading-relaxed">
+                    Projetará <strong className="text-white">{Math.max(1, instCount - instCurrentNumber + 1)}</strong> parcela(s) restante(s):{' '}
+                    <strong className="text-indigo-300 font-mono">
+                      {instCurrentNumber}/{instCount} até {instCount}/{instCount}
+                    </strong>{' '}
+                    a partir de <strong className="font-mono">{instStartMonth}</strong>, sem fabricar cobranças passadas (1/{instCount}..{Math.max(1, instCurrentNumber - 1)}/{instCount}).
+                  </div>
+                </div>
+              )}
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
-                    Valor Total (R$) *
+                    {instOngoing && instAmountMode === 'remaining'
+                      ? 'Saldo Restante (R$) *'
+                      : 'Valor Total (R$) *'}
                   </label>
                   <input
                     type="text"
@@ -3311,13 +3679,13 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                     placeholder="0,00"
                     value={instAmount}
                     onChange={(e) => setInstAmount(e.target.value)}
-                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500 font-bold"
+                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500 font-bold"
                   />
                 </div>
 
                 <div>
                   <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
-                    Nº de Parcelas *
+                    Total de Parcelas (N) *
                   </label>
                   <input
                     type="number"
@@ -3326,7 +3694,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                     required
                     value={instCount}
                     onChange={(e) => setInstCount(Number(e.target.value))}
-                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500 font-bold"
+                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500 font-bold"
                   />
                 </div>
               </div>
@@ -3338,7 +3706,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                 <select
                   value={instFundingSource}
                   onChange={(e) => setInstFundingSource(e.target.value as any)}
-                  className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                 >
                   <option value="credit_card">Cartão de Crédito (Projeção em Faturas)</option>
                   <option value="personal_loan">Empréstimo Pessoal / Financiamento</option>
@@ -3354,7 +3722,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                     required
                     value={instCardAccount}
                     onChange={(e) => setInstCardAccount(e.target.value)}
-                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                   >
                     <option value="">Selecione o cartão...</option>
                     {accounts
@@ -3371,7 +3739,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
-                    1º Mês de Competência *
+                    {instOngoing ? `Mês da Parcela ${instCurrentNumber}/${instCount} *` : '1º Mês de Competência *'}
                   </label>
                   <input
                     type="text"
@@ -3380,7 +3748,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                     placeholder="2026-11"
                     value={instStartMonth}
                     onChange={(e) => setInstStartMonth(e.target.value)}
-                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono"
                   />
                 </div>
 
@@ -3395,7 +3763,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                     required
                     value={instDueDay}
                     onChange={(e) => setInstDueDay(Number(e.target.value))}
-                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                   />
                 </div>
               </div>
@@ -3403,15 +3771,18 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
               <div className="pt-3 border-t border-slate-800 flex items-center justify-end gap-2">
                 <button
                   type="button"
-                  onClick={() => setIsInstallmentModalOpen(false)}
-                  className="px-3 py-2 text-xs font-semibold text-slate-400 hover:text-slate-200"
+                  onClick={() => {
+                    setModalError(null);
+                    setIsInstallmentModalOpen(false);
+                  }}
+                  className="px-3 py-2 text-xs font-semibold text-slate-400 hover:text-slate-200 cursor-pointer"
                 >
                   Cancelar
                 </button>
                 <button
                   type="submit"
                   disabled={instSubmitting}
-                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-xl shadow-xs disabled:opacity-50"
+                  className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-xl shadow-xs disabled:opacity-50 cursor-pointer"
                 >
                   {instSubmitting ? 'Gerando...' : 'Criar Parcelamento'}
                 </button>
@@ -3424,23 +3795,33 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
       {/* MODAL: CANCELAR PARCELAMENTO ANTECIPADAMENTE */}
       {cancelContractModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-xs">
-          <div className="bg-slate-900 rounded-2xl max-w-md w-full p-6 shadow-2xl border border-rose-800/60">
+          <div className="bg-slate-900 rounded-2xl max-w-md w-full max-h-[90dvh] overflow-y-auto p-6 shadow-2xl border border-rose-800/60">
             <div className="flex items-center justify-between pb-3 border-b border-slate-800">
               <h3 className="text-base font-bold text-white">
                 Cancelar Contrato de Parcelamento
               </h3>
               <button
-                onClick={() => setCancelContractModal(null)}
-                className="p-1 text-slate-400 hover:text-slate-200 rounded-lg"
+                onClick={() => {
+                  setModalError(null);
+                  setCancelContractModal(null);
+                }}
+                className="p-1 text-slate-400 hover:text-slate-200 rounded-lg cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            <div className="my-3 p-3 bg-rose-50 rounded-xl text-xs space-y-1 text-rose-900">
-              <div>Contrato: <strong>{cancelContractModal.title}</strong></div>
-              <div>Total do Contrato: <strong>{formatCentsToBRL(cancelContractModal.totalContractAmountCents)}</strong></div>
-              <p className="text-[11px] text-rose-700 mt-2">
+            {modalError && (
+              <div className="mt-3 p-3 rounded-xl bg-rose-500/15 border border-rose-500/30 text-rose-200 text-xs flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                <span>{modalError}</span>
+              </div>
+            )}
+
+            <div className="my-3 p-3 bg-rose-950/40 border border-rose-800/50 rounded-xl text-xs space-y-1 text-rose-200">
+              <div>Contrato: <strong className="text-white">{cancelContractModal.title}</strong></div>
+              <div>Total do Contrato: <strong className="text-white">{formatCentsToBRL(cancelContractModal.totalContractAmountCents)}</strong></div>
+              <p className="text-[11px] text-rose-300 mt-2">
                 O cancelamento antecipado cancelará todas as parcelas agendadas ainda não faturadas/pagas e liberará imediatamente o limite projetado nas faturas de cartão.
               </p>
             </div>
@@ -3462,15 +3843,18 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
               <div className="pt-3 border-t border-slate-800 flex items-center justify-end gap-2">
                 <button
                   type="button"
-                  onClick={() => setCancelContractModal(null)}
-                  className="px-3 py-2 text-xs font-semibold text-slate-400 hover:text-slate-200"
+                  onClick={() => {
+                    setModalError(null);
+                    setCancelContractModal(null);
+                  }}
+                  className="px-3 py-2 text-xs font-semibold text-slate-400 hover:text-slate-200 cursor-pointer"
                 >
                   Voltar
                 </button>
                 <button
                   type="submit"
                   disabled={cancelContractSubmitting}
-                  className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold rounded-xl shadow-xs disabled:opacity-50"
+                  className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold rounded-xl shadow-xs disabled:opacity-50 cursor-pointer"
                 >
                   {cancelContractSubmitting ? 'Cancelando...' : 'Confirmar Cancelamento'}
                 </button>

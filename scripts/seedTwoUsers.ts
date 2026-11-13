@@ -68,16 +68,18 @@ export async function seedTwoUsers() {
     type: 'checking',
     currency: 'BRL',
     initialBalanceCents: 500000, // R$ 5.000,00
+    projectedBalanceCents: 500000, // Saldo projetado consistente
     isArchived: false,
     createdAt: now,
     updatedAt: now,
   });
 
   const aliceCheckingMovInitial = `mov_init_${aliceCheckingId}`;
-  await adminDb.doc(`movements/${aliceCheckingMovInitial}`).set({
+  await adminDb.doc(`accounts/${aliceCheckingId}/movements/${aliceCheckingMovInitial}`).set({
     id: aliceCheckingMovInitial,
     accountId: aliceCheckingId,
     userId: aliceUid,
+    authorUid: aliceUid,
     direction: 'inflow',
     amountCents: 500000,
     effectiveDate,
@@ -94,6 +96,7 @@ export async function seedTwoUsers() {
     name: 'Visa Infinite Alice',
     type: 'credit',
     currency: 'BRL',
+    projectedBalanceCents: 0,
     creditLimitCents: 1000000, // R$ 10.000,00
     closingDay: 15,
     dueDay: 25,
@@ -114,7 +117,9 @@ export async function seedTwoUsers() {
     await adminDb.doc(`users/${aliceUid}/categories/${cat.id}`).set({
       ...cat,
       userId: aliceUid,
+      isArchived: false,
       createdAt: now,
+      updatedAt: now,
     });
   }
 
@@ -126,20 +131,28 @@ export async function seedTwoUsers() {
     description: 'Supermercado Semanal',
     amountCents: 25000, // R$ 250,00
     type: 'expense',
+    status: 'paid',
     accountId: aliceCheckingId,
     categoryId: aliceCategories[0].id,
-    date: effectiveDate,
-    paymentStatus: 'paid',
+    categoryName: 'Alimentação',
+    competenceDate: effectiveDate,
+    dueDate: effectiveDate,
+    paymentDate: effectiveDate,
+    originType: 'manual',
+    idempotencyKey: `seed_${aliceTxId}`,
+    paidAmountCents: 25000,
+    remainingAmountCents: 0,
     notes: 'Compras de hortifruti da semana',
     createdAt: now,
     updatedAt: now,
   });
 
   const aliceTxMovId = `mov_tx_${aliceTxId}`;
-  await adminDb.doc(`movements/${aliceTxMovId}`).set({
+  await adminDb.doc(`accounts/${aliceCheckingId}/movements/${aliceTxMovId}`).set({
     id: aliceTxMovId,
     accountId: aliceCheckingId,
     userId: aliceUid,
+    authorUid: aliceUid,
     direction: 'outflow',
     amountCents: 25000,
     effectiveDate,
@@ -149,6 +162,11 @@ export async function seedTwoUsers() {
     createdAt: now,
   });
 
+  await adminDb.doc(`accounts/${aliceCheckingId}`).set(
+    { projectedBalanceCents: 475000, updatedAt: now },
+    { merge: true }
+  );
+
   // Regra de Recorrência da Alice
   const aliceRuleId = `rec_netflix_${aliceUid.slice(0, 8)}`;
   await adminDb.doc(`recurrence_rules/${aliceRuleId}`).set({
@@ -156,15 +174,18 @@ export async function seedTwoUsers() {
     title: 'Assinatura Netflix',
     description: 'Plano Familiar 4K',
     amountCents: 5590, // R$ 55,90
-    scopeType: 'individual',
-    ownerUid: aliceUid,
+    scope: 'personal',
+    userId: aliceUid,
+    nature: 'recurring',
     frequency: 'monthly',
     interval: 1,
-    dayOfMonth: 10,
+    startCompetence: now.slice(0, 7),
+    dueDay: 10,
+    status: 'active',
     isActive: true,
     autoCharge: false,
     defaultAccountId: aliceCheckingId,
-    defaultCategoryId: aliceCategories[2].id,
+    categoryId: aliceCategories[2].id,
     createdAt: now,
     updatedAt: now,
   });
@@ -209,16 +230,18 @@ export async function seedTwoUsers() {
     type: 'checking',
     currency: 'BRL',
     initialBalanceCents: 400000, // R$ 4.000,00
+    projectedBalanceCents: 400000,
     isArchived: false,
     createdAt: now,
     updatedAt: now,
   });
 
   const bobCheckingMovInitial = `mov_init_${bobCheckingId}`;
-  await adminDb.doc(`movements/${bobCheckingMovInitial}`).set({
+  await adminDb.doc(`accounts/${bobCheckingId}/movements/${bobCheckingMovInitial}`).set({
     id: bobCheckingMovInitial,
     accountId: bobCheckingId,
     userId: bobUid,
+    authorUid: bobUid,
     direction: 'inflow',
     amountCents: 400000,
     effectiveDate,
@@ -239,7 +262,9 @@ export async function seedTwoUsers() {
     await adminDb.doc(`users/${bobUid}/categories/${cat.id}`).set({
       ...cat,
       userId: bobUid,
+      isArchived: false,
       createdAt: now,
+      updatedAt: now,
     });
   }
 
@@ -251,32 +276,45 @@ export async function seedTwoUsers() {
     id: spaceId,
     name: 'Residência Alice & Bob',
     description: 'Gestão financeira compartilhada do casal',
-    createdByUid: aliceUid,
-    ownerUid: aliceUid,
+    icon: 'ph-house-line',
+    color: '#3b82f6',
+    creatorUid: aliceUid,
+    ownerId: aliceUid,
+    spaceStatus: 'active',
+    memberUids: [aliceUid, bobUid],
+    historicalMemberUids: [aliceUid, bobUid],
+    enabledModules: ['finance', 'acquisitions'],
+    monthlyBudgetCents: 400000,
     isArchived: false,
-    members: [
-      { uid: aliceUid, role: 'owner', joinedAt: now },
-      { uid: bobUid, role: 'member', joinedAt: now },
-    ],
     createdAt: now,
     updatedAt: now,
   });
 
   await adminDb.doc(`spaces/${spaceId}/members/${aliceUid}`).set({
+    id: aliceUid,
+    spaceId,
     uid: aliceUid,
     displayName: 'Alice Silva',
+    contactEmail: aliceEmail,
     email: aliceEmail,
     role: 'owner',
+    participationStatus: 'active',
     status: 'active',
+    invitedAt: now,
     joinedAt: now,
   });
 
   await adminDb.doc(`spaces/${spaceId}/members/${bobUid}`).set({
+    id: bobUid,
+    spaceId,
     uid: bobUid,
     displayName: 'Bob Souza',
+    contactEmail: bobEmail,
     email: bobEmail,
     role: 'member',
+    participationStatus: 'active',
     status: 'active',
+    invitedAt: now,
     joinedAt: now,
   });
 
@@ -289,43 +327,57 @@ export async function seedTwoUsers() {
     description: 'Abastecimento da despensa e produtos de limpeza',
     totalOriginalAmountCents: 40000, // R$ 400,00
     competenceMonth: now.slice(0, 7),
+    competenceDate: effectiveDate,
+    dueDate: effectiveDate,
+    categoryId: aliceCategories[0].id,
+    categoryName: 'Alimentação',
     splitMethod: 'equal',
     createdByUid: aliceUid,
     responsibleUid: aliceUid,
     payerUid: aliceUid,
     participantUids: [aliceUid, bobUid],
+    validationStatus: 'approved',
+    commitmentStatus: 'active',
+    paymentExecutionStatus: 'partially_paid',
+    totalPaidToSupplierCents: 40000,
+    originType: 'manual',
+    idempotencyKey: `seed_${expenseId}`,
     createdAt: now,
     updatedAt: now,
   });
 
-  // Cota da Alice (Já quitada pelo desembolso inicial)
-  const aliceLiabId = `liab_alice_${expenseId}`;
-  await adminDb.doc(`spaces/${spaceId}/shared_expenses/${expenseId}/liabilities/${aliceLiabId}`).set({
-    id: aliceLiabId,
+  // Cota da Alice (Já quitada pelo desembolso inicial — path canônico liabilities/{memberUid})
+  await adminDb.doc(`spaces/${spaceId}/shared_expenses/${expenseId}/liabilities/${aliceUid}`).set({
+    id: aliceUid,
     expenseId,
     spaceId,
-    debtorUid: aliceUid,
-    responsibleUid: aliceUid,
-    originalAmountCents: 20000, // R$ 200,00
-    currentAmountCents: 20000,
+    memberUid: aliceUid,
+    memberName: 'Alice Silva',
+    assignedShareAmountCents: 20000, // R$ 200,00
+    originalAmountCents: 20000,
+    adjustedShareAmountCents: 20000,
+    paidAmountCents: 20000,
     remainingAmountCents: 0,
     status: 'paid',
+    splitMethod: 'equal',
     createdAt: now,
     updatedAt: now,
   });
 
-  // Cota do Bob (Pendente para pagamento/validação)
-  const bobLiabId = `liab_bob_${expenseId}`;
-  await adminDb.doc(`spaces/${spaceId}/shared_expenses/${expenseId}/liabilities/${bobLiabId}`).set({
-    id: bobLiabId,
+  // Cota do Bob (Pendente para pagamento/validação — path canônico liabilities/{memberUid})
+  await adminDb.doc(`spaces/${spaceId}/shared_expenses/${expenseId}/liabilities/${bobUid}`).set({
+    id: bobUid,
     expenseId,
     spaceId,
-    debtorUid: bobUid,
-    responsibleUid: aliceUid,
-    originalAmountCents: 20000, // R$ 200,00
-    currentAmountCents: 20000,
+    memberUid: bobUid,
+    memberName: 'Bob Souza',
+    assignedShareAmountCents: 20000, // R$ 200,00
+    originalAmountCents: 20000,
+    adjustedShareAmountCents: 20000,
+    paidAmountCents: 0,
     remainingAmountCents: 20000,
     status: 'pending',
+    splitMethod: 'equal',
     createdAt: now,
     updatedAt: now,
   });

@@ -244,3 +244,39 @@ export async function loginWithGoogle(): Promise<CanonicalAuthUser> {
 export async function logoutUser(): Promise<void> {
   await signOut(auth);
 }
+
+/**
+ * Atualiza o nome de exibição do usuário autenticado no Firebase Auth e em users/{uid}.
+ * Não mascara falhas de persistência: se o Auth ou o Firestore rejeitar a gravação, lança erro explícito.
+ */
+export async function updateUserDisplayName(newName: string): Promise<string> {
+  const cleanName = newName.trim().slice(0, 100);
+  if (cleanName.length < 2) {
+    throw new Error('O nome de exibição deve conter pelo menos 2 caracteres.');
+  }
+
+  const firebaseUser = auth.currentUser;
+  if (!firebaseUser) {
+    throw new Error('Nenhuma sessão autenticada no Firebase para atualizar o perfil.');
+  }
+
+  await updateProfile(firebaseUser, { displayName: cleanName });
+
+  const { doc, setDoc } = await import('firebase/firestore');
+  const { db } = await import('./firebase');
+
+  await setDoc(
+    doc(db, 'users', firebaseUser.uid),
+    {
+      uid: firebaseUser.uid,
+      name: cleanName,
+      displayName: cleanName,
+      email: (firebaseUser.email || '').toLowerCase(),
+      updatedAt: new Date().toISOString(),
+    },
+    { merge: true }
+  );
+
+  return cleanName;
+}
+

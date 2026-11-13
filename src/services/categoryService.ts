@@ -132,18 +132,24 @@ export async function getUserCategories(
 
   if (isDemo) {
     const all = loadDemoCategories().filter((c) => c.userId === userId);
-    const filtered = includeArchived ? all : all.filter((c) => !c.isArchived);
+    const filtered = includeArchived ? all : all.filter((c) => c.isArchived !== true);
     return filtered.sort((a, b) => a.name.localeCompare(b.name));
   }
 
   const collRef = collection(db, 'users', userId, 'categories');
-  const q = includeArchived
-    ? query(collRef)
-    : query(collRef, where('isArchived', '==', false));
-
-  const snap = await getDocs(q);
+  const snap = await getDocs(query(collRef));
   const result: PersonalCategory[] = [];
-  snap.forEach((d) => result.push({ ...(d.data() as PersonalCategory), id: d.id }));
+  snap.forEach((d) => {
+    const data = d.data() as PersonalCategory;
+    const cat: PersonalCategory = {
+      ...data,
+      id: d.id || data.id,
+      isArchived: Boolean(data.isArchived),
+    };
+    if (includeArchived || !cat.isArchived) {
+      result.push(cat);
+    }
+  });
 
   return result.sort((a, b) => a.name.localeCompare(b.name));
 }

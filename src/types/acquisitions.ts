@@ -53,6 +53,9 @@ export type ItemStage = RecurringStage | GoalStage | WishStage;
 export interface AcquisitionList {
   id: string;
   workspaceId: string;
+  scopeType?: 'individual' | 'shared';
+  spaceId?: string | null;
+  ownerUid?: string;
   name: string;
   type: ListType;
   description: string;
@@ -99,6 +102,7 @@ export interface AcquisitionItem {
   id: string;
   listId: string;
   workspaceId: string;
+  createdByUid?: string;
   name: string; // Ex: "Arroz 5kg", "Geladeira Inverter", "Fone Cancelamento de Ruído"
   groupId: string;
   categoryId: string;

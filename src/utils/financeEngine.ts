@@ -106,6 +106,139 @@ export function resolveTransactionStatus(
   return 'pending';
 }
 
+export type AutomatedStatusKey =
+  | 'paid'
+  | 'partially_paid'
+  | 'due_today'
+  | 'upcoming'
+  | 'overdue'
+  | 'forecast'
+  | 'cancelled'
+  | 'validating'
+  | 'rejected';
+
+export interface AutomatedFinancialStatusInfo {
+  key: AutomatedStatusKey;
+  label: string;
+  badgeClass: string;
+  isSettled: boolean;
+}
+
+/**
+ * Motor Canônico de Status Automático v3.1 (PT-BR e Tema Escuro).
+ * Deriva o estado visual real com base em amortização (paidAmountCents / remainingAmountCents),
+ * data de vencimento (dueDate vs data atual) e flags de ciclo de vida.
+ */
+export function resolveAutomatedV3Status(
+  input: {
+    status?: string;
+    amountCents?: number;
+    paidAmountCents?: number;
+    remainingAmountCents?: number;
+    dueDate?: string;
+    competenceDate?: string;
+    paymentDate?: string;
+  },
+  todayDate?: string
+): AutomatedFinancialStatusInfo {
+  const today = todayDate || getTodayDateString();
+  const status = (input.status || 'pending').toLowerCase();
+
+  if (status === 'cancelled') {
+    return {
+      key: 'cancelled',
+      label: 'Cancelado',
+      badgeClass: 'bg-slate-800 text-slate-400 border border-slate-700 line-through',
+      isSettled: true,
+    };
+  }
+
+  if (status === 'rejected') {
+    return {
+      key: 'rejected',
+      label: 'Recusado',
+      badgeClass: 'bg-rose-500/15 text-rose-300 border border-rose-500/30',
+      isSettled: false,
+    };
+  }
+
+  if (status === 'validating') {
+    return {
+      key: 'validating',
+      label: 'Em validação',
+      badgeClass: 'bg-amber-500/15 text-amber-300 border border-amber-500/30',
+      isSettled: false,
+    };
+  }
+
+  const totalCents = typeof input.amountCents === 'number' ? input.amountCents : 0;
+  const paidCents = typeof input.paidAmountCents === 'number' ? input.paidAmountCents : 0;
+  const remainingCents =
+    typeof input.remainingAmountCents === 'number'
+      ? input.remainingAmountCents
+      : Math.max(0, totalCents - paidCents);
+
+  if (
+    status === 'paid' ||
+    (totalCents > 0 && remainingCents <= 0 && paidCents > 0)
+  ) {
+    return {
+      key: 'paid',
+      label: 'Pago',
+      badgeClass: 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30',
+      isSettled: true,
+    };
+  }
+
+  if (
+    status === 'partially_paid' ||
+    (paidCents > 0 && remainingCents > 0)
+  ) {
+    return {
+      key: 'partially_paid',
+      label: 'Parcialmente pago',
+      badgeClass: 'bg-sky-500/15 text-sky-300 border border-sky-500/30',
+      isSettled: false,
+    };
+  }
+
+  const dueDate = input.dueDate || input.competenceDate || '';
+
+  if (status === 'forecast' && (!dueDate || dueDate > today)) {
+    return {
+      key: 'forecast',
+      label: 'Previsto',
+      badgeClass: 'bg-slate-700/70 text-slate-300 border border-slate-600/80',
+      isSettled: false,
+    };
+  }
+
+  if (dueDate && dueDate < today) {
+    return {
+      key: 'overdue',
+      label: 'Vencido',
+      badgeClass: 'bg-rose-500/20 text-rose-300 border border-rose-500/40',
+      isSettled: false,
+    };
+  }
+
+  if (dueDate && dueDate === today) {
+    return {
+      key: 'due_today',
+      label: 'Vence hoje',
+      badgeClass: 'bg-amber-500/20 text-amber-300 border border-amber-500/40',
+      isSettled: false,
+    };
+  }
+
+  return {
+    key: 'upcoming',
+    label: 'A vencer',
+    badgeClass: 'bg-indigo-500/15 text-indigo-300 border border-indigo-500/30',
+    isSettled: false,
+  };
+}
+
 /**
  * Formata um valor numérico para Moeda Brasileira (BRL).
  */

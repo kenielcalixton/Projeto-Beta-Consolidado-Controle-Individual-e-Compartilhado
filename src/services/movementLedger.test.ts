@@ -18,6 +18,7 @@ import {
   createAccount,
   getUserAccounts,
   archiveAccount,
+  archiveAccountSafely,
   updateAccount,
   validateAccountInput,
 } from './accountService';
@@ -1053,5 +1054,66 @@ describe('FASE 3 — Motor Contábil, Contas e Livro de Movimentações (v3.1)',
     assert.equal(recResp.hasDivergence, false);
     assert.equal(recResp.movementsCount, 2); // 1 original + 1 compensatório
   });
+
+  it('24. archiveAccountSafely migra obrigações abertas e recorrências ativas preservando movimentações e quitados', async () => {
+    const accOld = await createAccount(USER_A, { name: 'Conta Antiga', type: 'checking' }, true);
+    const accNew = await createAccount(USER_A, { name: 'Conta Nova', type: 'checking' }, true);
+
+    await recordMovement(
+      {
+        accountId: accOld.id,
+        userId: USER_A,
+        direction: 'inflow',
+        amountCents: 25000,
+        effectiveDate: '2026-11-01',
+        originType: 'personal_income',
+        originId: 'inc_hist_1',
+        description: 'Saldo histórico preservado',
+        authorUid: USER_A,
+      },
+      true
+    );
+
+    universalStorage.setItem(
+      'mpf_v3_demo_personal_transactions',
+      JSON.stringify([
+        { id: 'tx_open', userId: USER_A, accountId: accOld.id, status: 'pending', amountCents: 10000 },
+        { id: 'tx_paid', userId: USER_A, accountId: accOld.id, status: 'paid', amountCents: 5000 },
+      ])
+    );
+    universalStorage.setItem(
+      'demo_recurrence_rules_v3',
+      JSON.stringify([
+        { id: 'rule_active', userId: USER_A, defaultAccountId: accOld.id, status: 'active' },
+        { id: 'rule_cancelled', userId: USER_A, defaultAccountId: accOld.id, status: 'cancelled' },
+      ])
+    );
+
+    const res = await archiveAccountSafely(
+      {
+        accountId: accOld.id,
+        userId: USER_A,
+        targetAccountId: accNew.id,
+        migrateOpenObligations: true,
+      },
+      true
+    );
+
+    assert.equal(res.account.isArchived, true);
+    assert.equal(res.migratedTransactionsCount, 1);
+    assert.equal(res.migratedRecurrenceRulesCount, 1);
+
+    const txsAfter = JSON.parse(universalStorage.getItem('mpf_v3_demo_personal_transactions') || '[]');
+    assert.equal(txsAfter.find((t: any) => t.id === 'tx_open').accountId, accNew.id);
+    assert.equal(txsAfter.find((t: any) => t.id === 'tx_paid').accountId, accOld.id);
+
+    const rulesAfter = JSON.parse(universalStorage.getItem('demo_recurrence_rules_v3') || '[]');
+    assert.equal(rulesAfter.find((r: any) => r.id === 'rule_active').defaultAccountId, accNew.id);
+    assert.equal(rulesAfter.find((r: any) => r.id === 'rule_cancelled').defaultAccountId, accOld.id);
+
+    const histMovements = await getAccountMovements(accOld.id, USER_A, true);
+    assert.equal(histMovements.length, 1);
+  });
 });
+
 

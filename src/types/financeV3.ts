@@ -1398,9 +1398,10 @@ export interface CustodyBalanceSummary {
 export type RecurrenceRuleScope = 'personal' | 'shared';
 export type RecurrenceRuleFrequency = 'monthly' | 'weekly' | 'yearly';
 export type RecurrenceRuleStatus = 'active' | 'paused' | 'cancelled';
+export type RecurrenceRuleNature = 'fixed' | 'recurring';
 
 /**
- * Regra mestra geradora de despesas periódicas (não reescreve histórico passado).
+ * Regra mestra geradora de despesas ou receitas fixas e periódicas (não reescreve histórico passado).
  * Caminho Firestore: recurrence_rules/{ruleId}
  */
 export interface RecurrenceRule {
@@ -1410,6 +1411,10 @@ export interface RecurrenceRule {
   spaceId?: string;
   title: string;
   description?: string;
+  /** Tipo financeiro do lançamento gerado (padrão 'expense' para compatibilidade) */
+  type?: PersonalTransactionType;
+  /** Distinção explícita entre obrigação/receita fixa mensal e recorrência periódica */
+  nature?: RecurrenceRuleNature;
   amountCents: CentsInteger;
   frequency: RecurrenceRuleFrequency;
   interval: number;
@@ -1445,6 +1450,8 @@ export type InstallmentContractStatus = 'active' | 'completed' | 'cancelled_earl
 
 /**
  * Contrato mestre de parcelamento de compras ou financiamentos.
+ * Suporta tanto parcelamentos novos (1/N) quanto parcelamentos já em andamento (ex: 5/10),
+ * projetando apenas as parcelas vigentes e futuras sem fabricar histórico retroativo falso.
  * Caminho Firestore: installment_contracts/{contractId}
  */
 export interface InstallmentContract {
@@ -1454,7 +1461,11 @@ export interface InstallmentContract {
   spaceId?: string;
   title: string;
   totalContractAmountCents: CentsInteger;
+  /** Montante restante efetivamente alocado nas parcelas de initialInstallmentNumber até totalInstallmentsCount */
+  remainingAmountCents?: CentsInteger;
   totalInstallmentsCount: number;
+  /** Número da primeira parcela projetada pelo sistema (padrão 1; ex: 5 para parcelamento 5/10 em andamento) */
+  initialInstallmentNumber?: number;
   fundingSource: InstallmentContractFundingSource;
   sourceCardAccountId?: string;
   startCompetenceMonth: CompetenceMonthString;

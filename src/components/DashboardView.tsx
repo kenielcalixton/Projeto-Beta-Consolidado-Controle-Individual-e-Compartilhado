@@ -9,7 +9,11 @@ import {
 } from 'chart.js';
 import { Space, Transaction } from '../types/finance';
 import { AcquisitionItem, AcquisitionList } from '../types/acquisitions';
-import { formatCurrency, resolveTransactionStatus } from '../utils/financeEngine';
+import {
+  formatCurrency,
+  getTodayDateString,
+  resolveTransactionStatus,
+} from '../utils/financeEngine';
 
 Chart.register(DoughnutController, ArcElement, Tooltip, Legend);
 
@@ -55,14 +59,34 @@ const STATUS_BADGE: Record<
     className: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30',
     icon: 'ph-check-circle',
   },
-  pending: {
-    label: 'Pendente',
-    className: 'bg-amber-500/15 text-amber-300 border-amber-500/30',
+  partially_paid: {
+    label: 'Parcialmente pago',
+    className: 'bg-sky-500/15 text-sky-300 border-sky-500/30',
+    icon: 'ph-circle-half',
+  },
+  due_today: {
+    label: 'Vence hoje',
+    className: 'bg-amber-500/20 text-amber-300 border-amber-500/40',
+    icon: 'ph-calendar-check',
+  },
+  upcoming: {
+    label: 'A vencer',
+    className: 'bg-indigo-500/15 text-indigo-300 border-indigo-500/30',
     icon: 'ph-clock',
+  },
+  pending: {
+    label: 'A vencer',
+    className: 'bg-indigo-500/15 text-indigo-300 border-indigo-500/30',
+    icon: 'ph-clock',
+  },
+  forecast: {
+    label: 'Previsto',
+    className: 'bg-slate-700/70 text-slate-300 border-slate-600/80',
+    icon: 'ph-sparkle',
   },
   overdue: {
     label: 'Vencido',
-    className: 'bg-rose-500/15 text-rose-300 border-rose-500/30',
+    className: 'bg-rose-500/20 text-rose-300 border-rose-500/40',
     icon: 'ph-warning-circle',
   },
   validating: {
@@ -76,6 +100,16 @@ const STATUS_BADGE: Record<
     icon: 'ph-x-circle',
   },
 };
+
+function getDashboardTxStatusBadge(tx: Transaction) {
+  const eff = resolveTransactionStatus(tx);
+  if (eff === 'pending') {
+    const today = getTodayDateString();
+    if (tx.dueDate === today) return STATUS_BADGE.due_today;
+    return STATUS_BADGE.upcoming;
+  }
+  return STATUS_BADGE[eff] || STATUS_BADGE.upcoming;
+}
 
 export const DashboardView: React.FC<DashboardViewProps> = ({
   transactions,
@@ -798,9 +832,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         Math.round((effectiveVal / totalExpenses) * 100)
                       )
                     : 0;
-                const st =
-                  STATUS_BADGE[resolveTransactionStatus(tx)] ||
-                  STATUS_BADGE.pending;
+                const st = getDashboardTxStatusBadge(tx);
 
                 return (
                   <button
@@ -1127,8 +1159,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 </div>
               ) : (
                 drilldownTransactions.map((tx) => {
-                  const effSt = resolveTransactionStatus(tx);
-                  const st = STATUS_BADGE[effSt] || STATUS_BADGE.pending;
+                  const st = getDashboardTxStatusBadge(tx);
                   return (
                     <button
                       key={tx.id}

@@ -320,5 +320,85 @@ describe('RecurrenceService (Fase 9 - Recorrências e Parcelamentos Desacoplados
       assert.ok(invAugAfter);
       assert.equal(invAugAfter.totalPurchasesAmountCents, 0);
     });
+
+    it('gera PersonalTransaction ao gerar instância de recorrência pessoal em modo demo', async () => {
+      const { rule } = await createRecurrenceRule(
+        {
+          scope: 'personal',
+          userId: 'user_rec_tx',
+          title: 'Internet Condomínio',
+          amountCents: 14990,
+          startCompetence: '2026-11',
+          dueDay: 12,
+          defaultAccountId: 'acc_checking_1',
+          idempotencyKey: 'idem_rec_tx_gen',
+        },
+        true
+      );
+
+      const res = await generateRecurrenceInstance(
+        { ruleId: rule.id, competenceMonth: '2026-11' },
+        true
+      );
+
+      assert.ok(res.instance.generatedTransactionId);
+      const rawTxs = universalStorage.getItem('mpf_v3_demo_personal_transactions');
+      const txs = rawTxs ? (JSON.parse(rawTxs) as any[]) : [];
+      const createdTx = txs.find((t) => t.id === res.instance.generatedTransactionId);
+      assert.ok(createdTx);
+      assert.equal(createdTx.userId, 'user_rec_tx');
+      assert.equal(createdTx.amountCents, 14990);
+      assert.equal(createdTx.dueDate, '2026-11-12');
+      assert.equal(createdTx.accountId, 'acc_checking_1');
+      assert.equal(createdTx.originType, 'recurrence');
+      assert.equal(createdTx.status, 'pending');
+    });
+
+    it('projeta apenas parcelas vigentes/futuras (5..10) em contrato em andamento sem fabricar histórico 1..4', async () => {
+      const cardAccountId = 'card_ongoing_5_10';
+      const res = await createInstallmentContract(
+        {
+          scope: 'personal',
+          userId: 'user_ongoing',
+          title: 'TV OLED 10x',
+          totalContractAmountCents: 100000,
+          remainingAmountCents: 60000,
+          totalInstallmentsCount: 10,
+          initialInstallmentNumber: 5,
+          startCompetenceMonth: '2026-11',
+          dueDay: 15,
+          fundingSource: 'credit_card',
+          sourceCardAccountId: cardAccountId,
+          idempotencyKey: 'idem_ongoing_5_10',
+        },
+        true
+      );
+
+      assert.equal(res.contract.initialInstallmentNumber, 5);
+      assert.equal(res.contract.remainingAmountCents, 60000);
+
+      const occurrences = await getInstallmentOccurrences(res.contract.id, true);
+      assert.equal(occurrences.length, 6);
+      assert.deepEqual(
+        occurrences.map((o) => o.installmentNumber),
+        [5, 6, 7, 8, 9, 10]
+      );
+      assert.deepEqual(
+        occurrences.map((o) => o.competenceMonth),
+        ['2026-11', '2026-12', '2027-01', '2027-02', '2027-03', '2027-04']
+      );
+      assert.equal(
+        occurrences.reduce((sum, o) => sum + o.principalAmountCents, 0),
+        60000
+      );
+
+      const invoices = loadDemoInvoices().filter((i: any) => i.accountId === cardAccountId);
+      assert.equal(invoices.length, 6);
+      assert.equal(
+        invoices.reduce((sum: number, inv: any) => sum + inv.totalPurchasesAmountCents, 0),
+        60000
+      );
+    });
   });
 });
+

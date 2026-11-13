@@ -64,6 +64,17 @@ service cloud.firestore {
              (c.scope == 'shared' && isSpaceMember(c.spaceId));
     }
 
+    // 0. Perfil e Preferências Mínimas do Usuário (/users/{userId})
+    match /users/{userId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId) &&
+        request.resource.data.uid == request.auth.uid;
+      allow update: if isOwner(userId) && (
+        !('uid' in resource.data) || request.resource.data.uid == resource.data.uid
+      );
+      allow delete: if false; // Perfis não são excluídos fisicamente pelo cliente
+    }
+
     // 1. Contas Pessoais e Livro de Movimentações
     match /accounts/{accountId} {
       allow read: if isAuthenticated() && resource.data.userId == request.auth.uid;
@@ -78,7 +89,10 @@ service cloud.firestore {
         request.resource.data.userId == resource.data.userId && // userId é imutável
         request.resource.data.id == resource.data.id && // id é imutável
         request.resource.data.createdAt == resource.data.createdAt && // createdAt é imutável
-        request.resource.data.projectedBalanceCents == resource.data.projectedBalanceCents; // saldo alterado apenas pelo backend confiável
+        (
+          ('projectedBalanceCents' in resource.data && request.resource.data.projectedBalanceCents == resource.data.projectedBalanceCents) ||
+          (!('projectedBalanceCents' in resource.data) && !('projectedBalanceCents' in request.resource.data))
+        ); // saldo alterado apenas pelo backend confiável
       allow delete: if false; // Contas com histórico contábil são arquivadas, nunca deletadas
 
       // 1.1 Livro Oficial de Movimentações (Append-Only, Escrita exclusiva via Backend Confiável Admin SDK)

@@ -6907,8 +6907,18 @@ export function serverGenerateInstallmentContractDocId(userId, idempotencyKey) {
   return `inst_${cleanSlug ? `${cleanSlug}_` : ''}${hash.slice(0, 32)}`;
 }
 
+function clampDateInCompetenceMonth(competenceMonth, targetDay) {
+  const [yStr, mStr] = competenceMonth.split('-');
+  const year = parseInt(yStr, 10);
+  const month = parseInt(mStr, 10);
+  const maxDays = new Date(year, month, 0).getDate();
+  const safeDay = Math.min(Math.max(1, Number(targetDay) || 10), maxDays);
+  return `${competenceMonth}-${String(safeDay).padStart(2, '0')}`;
+}
+
 /**
  * Criação da regra de recorrência mestra (pessoal ou compartilhada).
+ * Suporta distinção explícita entre nature ('fixed' | 'recurring') e type ('expense' | 'income').
  */
 export async function executeServerSideCreateRecurrenceRule(db, callerUid, payload) {
   if (!callerUid || typeof callerUid !== 'string' || !callerUid.trim()) {
@@ -6920,6 +6930,8 @@ export async function executeServerSideCreateRecurrenceRule(db, callerUid, paylo
   const spaceId = payload.spaceId ? String(payload.spaceId).trim() : null;
   const title = (payload.title || '').trim();
   const description = payload.description ? String(payload.description).trim() : null;
+  const type = payload.type === 'income' ? 'income' : 'expense';
+  const nature = payload.nature === 'fixed' ? 'fixed' : 'recurring';
   const amountCents = Number(payload.amountCents);
   const frequency = payload.frequency || 'monthly';
   const interval = Number(payload.interval) || 1;
@@ -6970,6 +6982,8 @@ export async function executeServerSideCreateRecurrenceRule(db, callerUid, paylo
       spaceId,
       title,
       description,
+      type,
+      nature,
       amountCents,
       frequency,
       interval,
@@ -6992,6 +7006,7 @@ export async function executeServerSideCreateRecurrenceRule(db, callerUid, paylo
 
 /**
  * Geração idempotente de instância de recorrência para uma competência específica YYYY-MM.
+ * Quando a regra é 'personal', materializa atomicamente a PersonalTransaction vinculada no extrato mensal.
  */
 export async function executeServerSideGenerateRecurrenceInstance(db, callerUid, payload) {
   if (!callerUid || typeof callerUid !== 'string' || !callerUid.trim()) {
@@ -7023,7 +7038,6 @@ export async function executeServerSideGenerateRecurrenceInstance(db, callerUid,
       }
     }
 
-    // Idempotência por competência
     const instanceRef = ruleRef.collection('instances').doc(competenceMonth);
     const instanceSnap = await tx.get(instanceRef);
     if (instanceSnap.exists) {
@@ -7034,11 +7048,63 @@ export async function executeServerSideGenerateRecurrenceInstance(db, callerUid,
       throw new HttpsError('failed-precondition', 'Regra de recorrência está cancelada.');
     }
 
+    const compSlug = competenceMonth.replace('-', '_');
+    const txId = `tx_rec_${ruleId}_${compSlug}`;
+    const userTxRef = db.collection('users').doc(rule.userId).collection('personal_transactions').doc(txId);
+    let existingTxSnap = null;
+    let catSnap = null;
+
+    if (rule.scope === 'personal') {
+      existingTxSnap = await tx.get(userTxRef);
+      if (rule.categoryId && rule.categoryId !== 'cat_default') {
+        catSnap = await tx.get(
+          db.collection('users').doc(rule.userId).collection('categories').doc(rule.categoryId)
+        );
+      }
+    }
+
     const now = new Date().toISOString();
+    const dueDate = clampDateInCompetenceMonth(competenceMonth, rule.dueDay || 10);
+    let generatedTransactionId = null;
+
+    if (rule.scope === 'personal') {
+      generatedTransactionId = txId;
+      if (!existingTxSnap || !existingTxSnap.exists) {
+        const categoryName = catSnap && catSnap.exists ? catSnap.data().name : 'Recorrência / Fixo';
+        const txDoc = {
+          id: txId,
+          userId: rule.userId,
+          description: rule.title,
+          amountCents: rule.amountCents,
+          type: rule.type === 'income' ? 'income' : 'expense',
+          status: 'pending',
+          categoryId: rule.categoryId || 'cat_default',
+          categoryName,
+          accountId: rule.defaultAccountId || null,
+          competenceDate: dueDate,
+          dueDate,
+          originType: 'recurrence',
+          originRefId: ruleId,
+          idempotencyKey: `rec_inst:${ruleId}:${competenceMonth}`,
+          paidAmountCents: 0,
+          remainingAmountCents: rule.amountCents,
+          notes:
+            rule.description ||
+            (rule.nature === 'fixed'
+              ? 'Obrigação/Receita fixa mensal gerada pela regra'
+              : 'Recorrência periódica gerada pela regra'),
+          createdAt: now,
+          updatedAt: now,
+        };
+        tx.set(userTxRef, txDoc);
+      }
+    }
+
     const instanceDoc = {
       id: competenceMonth,
       ruleId,
       competenceMonth,
+      ...(generatedTransactionId ? { generatedTransactionId } : {}),
       generationStatus: 'generated',
       actualAmountCents: rule.amountCents,
       generatedAt: now,
@@ -7051,6 +7117,8 @@ export async function executeServerSideGenerateRecurrenceInstance(db, callerUid,
 
 /**
  * Criação de contrato mestre de parcelamento com divisão estrita de centavos.
+ * Suporta parcelamentos já em andamento (initialInstallmentNumber > 1, ex: 5/10),
+ * projetando somente as parcelas vigentes/futuras sem criar parcelas antigas fictícias.
  */
 export async function executeServerSideCreateInstallmentContract(db, callerUid, payload) {
   if (!callerUid || typeof callerUid !== 'string' || !callerUid.trim()) {
@@ -7063,6 +7131,14 @@ export async function executeServerSideCreateInstallmentContract(db, callerUid, 
   const title = (payload.title || '').trim();
   const totalContractAmountCents = Number(payload.totalContractAmountCents);
   const totalInstallmentsCount = Number(payload.totalInstallmentsCount);
+  const initialInstallmentNumber =
+    payload.initialInstallmentNumber !== undefined && payload.initialInstallmentNumber !== null
+      ? Number(payload.initialInstallmentNumber)
+      : 1;
+  const remainingAmountCents =
+    payload.remainingAmountCents !== undefined && payload.remainingAmountCents !== null
+      ? Number(payload.remainingAmountCents)
+      : null;
   const fundingSource = payload.fundingSource === 'personal_loan' ? 'personal_loan' : 'credit_card';
   const sourceCardAccountId = payload.sourceCardAccountId ? String(payload.sourceCardAccountId).trim() : null;
   const startCompetenceMonth = (payload.startCompetenceMonth || '').trim();
@@ -7076,6 +7152,22 @@ export async function executeServerSideCreateInstallmentContract(db, callerUid, 
   if (!Number.isSafeInteger(totalInstallmentsCount) || totalInstallmentsCount < 2) {
     throw new HttpsError('invalid-argument', 'totalInstallmentsCount deve ser no mínimo 2 parcelas.');
   }
+  if (
+    !Number.isSafeInteger(initialInstallmentNumber) ||
+    initialInstallmentNumber < 1 ||
+    initialInstallmentNumber > totalInstallmentsCount
+  ) {
+    throw new HttpsError(
+      'invalid-argument',
+      'initialInstallmentNumber deve ser um inteiro entre 1 e o número total de parcelas.'
+    );
+  }
+  if (
+    remainingAmountCents !== null &&
+    (!Number.isSafeInteger(remainingAmountCents) || remainingAmountCents <= 0)
+  ) {
+    throw new HttpsError('invalid-argument', 'remainingAmountCents deve ser um inteiro positivo em centavos.');
+  }
   if (!/^\d{4}-\d{2}$/.test(startCompetenceMonth)) {
     throw new HttpsError('invalid-argument', 'startCompetenceMonth deve estar no formato YYYY-MM.');
   }
@@ -7083,23 +7175,28 @@ export async function executeServerSideCreateInstallmentContract(db, callerUid, 
 
   const contractId = serverGenerateInstallmentContractDocId(cleanCaller, idemKey);
 
-  // Divisão estrita com conservação contábil
-  const baseInstallment = Math.floor(totalContractAmountCents / totalInstallmentsCount);
-  const remainder = totalContractAmountCents - (baseInstallment * totalInstallmentsCount);
+  // Quantidade de parcelas efetivamente projetadas (de initialInstallmentNumber até totalInstallmentsCount)
+  const projectedCount = totalInstallmentsCount - initialInstallmentNumber + 1;
+  const amountToAllocateCents =
+    remainingAmountCents !== null ? remainingAmountCents : totalContractAmountCents;
 
-  // Pré-computa competências e parcelas
+  // Divisão estrita com conservação contábil sobre as parcelas vigentes/futuras
+  const baseInstallment = Math.floor(amountToAllocateCents / projectedCount);
+  const remainder = amountToAllocateCents - baseInstallment * projectedCount;
+
+  // Pré-computa competências e parcelas (somente da parcela inicial informada até a última)
   const [startYearStr, startMonthStr] = startCompetenceMonth.split('-');
   let curYear = parseInt(startYearStr, 10);
   let curMonth = parseInt(startMonthStr, 10);
   const occurrencesData = [];
 
-  for (let i = 1; i <= totalInstallmentsCount; i++) {
+  for (let i = initialInstallmentNumber; i <= totalInstallmentsCount; i++) {
     const monthPadded = String(curMonth).padStart(2, '0');
     const compMonth = `${curYear}-${monthPadded}`;
-    const dayPadded = String(dueDay).padStart(2, '0');
-    const dueDate = `${compMonth}-${dayPadded}`;
+    const dueDate = clampDateInCompetenceMonth(compMonth, dueDay);
     const occId = String(i).padStart(2, '0');
-    const principalAmountCents = i === 1 ? baseInstallment + remainder : baseInstallment;
+    const principalAmountCents =
+      i === initialInstallmentNumber ? baseInstallment + remainder : baseInstallment;
 
     occurrencesData.push({
       occId,
@@ -7162,7 +7259,9 @@ export async function executeServerSideCreateInstallmentContract(db, callerUid, 
       spaceId,
       title,
       totalContractAmountCents,
+      remainingAmountCents: amountToAllocateCents,
       totalInstallmentsCount,
+      initialInstallmentNumber,
       fundingSource,
       sourceCardAccountId,
       startCompetenceMonth,
@@ -7171,9 +7270,39 @@ export async function executeServerSideCreateInstallmentContract(db, callerUid, 
     };
     tx.set(contractRef, contractDoc);
 
-    // Grava ocorrências e projeta nas faturas
+    // Grava ocorrências e projeta nas faturas ou transações pessoais (empréstimo/carnê)
     for (let idx = 0; idx < occurrencesData.length; idx++) {
       const occ = occurrencesData[idx];
+      let linkedTransactionId = null;
+
+      if (!isCredit && scope === 'personal') {
+        linkedTransactionId = `tx_inst_${contractId}_${occ.occId}`;
+        const txDoc = {
+          id: linkedTransactionId,
+          userId: cleanCaller,
+          description: `${title} (${occ.installmentNumber}/${totalInstallmentsCount})`,
+          amountCents: occ.principalAmountCents,
+          type: 'expense',
+          status: 'pending',
+          categoryId: 'installment',
+          categoryName: 'Parcelamento',
+          competenceDate: occ.dueDate,
+          dueDate: occ.dueDate,
+          originType: 'installment',
+          originRefId: contractId,
+          idempotencyKey: `inst_occ:${contractId}:${occ.occId}`,
+          paidAmountCents: 0,
+          remainingAmountCents: occ.principalAmountCents,
+          notes: `Parcela ${occ.installmentNumber} de ${totalInstallmentsCount} do contrato "${title}"`,
+          createdAt: now,
+          updatedAt: now,
+        };
+        tx.set(
+          db.collection('users').doc(cleanCaller).collection('personal_transactions').doc(linkedTransactionId),
+          txDoc
+        );
+      }
+
       const occurrenceDoc = {
         id: occ.occId,
         contractId,
@@ -7182,6 +7311,7 @@ export async function executeServerSideCreateInstallmentContract(db, callerUid, 
         principalAmountCents: occ.principalAmountCents,
         interestAmountCents: 0,
         totalInstallmentAmountCents: occ.principalAmountCents,
+        ...(linkedTransactionId ? { linkedTransactionId } : {}),
         status: 'scheduled',
         dueDate: occ.dueDate,
       };
@@ -7224,7 +7354,7 @@ export async function executeServerSideCreateInstallmentContract(db, callerUid, 
           });
         } else {
           const closingDay = cardAccountData.closingDay || 20;
-          const closingDate = `${occ.compMonth}-${String(closingDay).padStart(2, '0')}`;
+          const closingDate = clampDateInCompetenceMonth(occ.compMonth, closingDay);
           tx.set(invRef, {
             id: occ.compMonth,
             accountId: sourceCardAccountId,
@@ -7385,4 +7515,128 @@ export const cancelInstallmentContractOfficial = onCall(
     );
   }
 );
+
+/**
+ * Arquivamento seguro de conta com migração opcional atômica de obrigações em aberto
+ * (transações pessoais não liquidadas e regras de recorrência ativas).
+ * Histórico de movimentações e transações pagas/canceladas permanece estritamente intacto.
+ */
+export async function executeServerSideArchiveAccountSafely(db, callerUid, payload) {
+  if (!callerUid || typeof callerUid !== 'string' || !callerUid.trim()) {
+    throw new HttpsError('unauthenticated', 'Autenticação obrigatória.');
+  }
+  const cleanUid = callerUid.trim();
+  const accountId = String(payload?.accountId || '').trim();
+  const targetAccountId = payload?.targetAccountId
+    ? String(payload.targetAccountId).trim()
+    : null;
+  const migrateOpenObligations = Boolean(payload?.migrateOpenObligations && targetAccountId);
+
+  if (!accountId) {
+    throw new HttpsError('invalid-argument', 'accountId é obrigatório.');
+  }
+  if (migrateOpenObligations && targetAccountId === accountId) {
+    throw new HttpsError(
+      'invalid-argument',
+      'A conta de destino para migração deve ser diferente da conta arquivada.'
+    );
+  }
+
+  return await db.runTransaction(async (tx) => {
+    const sourceRef = db.collection('accounts').doc(accountId);
+    const sourceSnap = await tx.get(sourceRef);
+    if (!sourceSnap.exists) {
+      throw new HttpsError('not-found', 'Conta de origem não encontrada.');
+    }
+    const sourceAcc = sourceSnap.data();
+    if (sourceAcc.userId !== cleanUid) {
+      throw new HttpsError('permission-denied', 'Acesso negado à conta informada.');
+    }
+
+    let targetSnap = null;
+    if (migrateOpenObligations && targetAccountId) {
+      const targetRef = db.collection('accounts').doc(targetAccountId);
+      targetSnap = await tx.get(targetRef);
+      if (!targetSnap.exists) {
+        throw new HttpsError('not-found', 'Conta de destino não encontrada.');
+      }
+      const targetAcc = targetSnap.data();
+      if (targetAcc.userId !== cleanUid) {
+        throw new HttpsError('permission-denied', 'Acesso negado à conta de destino.');
+      }
+      if (targetAcc.isArchived) {
+        throw new HttpsError(
+          'failed-precondition',
+          'Não é possível transferir obrigações para uma conta arquivada.'
+        );
+      }
+    }
+
+    const openTxRefs = [];
+    const activeRuleRefs = [];
+
+    if (migrateOpenObligations && targetAccountId) {
+      const txQuerySnap = await tx.get(
+        db
+          .collection('users')
+          .doc(cleanUid)
+          .collection('personal_transactions')
+          .where('accountId', '==', accountId)
+      );
+      txQuerySnap.forEach((docSnap) => {
+        const data = docSnap.data();
+        if (['pending', 'forecast', 'partially_paid', 'overdue'].includes(data.status)) {
+          openTxRefs.push(docSnap.ref);
+        }
+      });
+
+      const rulesQuerySnap = await tx.get(
+        db
+          .collection('recurrence_rules')
+          .where('userId', '==', cleanUid)
+          .where('defaultAccountId', '==', accountId)
+      );
+      rulesQuerySnap.forEach((docSnap) => {
+        const data = docSnap.data();
+        if (data.status === 'active') {
+          activeRuleRefs.push(docSnap.ref);
+        }
+      });
+    }
+
+    const now = new Date().toISOString();
+    openTxRefs.forEach((ref) => {
+      tx.update(ref, { accountId: targetAccountId, updatedAt: now });
+    });
+    activeRuleRefs.forEach((ref) => {
+      tx.update(ref, { defaultAccountId: targetAccountId });
+    });
+
+    const updatedAccount = {
+      ...sourceAcc,
+      id: sourceAcc.id || accountId,
+      isArchived: true,
+      updatedAt: now,
+    };
+    tx.update(sourceRef, { isArchived: true, updatedAt: now });
+
+    return {
+      account: updatedAccount,
+      migratedTransactionsCount: openTxRefs.length,
+      migratedRecurrenceRulesCount: activeRuleRefs.length,
+    };
+  });
+}
+
+export const archiveAccountSafelyOfficial = onCall(
+  { region: 'us-central1' },
+  async (request) => {
+    return await executeServerSideArchiveAccountSafely(
+      getAdminDb(),
+      request.auth?.uid,
+      request.data
+    );
+  }
+);
+
 

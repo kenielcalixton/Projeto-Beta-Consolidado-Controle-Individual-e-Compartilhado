@@ -24,7 +24,6 @@ export const TaxonomyManagerView: React.FC<TaxonomyManagerViewProps> = ({
   hidePageHeader = false,
 }) => {
   const [groupName, setGroupName] = useState('');
-  const [groupCode, setGroupCode] = useState('');
   const [groupDesc, setGroupDesc] = useState('');
   const [formError, setFormError] = useState('');
 
@@ -47,10 +46,9 @@ export const TaxonomyManagerView: React.FC<TaxonomyManagerViewProps> = ({
       setFormError('Informe o nome da Categoria Principal.');
       return;
     }
-    const cleanCode = (groupCode.trim() || groupName.slice(0, 3)).toUpperCase();
+    const cleanCode = groupName.trim().slice(0, 3).toUpperCase() || 'CAT';
     onAddGroup(groupName.trim(), cleanCode, groupDesc.trim() || 'Categoria de compras e organização.');
     setGroupName('');
-    setGroupCode('');
     setGroupDesc('');
     setFormError('');
   };
@@ -75,7 +73,7 @@ export const TaxonomyManagerView: React.FC<TaxonomyManagerViewProps> = ({
     onUpdateGroup(
       groupId,
       editName.trim(),
-      editCode.trim().toUpperCase() || 'CAT',
+      editCode.trim().toUpperCase() || editName.trim().slice(0, 3).toUpperCase() || 'CAT',
       editDesc.trim()
     );
     setEditingGroupId(null);
@@ -98,56 +96,56 @@ export const TaxonomyManagerView: React.FC<TaxonomyManagerViewProps> = ({
     <div className="space-y-8">
       {/* Section Header */}
       {!hidePageHeader ? (
-        <div className="flex flex-col md:flex-row md:items-end justify-between gap-4 border-b border-slate-200 dark:border-slate-800 pb-6">
+        <div className="flex flex-col md:flex-row md:items-end justify-between gap-4 border-b border-slate-800 pb-6">
           <div>
-            <p className="text-xs font-medium text-indigo-600 dark:text-indigo-400">
+            <p className="text-xs font-medium text-indigo-400">
               Diretório de Organização de Compras
             </p>
-            <h1 className="text-2xl md:text-3xl font-bold tracking-tight text-slate-900 dark:text-slate-100 font-display mt-1">
+            <h1 className="text-2xl md:text-3xl font-bold tracking-tight text-white font-display mt-1">
               Categorias e Subcategorias
             </h1>
-            <p className="text-sm text-slate-600 dark:text-slate-400 mt-1 max-w-2xl">
+            <p className="text-sm text-slate-400 mt-1 max-w-2xl">
               Organize suas Categorias Principais (ex: Supermercado, Casa, Lazer) e suas Subcategorias para manter suas listas sempre arrumadas.
             </p>
           </div>
 
-          <div className="flex items-center gap-6 text-xs text-slate-600 dark:text-slate-400 shrink-0">
+          <div className="flex items-center gap-6 text-xs text-slate-400 shrink-0">
             <div>
-              <span className="block text-slate-400 dark:text-slate-500">Categorias Principais</span>
-              <span className="text-lg font-bold font-mono tabular-nums text-slate-900 dark:text-slate-100">
+              <span className="block text-slate-500">Categorias Principais</span>
+              <span className="text-lg font-bold font-mono tabular-nums text-white">
                 {groups.length}
               </span>
             </div>
-            <div className="h-8 w-px bg-slate-200 dark:bg-slate-800" />
+            <div className="h-8 w-px bg-slate-800" />
             <div>
-              <span className="block text-slate-400 dark:text-slate-500">Subcategorias</span>
-              <span className="text-lg font-bold font-mono tabular-nums text-slate-900 dark:text-slate-100">
+              <span className="block text-slate-500">Subcategorias</span>
+              <span className="text-lg font-bold font-mono tabular-nums text-white">
                 {totalSubcategories}
               </span>
             </div>
           </div>
         </div>
       ) : (
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-5">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-slate-800/90 border border-slate-700/80 rounded-2xl p-5">
           <div>
-            <h2 className="text-base font-bold text-slate-900 dark:text-slate-100 font-display">
+            <h2 className="text-base font-bold text-white font-display">
               Diretório de Categorias e Subcategorias
             </h2>
-            <p className="text-xs text-slate-600 dark:text-slate-400 mt-0.5">
+            <p className="text-xs text-slate-400 mt-0.5">
               Cadastre setores principais (como Mercado, Casa ou Viagens) e adicione subcategorias dentro de cada um.
             </p>
           </div>
-          <div className="flex items-center gap-5 text-xs text-slate-600 dark:text-slate-400 shrink-0">
+          <div className="flex items-center gap-5 text-xs text-slate-400 shrink-0">
             <div>
-              <span className="block text-slate-400 dark:text-slate-500">Categorias</span>
-              <span className="text-base font-bold font-mono tabular-nums text-slate-900 dark:text-slate-100">
+              <span className="block text-slate-500">Categorias</span>
+              <span className="text-base font-bold font-mono tabular-nums text-white">
                 {groups.length}
               </span>
             </div>
-            <div className="h-7 w-px bg-slate-200 dark:bg-slate-800" />
+            <div className="h-7 w-px bg-slate-800" />
             <div>
-              <span className="block text-slate-400 dark:text-slate-500">Subcategorias</span>
-              <span className="text-base font-bold font-mono tabular-nums text-slate-900 dark:text-slate-100">
+              <span className="block text-slate-500">Subcategorias</span>
+              <span className="text-base font-bold font-mono tabular-nums text-white">
                 {totalSubcategories}
               </span>
             </div>
@@ -158,27 +156,27 @@ export const TaxonomyManagerView: React.FC<TaxonomyManagerViewProps> = ({
       {/* Create Main Category Form */}
       <form
         onSubmit={handleCreateGroup}
-        className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 space-y-4"
+        className="bg-slate-800/90 border border-slate-700/80 rounded-2xl p-6 space-y-4"
       >
         <div className="flex items-center justify-between">
-          <h2 className="text-base font-bold text-slate-900 dark:text-slate-100 font-display flex items-center gap-2">
-            <FolderPlus className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+          <h2 className="text-base font-bold text-white font-display flex items-center gap-2">
+            <FolderPlus className="w-4 h-4 text-indigo-400" />
             <span>Nova Categoria Principal</span>
           </h2>
-          <span className="text-xs text-slate-500 dark:text-slate-400">
+          <span className="text-xs text-slate-400">
             Ex: Supermercado, Casa, Saúde
           </span>
         </div>
 
         {formError && (
-          <p className="text-xs font-medium text-rose-600 dark:text-rose-400">{formError}</p>
+          <p className="text-xs font-medium text-rose-400">{formError}</p>
         )}
 
         <div className="grid grid-cols-1 md:grid-cols-12 gap-4">
-          <div className="md:col-span-4">
+          <div className="md:col-span-5">
             <label
               htmlFor="tax-group-name"
-              className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
+              className="block text-xs font-medium text-slate-300 mb-1"
             >
               Nome da Categoria Principal
             </label>
@@ -188,32 +186,14 @@ export const TaxonomyManagerView: React.FC<TaxonomyManagerViewProps> = ({
               value={groupName}
               onChange={(e) => setGroupName(e.target.value)}
               placeholder="Ex: Saúde & Farmácia"
-              className="w-full px-3.5 py-2.5 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              className="w-full px-3.5 py-2.5 text-sm rounded-lg border border-slate-700 bg-slate-900 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500"
             />
           </div>
 
-          <div className="md:col-span-2">
-            <label
-              htmlFor="tax-group-code"
-              className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
-            >
-              Abreviação (opcional)
-            </label>
-            <input
-              id="tax-group-code"
-              type="text"
-              maxLength={5}
-              value={groupCode}
-              onChange={(e) => setGroupCode(e.target.value)}
-              placeholder="SAU"
-              className="w-full px-3.5 py-2.5 text-sm font-mono uppercase rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-            />
-          </div>
-
-          <div className="md:col-span-4">
+          <div className="md:col-span-5">
             <label
               htmlFor="tax-group-desc"
-              className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
+              className="block text-xs font-medium text-slate-300 mb-1"
             >
               O que entra aqui? (Descrição)
             </label>
@@ -223,7 +203,7 @@ export const TaxonomyManagerView: React.FC<TaxonomyManagerViewProps> = ({
               value={groupDesc}
               onChange={(e) => setGroupDesc(e.target.value)}
               placeholder="Medicamentos contínuos, suplementos e cuidados pessoais"
-              className="w-full px-3.5 py-2.5 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              className="w-full px-3.5 py-2.5 text-sm rounded-lg border border-slate-700 bg-slate-900 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500"
             />
           </div>
 
@@ -247,36 +227,26 @@ export const TaxonomyManagerView: React.FC<TaxonomyManagerViewProps> = ({
           return (
             <div
               key={grp.id}
-              className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 flex flex-col justify-between space-y-5"
+              className="bg-slate-800/90 border border-slate-700/80 rounded-2xl p-6 flex flex-col justify-between space-y-5"
             >
               <div className="space-y-4">
                 {/* Main Category Header */}
-                <div className="flex items-start justify-between gap-4 pb-4 border-b border-slate-100 dark:border-slate-800">
+                <div className="flex items-start justify-between gap-4 pb-4 border-b border-slate-700/80">
                   {isEditing ? (
                     <div className="flex-1 space-y-2">
-                      <div className="flex gap-2">
-                        <input
-                          type="text"
-                          value={editName}
-                          onChange={(e) => setEditName(e.target.value)}
-                          aria-label="Editar nome da categoria principal"
-                          className="flex-1 px-2.5 py-1.5 text-sm font-semibold rounded border border-indigo-400 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100"
-                        />
-                        <input
-                          type="text"
-                          value={editCode}
-                          maxLength={5}
-                          onChange={(e) => setEditCode(e.target.value)}
-                          aria-label="Editar abreviação da categoria"
-                          className="w-20 px-2.5 py-1.5 text-xs font-mono uppercase rounded border border-indigo-400 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100"
-                        />
-                      </div>
+                      <input
+                        type="text"
+                        value={editName}
+                        onChange={(e) => setEditName(e.target.value)}
+                        aria-label="Editar nome da categoria principal"
+                        className="w-full px-2.5 py-1.5 text-sm font-semibold rounded border border-indigo-500 bg-slate-900 text-white"
+                      />
                       <input
                         type="text"
                         value={editDesc}
                         onChange={(e) => setEditDesc(e.target.value)}
                         aria-label="Editar descrição da categoria"
-                        className="w-full px-2.5 py-1.5 text-xs rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-700 dark:text-slate-300"
+                        className="w-full px-2.5 py-1.5 text-xs rounded border border-slate-700 bg-slate-900 text-slate-200"
                       />
                       <div className="flex items-center gap-2 pt-1">
                         <button
@@ -290,7 +260,7 @@ export const TaxonomyManagerView: React.FC<TaxonomyManagerViewProps> = ({
                         <button
                           type="button"
                           onClick={() => setEditingGroupId(null)}
-                          className="px-3 py-1.5 text-xs text-slate-600 dark:text-slate-400 cursor-pointer"
+                          className="px-3 py-1.5 text-xs text-slate-400 hover:text-white cursor-pointer"
                         >
                           Cancelar
                         </button>
@@ -298,19 +268,15 @@ export const TaxonomyManagerView: React.FC<TaxonomyManagerViewProps> = ({
                     </div>
                   ) : (
                     <div>
-                      <div className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
-                        <span className="font-mono font-semibold text-indigo-600 dark:text-indigo-400">
-                          {grp.code}
-                        </span>
-                        <span aria-hidden="true">·</span>
-                        <span className="tabular-nums">
+                      <div className="flex items-center gap-2 text-xs text-slate-400">
+                        <span className="tabular-nums font-medium text-indigo-400">
                           {grp.categories.length} subcategoria(s)
                         </span>
                       </div>
-                      <h3 className="text-lg font-bold text-slate-900 dark:text-slate-100 font-display mt-0.5">
+                      <h3 className="text-lg font-bold text-white font-display mt-0.5">
                         {grp.name}
                       </h3>
-                      <p className="text-xs text-slate-600 dark:text-slate-400 mt-1">
+                      <p className="text-xs text-slate-400 mt-1">
                         {grp.description}
                       </p>
                     </div>
@@ -322,7 +288,7 @@ export const TaxonomyManagerView: React.FC<TaxonomyManagerViewProps> = ({
                         type="button"
                         onClick={() => startEditingGroup(grp)}
                         aria-label={`Editar categoria principal ${grp.name}`}
-                        className="min-h-[36px] min-w-[36px] flex items-center justify-center rounded-lg text-slate-500 hover:text-slate-900 hover:bg-slate-100 dark:text-slate-400 dark:hover:text-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+                        className="min-h-[36px] min-w-[36px] flex items-center justify-center rounded-lg text-slate-400 hover:text-white hover:bg-slate-700/70 transition-colors cursor-pointer"
                       >
                         <Edit3 className="w-4 h-4" />
                       </button>
@@ -330,7 +296,7 @@ export const TaxonomyManagerView: React.FC<TaxonomyManagerViewProps> = ({
                         type="button"
                         onClick={() => onDeleteGroup(grp.id)}
                         aria-label={`Remover categoria principal ${grp.name}`}
-                        className="min-h-[36px] min-w-[36px] flex items-center justify-center rounded-lg text-slate-500 hover:text-rose-600 hover:bg-rose-50 dark:text-slate-400 dark:hover:text-rose-400 dark:hover:bg-rose-950/40 transition-colors cursor-pointer"
+                        className="min-h-[36px] min-w-[36px] flex items-center justify-center rounded-lg text-slate-400 hover:text-rose-400 hover:bg-rose-950/40 transition-colors cursor-pointer"
                       >
                         <Trash2 className="w-4 h-4" />
                       </button>
@@ -340,19 +306,19 @@ export const TaxonomyManagerView: React.FC<TaxonomyManagerViewProps> = ({
 
                 {/* Subcategories List */}
                 <div className="space-y-2">
-                  <div className="flex items-center justify-between text-xs font-medium text-slate-500 dark:text-slate-400">
+                  <div className="flex items-center justify-between text-xs font-medium text-slate-400">
                     <span className="flex items-center gap-1.5">
-                      <Layers className="w-3.5 h-3.5 text-indigo-500" />
+                      <Layers className="w-3.5 h-3.5 text-indigo-400" />
                       Subcategorias
                     </span>
                   </div>
 
                   {grp.categories.length === 0 ? (
-                    <p className="text-xs text-slate-400 dark:text-slate-500 py-3 italic">
+                    <p className="text-xs text-slate-500 py-3 italic">
                       Nenhuma subcategoria cadastrada nesta categoria ainda.
                     </p>
                   ) : (
-                    <div className="divide-y divide-slate-100 dark:divide-slate-800/80 border-t border-b border-slate-100 dark:border-slate-800/80">
+                    <div className="divide-y divide-slate-700/60 border-t border-b border-slate-700/60">
                       {grp.categories.map((cat) => {
                         const isCatEditing = editingCatId === cat.id;
                         return (
@@ -367,7 +333,7 @@ export const TaxonomyManagerView: React.FC<TaxonomyManagerViewProps> = ({
                                   value={editCatName}
                                   onChange={(e) => setEditCatName(e.target.value)}
                                   aria-label="Editar nome da subcategoria"
-                                  className="flex-1 px-2.5 py-1 text-xs rounded border border-indigo-400 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100"
+                                  className="flex-1 px-2.5 py-1 text-xs rounded border border-indigo-500 bg-slate-900 text-white"
                                 />
                                 <button
                                   type="button"
@@ -379,7 +345,7 @@ export const TaxonomyManagerView: React.FC<TaxonomyManagerViewProps> = ({
                                 <button
                                   type="button"
                                   onClick={() => setEditingCatId(null)}
-                                  className="px-2 py-1 text-xs text-slate-500 cursor-pointer"
+                                  className="px-2 py-1 text-xs text-slate-400 hover:text-white cursor-pointer"
                                 >
                                   Cancelar
                                 </button>
@@ -387,11 +353,8 @@ export const TaxonomyManagerView: React.FC<TaxonomyManagerViewProps> = ({
                             ) : (
                               <>
                                 <div className="flex items-center gap-2 min-w-0">
-                                  <span className="text-slate-800 dark:text-slate-200 font-medium truncate">
+                                  <span className="text-slate-200 font-medium truncate">
                                     {cat.name}
-                                  </span>
-                                  <span className="text-xs text-slate-400 dark:text-slate-500 font-mono">
-                                    · {grp.code}
                                   </span>
                                 </div>
                                 <div className="flex items-center gap-2 shrink-0">
@@ -399,7 +362,7 @@ export const TaxonomyManagerView: React.FC<TaxonomyManagerViewProps> = ({
                                     type="button"
                                     onClick={() => startEditingCategory(cat.id, cat.name)}
                                     aria-label={`Editar subcategoria ${cat.name}`}
-                                    className="text-xs text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors px-1.5 py-1 rounded cursor-pointer"
+                                    className="text-xs text-slate-400 hover:text-indigo-400 transition-colors px-1.5 py-1 rounded cursor-pointer"
                                   >
                                     Editar
                                   </button>
@@ -407,7 +370,7 @@ export const TaxonomyManagerView: React.FC<TaxonomyManagerViewProps> = ({
                                     type="button"
                                     onClick={() => onDeleteCategory(grp.id, cat.id)}
                                     aria-label={`Excluir subcategoria ${cat.name}`}
-                                    className="text-xs text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 transition-colors px-1.5 py-1 rounded cursor-pointer"
+                                    className="text-xs text-slate-400 hover:text-rose-400 transition-colors px-1.5 py-1 rounded cursor-pointer"
                                   >
                                     Apagar
                                   </button>
@@ -435,11 +398,11 @@ export const TaxonomyManagerView: React.FC<TaxonomyManagerViewProps> = ({
                   }
                   placeholder={`Nova subcategoria em ${grp.name}...`}
                   aria-label={`Nova subcategoria em ${grp.name}`}
-                  className="flex-1 px-3 py-2 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  className="flex-1 px-3 py-2 text-xs rounded-lg border border-slate-700 bg-slate-900 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                 />
                 <button
                   type="submit"
-                  className="px-3.5 py-2 text-xs font-semibold rounded-lg bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 hover:bg-slate-800 dark:hover:bg-white transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                  className="px-3.5 py-2 text-xs font-semibold rounded-lg bg-indigo-600 text-white hover:bg-indigo-500 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
                 >
                   + Subcategoria
                 </button>

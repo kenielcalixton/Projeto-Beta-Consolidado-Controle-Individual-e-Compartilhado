@@ -7,6 +7,7 @@ import {
   calculateSpaceLedger,
   computeAutomatedStatus,
   resolveTransactionStatus,
+  resolveAutomatedV3Status,
   isAdminUid,
   buildAdminUserSummaries,
 } from './financeEngine';
@@ -517,6 +518,52 @@ test('Isolamento de Lançamento Fixo: alterar apenas Janeiro de 2027 (only_this)
   assert.equal(updatedSeries.find((t) => t.invoiceMonth === '2027-01')!.amount, 950);
   assert.equal(updatedSeries.find((t) => t.invoiceMonth === '2027-02')!.amount, 800);
 });
+
+test('Motor Canônico de Status Automático v3.1 (resolveAutomatedV3Status): cobre todos os 9 estados', () => {
+  const today = '2026-11-12';
+
+  assert.equal(
+    resolveAutomatedV3Status({ status: 'paid', amountCents: 10000, paidAmountCents: 10000, remainingAmountCents: 0 }, today).key,
+    'paid'
+  );
+  assert.equal(
+    resolveAutomatedV3Status({ status: 'pending', amountCents: 10000, paidAmountCents: 10000, remainingAmountCents: 0 }, today).key,
+    'paid'
+  );
+  assert.equal(
+    resolveAutomatedV3Status({ status: 'partially_paid', amountCents: 10000, paidAmountCents: 4000, remainingAmountCents: 6000 }, today).key,
+    'partially_paid'
+  );
+  assert.equal(
+    resolveAutomatedV3Status({ status: 'pending', amountCents: 10000, paidAmountCents: 0, dueDate: '2026-11-12' }, today).key,
+    'due_today'
+  );
+  assert.equal(
+    resolveAutomatedV3Status({ status: 'pending', amountCents: 10000, paidAmountCents: 0, dueDate: '2026-11-20' }, today).key,
+    'upcoming'
+  );
+  assert.equal(
+    resolveAutomatedV3Status({ status: 'pending', amountCents: 10000, paidAmountCents: 0, dueDate: '2026-11-05' }, today).key,
+    'overdue'
+  );
+  assert.equal(
+    resolveAutomatedV3Status({ status: 'forecast', amountCents: 10000, paidAmountCents: 0, dueDate: '2026-11-25' }, today).key,
+    'forecast'
+  );
+  assert.equal(
+    resolveAutomatedV3Status({ status: 'validating', amountCents: 10000 }, today).key,
+    'validating'
+  );
+  assert.equal(
+    resolveAutomatedV3Status({ status: 'rejected', amountCents: 10000 }, today).key,
+    'rejected'
+  );
+  assert.equal(
+    resolveAutomatedV3Status({ status: 'cancelled', amountCents: 10000 }, today).key,
+    'cancelled'
+  );
+});
+
 
 
 

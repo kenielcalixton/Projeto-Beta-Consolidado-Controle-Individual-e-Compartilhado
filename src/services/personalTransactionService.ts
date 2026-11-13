@@ -66,7 +66,7 @@ export function loadDemoTransactions(): PersonalTransaction[] {
   }
 }
 
-function saveDemoTransactions(txs: PersonalTransaction[]): void {
+export function saveDemoTransactions(txs: PersonalTransaction[]): void {
   try {
     universalStorage.setItem(DEMO_PERSONAL_TXS_KEY, JSON.stringify(txs));
   } catch (err) {

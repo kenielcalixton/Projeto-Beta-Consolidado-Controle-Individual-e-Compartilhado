@@ -3,6 +3,7 @@ import { TaxonomyGroup, UserProfile } from '../../types/acquisitions';
 import { TaxonomyManagerView } from './TaxonomyManagerView';
 import {
   ADMIN_USER_UID,
+  auth,
   firebaseConfig,
   loginWithEmail,
   logoutFirebase,
@@ -71,23 +72,39 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const handleSaveDisplayName = async (e: React.FormEvent) => {
     e.preventDefault();
     const cleanName = displayNameInput.trim();
-    if (!cleanName) {
+    if (cleanName.length < 2) {
       setStatusMessage({
         type: 'error',
-        text: 'Informe um nome válido para identificar você no aplicativo.',
+        text: 'Informe um nome válido com pelo menos 2 caracteres.',
       });
       return;
     }
-    const updatedProfile: UserProfile = {
-      ...currentUser,
-      displayName: cleanName,
-    };
-    await upsertUserDocument(updatedProfile);
-    onUserChange(updatedProfile);
-    setStatusMessage({
-      type: 'success',
-      text: `Seu nome foi atualizado para "${cleanName}" em todo o aplicativo.`,
-    });
+    setIsLoading(true);
+    setStatusMessage(null);
+    try {
+      if (auth.currentUser) {
+        const { updateUserDisplayName } = await import('../../services/authService');
+        await updateUserDisplayName(cleanName);
+      } else {
+        await upsertUserDocument({ ...currentUser, displayName: cleanName });
+      }
+      const updatedProfile: UserProfile = {
+        ...currentUser,
+        displayName: cleanName,
+      };
+      onUserChange(updatedProfile);
+      setStatusMessage({
+        type: 'success',
+        text: `Seu nome foi atualizado para "${cleanName}" em todo o aplicativo.`,
+      });
+    } catch (err: any) {
+      setStatusMessage({
+        type: 'error',
+        text: err?.message || 'Erro ao persistir alteração de nome.',
+      });
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const handleAuthSubmit = async (e: React.FormEvent) => {

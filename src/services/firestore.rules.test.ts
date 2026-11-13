@@ -1452,5 +1452,95 @@ test('FIRESTORE SECURITY RULES — Validação Real no Firestore Emulator (Fase 
       )
     );
   });
+
+  await t.test('11. Perfil /users/{uid} e Listas de Aquisição (individual vs shared): isolamento por titular e espaço', async () => {
+    const aliceDb = testEnv.authenticatedContext('uid_alice').firestore();
+    const bobDb = testEnv.authenticatedContext('uid_bob').firestore();
+    const eveDb = testEnv.authenticatedContext('uid_eve').firestore();
+
+    // 11.1. Usuário cria e lê seu próprio perfil em /users/{uid}
+    await assertSucceeds(
+      setDoc(doc(aliceDb, 'users', 'uid_alice'), {
+        uid: 'uid_alice',
+        name: 'Alice Perfil',
+        email: 'alice@test.com',
+        preferredTheme: 'dark',
+      })
+    );
+    await assertSucceeds(getDoc(doc(aliceDb, 'users', 'uid_alice')));
+    await assertSucceeds(
+      updateDoc(doc(aliceDb, 'users', 'uid_alice'), { name: 'Alice Atualizada' })
+    );
+
+    // 11.2. Outro usuário não pode ler, atualizar, excluir ou criar perfil alheio
+    await assertFails(getDoc(doc(bobDb, 'users', 'uid_alice')));
+    await assertFails(updateDoc(doc(bobDb, 'users', 'uid_alice'), { name: 'Invasão' }));
+    await assertFails(deleteDoc(doc(aliceDb, 'users', 'uid_alice')));
+    await assertFails(
+      setDoc(doc(bobDb, 'users', 'uid_alice'), {
+        uid: 'uid_alice',
+        name: 'Spoof',
+      })
+    );
+
+    // 11.3. Lista individual: Alice cria com scopeType: 'individual' e ownerUid: 'uid_alice'; Bob/Eve bloqueados
+    await assertSucceeds(
+      setDoc(doc(aliceDb, 'acquisition_lists', 'list_ind_alice'), {
+        id: 'list_ind_alice',
+        name: 'Lista Pessoal Alice',
+        type: 'recorrente',
+        scopeType: 'individual',
+        spaceId: null,
+        ownerUid: 'uid_alice',
+      })
+    );
+    await assertSucceeds(getDoc(doc(aliceDb, 'acquisition_lists', 'list_ind_alice')));
+    await assertFails(getDoc(doc(bobDb, 'acquisition_lists', 'list_ind_alice')));
+    await assertFails(
+      setDoc(doc(bobDb, 'acquisition_lists', 'list_ind_spoof'), {
+        id: 'list_ind_spoof',
+        name: 'Spoof Individual',
+        type: 'desejo',
+        scopeType: 'individual',
+        ownerUid: 'uid_alice',
+      })
+    );
+
+    // 11.4. Lista compartilhada em space_1: Alice e Bob (membros ativos) leem/criam; Eve bloqueada
+    await assertSucceeds(
+      setDoc(doc(aliceDb, 'acquisition_lists', 'list_shared_space1'), {
+        id: 'list_shared_space1',
+        name: 'Compras Apartamento',
+        type: 'recorrente',
+        scopeType: 'shared',
+        spaceId: 'space_1',
+        ownerUid: 'uid_alice',
+      })
+    );
+    await assertSucceeds(getDoc(doc(bobDb, 'acquisition_lists', 'list_shared_space1')));
+    await assertSucceeds(
+      setDoc(
+        doc(bobDb, 'acquisition_lists', 'list_shared_space1', 'items', 'item_bob_1'),
+        {
+          id: 'item_bob_1',
+          listId: 'list_shared_space1',
+          name: 'Café em Grãos',
+          createdByUid: 'uid_bob',
+        }
+      )
+    );
+    await assertFails(getDoc(doc(eveDb, 'acquisition_lists', 'list_shared_space1')));
+    await assertFails(
+      setDoc(doc(eveDb, 'acquisition_lists', 'list_shared_eve_hack'), {
+        id: 'list_shared_eve_hack',
+        name: 'Hack Eve',
+        type: 'desejo',
+        scopeType: 'shared',
+        spaceId: 'space_1',
+        ownerUid: 'uid_eve',
+      })
+    );
+  });
 });
+
 

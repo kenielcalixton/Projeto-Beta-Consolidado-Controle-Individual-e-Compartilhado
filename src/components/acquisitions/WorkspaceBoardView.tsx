@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   AcquisitionItem,
   AcquisitionList,
@@ -48,6 +48,7 @@ interface WorkspaceBoardViewProps {
   items: AcquisitionItem[];
   taxonomyGroups: TaxonomyGroup[];
   currentUser: UserProfile;
+  openCreateListTrigger?: number;
   onBackToHub: () => void;
   onUpdateWorkspace: (
     workspaceId: string,
@@ -114,6 +115,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
   items,
   taxonomyGroups,
   currentUser,
+  openCreateListTrigger,
   onBackToHub,
   onUpdateWorkspace,
   onDeleteWorkspace,
@@ -137,6 +139,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
   onReturnConfirmedToStock,
   onCreateExpenseFromPurchase,
 }) => {
+  const isPersonalVirtualWs = workspace.id.startsWith('ws_personal_');
   const workspaceLists = lists.filter((l) => l.workspaceId === workspace.id);
   const [selectedListId, setSelectedListId] = useState<string>(
     workspaceLists[0]?.id || ''
@@ -149,6 +152,27 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
   const [activeMobileStage, setActiveMobileStage] = useState<ItemStage>(
     (stages[0]?.id as ItemStage) || 'estoque'
   );
+
+  useEffect(() => {
+    const first = workspaceLists[0];
+    if (!first) {
+      setSelectedListId('');
+      return;
+    }
+    if (!workspaceLists.some((l) => l.id === selectedListId)) {
+      setSelectedListId(first.id);
+      const listStages = getStagesForListType(first.type);
+      if (listStages.length > 0) {
+        setActiveMobileStage(listStages[0].id as ItemStage);
+      }
+    }
+  }, [workspace.id, workspaceLists, selectedListId]);
+
+  useEffect(() => {
+    if (openCreateListTrigger && openCreateListTrigger > 0) {
+      setIsNewListModalOpen(true);
+    }
+  }, [openCreateListTrigger]);
 
   // Sync mobile stage tab when switching list type
   const handleSelectList = (list: AcquisitionList) => {
@@ -1118,44 +1142,52 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
           <div className="space-y-1">
             <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
-              <button
-                type="button"
-                onClick={onBackToHub}
-                className="text-indigo-600 dark:text-indigo-400 hover:underline font-medium flex items-center gap-1 whitespace-nowrap shrink-0 cursor-pointer"
-              >
-                <ArrowLeft className="w-3.5 h-3.5 shrink-0" />
-                <span>Meus Espaços</span>
-              </button>
-              <span aria-hidden="true">/</span>
+              {!isPersonalVirtualWs ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={onBackToHub}
+                    className="text-indigo-600 dark:text-indigo-400 hover:underline font-medium flex items-center gap-1 whitespace-nowrap shrink-0 cursor-pointer"
+                  >
+                    <ArrowLeft className="w-3.5 h-3.5 shrink-0" />
+                    <span>Meus Espaços</span>
+                  </button>
+                  <span aria-hidden="true">/</span>
+                </>
+              ) : null}
               <span className="whitespace-nowrap">{workspace.type}</span>
-              <span aria-hidden="true">·</span>
-              <span className="font-mono tabular-nums whitespace-nowrap">
-                Orçamento: {formatCurrencyBRL(workspace.monthlyBudget)}
-              </span>
-              <span aria-hidden="true">·</span>
-              <button
-                type="button"
-                onClick={() => {
-                  setEditWsName(workspace.name);
-                  setEditWsDesc(workspace.description);
-                  setEditWsType(workspace.type);
-                  setEditWsBudget(String(workspace.monthlyBudget ?? 0));
-                  setIsEditWorkspaceOpen(true);
-                }}
-                className="text-slate-500 hover:text-indigo-600 dark:hover:text-indigo-400 inline-flex items-center gap-1 cursor-pointer"
-              >
-                <Edit3 className="w-3 h-3" />
-                <span>Editar Espaço</span>
-              </button>
-              <span aria-hidden="true">·</span>
-              <button
-                type="button"
-                onClick={() => setIsDeleteWorkspaceOpen(true)}
-                className="text-slate-500 hover:text-rose-600 dark:hover:text-rose-400 inline-flex items-center gap-1 cursor-pointer"
-              >
-                <Trash2 className="w-3 h-3" />
-                <span>Apagar Espaço</span>
-              </button>
+              {!isPersonalVirtualWs && (
+                <>
+                  <span aria-hidden="true">·</span>
+                  <span className="font-mono tabular-nums whitespace-nowrap">
+                    Orçamento: {formatCurrencyBRL(workspace.monthlyBudget)}
+                  </span>
+                  <span aria-hidden="true">·</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditWsName(workspace.name);
+                      setEditWsDesc(workspace.description);
+                      setEditWsType(workspace.type);
+                      setEditWsBudget(String(workspace.monthlyBudget ?? 0));
+                      setIsEditWorkspaceOpen(true);
+                    }}
+                    className="text-slate-500 hover:text-indigo-600 dark:hover:text-indigo-400 inline-flex items-center gap-1 cursor-pointer"
+                  >
+                    <Edit3 className="w-3 h-3" />
+                    <span>Editar Espaço</span>
+                  </button>
+                  <span aria-hidden="true">·</span>
+                  <button
+                    type="button"
+                    onClick={() => setIsDeleteWorkspaceOpen(true)}
+                    className="text-slate-500 hover:text-rose-600 dark:hover:text-rose-400 inline-flex items-center gap-1 cursor-pointer"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                    <span>Apagar Espaço</span>
+                  </button>
+                </>
+              )}
             </div>
             <h1 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-slate-100 font-display">
               {workspace.name}
@@ -1167,17 +1199,19 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
 
           {/* Workspace Action Bar */}
           <div className="flex flex-wrap items-center gap-2.5 shrink-0">
-            <button
-              type="button"
-              onClick={() => {
-                setInviteSuccessMsg('');
-                setIsMembersModalOpen(true);
-              }}
-              className="min-h-[42px] px-3.5 py-2 text-xs font-medium rounded-xl border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors flex items-center gap-2 whitespace-nowrap cursor-pointer"
-            >
-              <Users className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
-              <span>Membros ({workspace.members.length})</span>
-            </button>
+            {!isPersonalVirtualWs && (
+              <button
+                type="button"
+                onClick={() => {
+                  setInviteSuccessMsg('');
+                  setIsMembersModalOpen(true);
+                }}
+                className="min-h-[42px] px-3.5 py-2 text-xs font-medium rounded-xl border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors flex items-center gap-2 whitespace-nowrap cursor-pointer"
+              >
+                <Users className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+                <span>Membros ({workspace.members.length})</span>
+              </button>
+            )}
 
             <button
               type="button"
@@ -1264,106 +1298,132 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
         </div>
       </div>
 
-      {/* =================================================================== */}
-      {/* MOBILE SWIPEABLE STAGE TABS (< lg)                                  */}
-      {/* =================================================================== */}
-      <div className="lg:hidden space-y-4">
-        <div
-          className="flex items-center gap-1.5 overflow-x-auto p-1.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl"
-          role="tablist"
-          aria-label="Colunas da lista no celular"
-        >
-          {stages.map((st) => {
-            const count = listItems.filter((i) => i.stage === st.id).length;
-            const isTabActive = activeMobileStage === st.id;
-            return (
-              <button
-                key={st.id}
-                type="button"
-                role="tab"
-                aria-selected={isTabActive}
-                onClick={() => setActiveMobileStage(st.id as ItemStage)}
-                className={`min-h-[44px] px-3.5 py-2 text-xs font-semibold rounded-xl transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5 cursor-pointer ${
-                  isTabActive
-                    ? 'bg-indigo-600 text-white shadow-xs'
-                    : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
-                }`}
-              >
-                <span>{st.label}</span>
-                <span className="font-mono text-[11px] opacity-85">
-                  ({count})
-                </span>
-              </button>
-            );
-          })}
+      {!activeList ? (
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-10 text-center space-y-4">
+          <div className="w-12 h-12 rounded-2xl bg-indigo-500/15 border border-indigo-500/30 text-indigo-500 dark:text-indigo-400 flex items-center justify-center mx-auto">
+            <ShoppingCart className="w-6 h-6" />
+          </div>
+          <div className="space-y-1">
+            <h3 className="text-base font-bold text-slate-900 dark:text-white">
+              Nenhuma lista criada neste espaço
+            </h3>
+            <p className="text-xs text-slate-500 dark:text-slate-400 max-w-md mx-auto">
+              Crie uma lista recorrente (despensa/compras do mês), de objetivo financeiro ou de desejos para começar a gerenciar suas aquisições.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setIsNewListModalOpen(true)}
+            className="min-h-[42px] px-5 py-2.5 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-xl transition-colors inline-flex items-center gap-2 shadow-xs cursor-pointer"
+          >
+            <Plus className="w-4 h-4" />
+            <span>+ Criar Primeira Lista</span>
+          </button>
         </div>
-
-        {/* Active Mobile Stage Cards */}
-        <div className="space-y-3">
-          {listItems.filter((i) => i.stage === activeMobileStage).length === 0 ? (
-            <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-8 text-center space-y-2">
-              <p className="text-sm font-semibold text-slate-700 dark:text-slate-300">
-                Nenhum item nesta etapa
-              </p>
-              <p className="text-xs text-slate-500 dark:text-slate-400">
-                Adicione um novo item ou avance cards das etapas anteriores.
-              </p>
-            </div>
-          ) : (
-            listItems
-              .filter((i) => i.stage === activeMobileStage)
-              .map((item) => renderItemCard(item))
-          )}
-        </div>
-      </div>
-
-      {/* =================================================================== */}
-      {/* DESKTOP KANBAN BOARD WITH LATERAL SCROLL (>= lg)                    */}
-      {/* =================================================================== */}
-      <div className="hidden lg:flex items-start gap-4 overflow-x-auto pb-4">
-        {stages.map((stageObj, idx) => {
-          const columnItems = listItems.filter((i) => i.stage === stageObj.id);
-          return (
+      ) : (
+        <>
+          {/* =================================================================== */}
+          {/* MOBILE SWIPEABLE STAGE TABS (< lg)                                  */}
+          {/* =================================================================== */}
+          <div className="lg:hidden space-y-4">
             <div
-              key={stageObj.id}
-              className="flex-1 min-w-[285px] bg-slate-100/80 dark:bg-slate-900/50 border border-slate-200/80 dark:border-slate-800 rounded-2xl p-4 flex flex-col gap-3.5 min-h-[540px]"
+              className="flex items-center gap-1.5 overflow-x-auto p-1.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl"
+              role="tablist"
+              aria-label="Colunas da lista no celular"
             >
-              {/* Column Header */}
-              <div className="flex items-start justify-between gap-2 pb-2 border-b border-slate-200 dark:border-slate-800">
-                <div>
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-xs font-mono font-bold text-indigo-600 dark:text-indigo-400">
-                      0{idx + 1}.
+              {stages.map((st) => {
+                const count = listItems.filter((i) => i.stage === st.id).length;
+                const isTabActive = activeMobileStage === st.id;
+                return (
+                  <button
+                    key={st.id}
+                    type="button"
+                    role="tab"
+                    aria-selected={isTabActive}
+                    onClick={() => setActiveMobileStage(st.id as ItemStage)}
+                    className={`min-h-[44px] px-3.5 py-2 text-xs font-semibold rounded-xl transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5 cursor-pointer ${
+                      isTabActive
+                        ? 'bg-indigo-600 text-white shadow-xs'
+                        : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+                    }`}
+                  >
+                    <span>{st.label}</span>
+                    <span className="font-mono text-[11px] opacity-85">
+                      ({count})
                     </span>
-                    <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100 font-display">
-                      {stageObj.label}
-                    </h3>
-                  </div>
-                  <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
-                    {stageObj.subtitle}
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Active Mobile Stage Cards */}
+            <div className="space-y-3">
+              {listItems.filter((i) => i.stage === activeMobileStage).length === 0 ? (
+                <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-8 text-center space-y-2">
+                  <p className="text-sm font-semibold text-slate-700 dark:text-slate-300">
+                    Nenhum item nesta etapa
+                  </p>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                    Adicione um novo item ou avance cards das etapas anteriores.
                   </p>
                 </div>
-                <span className="text-xs font-mono font-semibold tabular-nums text-slate-600 dark:text-slate-400 px-2 py-0.5 rounded bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700">
-                  {columnItems.length}
-                </span>
-              </div>
-
-              {/* Column Cards */}
-              <div className="space-y-3 flex-1">
-                {columnItems.length === 0 ? (
-                  <div className="h-40 rounded-xl border border-dashed border-slate-300 dark:border-slate-800 flex flex-col items-center justify-center p-4 text-center">
-                    <p className="text-xs text-slate-400 dark:text-slate-500">
-                      Sem itens em &ldquo;{stageObj.label}&rdquo;
-                    </p>
-                  </div>
-                ) : (
-                  columnItems.map((item) => renderItemCard(item))
-                )}
-              </div>
+              ) : (
+                listItems
+                  .filter((i) => i.stage === activeMobileStage)
+                  .map((item) => renderItemCard(item))
+              )}
             </div>
-          );
-        })}
-      </div>
+          </div>
+
+          {/* =================================================================== */}
+          {/* DESKTOP KANBAN BOARD WITH LATERAL SCROLL (>= lg)                    */}
+          {/* =================================================================== */}
+          <div className="hidden lg:flex items-start gap-4 overflow-x-auto pb-4">
+            {stages.map((stageObj, idx) => {
+              const columnItems = listItems.filter((i) => i.stage === stageObj.id);
+              return (
+                <div
+                  key={stageObj.id}
+                  className="flex-1 min-w-[285px] bg-slate-100/80 dark:bg-slate-900/50 border border-slate-200/80 dark:border-slate-800 rounded-2xl p-4 flex flex-col gap-3.5 min-h-[540px]"
+                >
+                  {/* Column Header */}
+                  <div className="flex items-start justify-between gap-2 pb-2 border-b border-slate-200 dark:border-slate-800">
+                    <div>
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-xs font-mono font-bold text-indigo-600 dark:text-indigo-400">
+                          0{idx + 1}.
+                        </span>
+                        <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100 font-display">
+                          {stageObj.label}
+                        </h3>
+                      </div>
+                      <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                        {stageObj.subtitle}
+                      </p>
+                    </div>
+                    <span className="text-xs font-mono font-semibold tabular-nums text-slate-600 dark:text-slate-400 px-2 py-0.5 rounded bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700">
+                      {columnItems.length}
+                    </span>
+                  </div>
+
+                  {/* Column Cards */}
+                  <div className="space-y-3 flex-1">
+                    {columnItems.length === 0 ? (
+                      <div className="h-40 rounded-xl border border-dashed border-slate-300 dark:border-slate-800 flex flex-col items-center justify-center p-4 text-center">
+                        <p className="text-xs text-slate-400 dark:text-slate-500">
+                          Sem itens em &ldquo;{stageObj.label}&rdquo;
+                        </p>
+                      </div>
+                    ) : (
+                      columnItems.map((item) => renderItemCard(item))
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
 
       {/* =================================================================== */}
       {/* MODAL: EDIT WORKSPACE                                               */}

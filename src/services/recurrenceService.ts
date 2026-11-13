@@ -22,6 +22,7 @@ import {
   RecurrenceRuleScope,
   RecurrenceRuleFrequency,
   RecurrenceRuleStatus,
+  RecurrenceRuleNature,
   RecurrenceInstance,
   RecurrenceInstanceGenerationStatus,
   InstallmentContract,
@@ -30,6 +31,8 @@ import {
   InstallmentContractStatus,
   InstallmentOccurrence,
   InstallmentOccurrenceStatus,
+  PersonalTransaction,
+  PersonalTransactionType,
   CentsInteger,
   CompetenceMonthString,
   DateString,
@@ -39,6 +42,7 @@ import { validatePositiveCents } from '../utils/movementLedger';
 import { universalStorage } from '../utils/universalStorage';
 import { withDemoLock } from './ledgerService';
 import { loadDemoInvoices, saveDemoInvoices } from './creditCardService';
+import { loadDemoTransactions, saveDemoTransactions } from './personalTransactionService';
 
 // ------------------------------------------------------------------------------
 // CHAVES DE ARMAZENAMENTO DEMO
@@ -126,6 +130,15 @@ function cleanUndefined<T extends Record<string, any>>(obj: T): T {
   return cleaned as T;
 }
 
+function clampDateInCompetenceMonth(competenceMonth: CompetenceMonthString, targetDay: number): DateString {
+  const [yStr, mStr] = competenceMonth.split('-');
+  const year = parseInt(yStr, 10);
+  const month = parseInt(mStr, 10);
+  const maxDays = new Date(year, month, 0).getDate();
+  const safeDay = Math.min(Math.max(1, Number(targetDay) || 10), maxDays);
+  return `${competenceMonth}-${String(safeDay).padStart(2, '0')}`;
+}
+
 // ------------------------------------------------------------------------------
 // INTERFACES DE PARÂMETROS
 // ------------------------------------------------------------------------------
@@ -136,6 +149,8 @@ export interface CreateRecurrenceRuleParams {
   spaceId?: string;
   title: string;
   description?: string;
+  type?: PersonalTransactionType;
+  nature?: RecurrenceRuleNature;
   amountCents: CentsInteger;
   frequency?: RecurrenceRuleFrequency;
   interval?: number;
@@ -163,7 +178,9 @@ export interface CreateInstallmentContractParams {
   spaceId?: string;
   title: string;
   totalContractAmountCents: CentsInteger;
+  remainingAmountCents?: CentsInteger;
   totalInstallmentsCount: number;
+  initialInstallmentNumber?: number;
   fundingSource?: InstallmentContractFundingSource;
   sourceCardAccountId?: string;
   startCompetenceMonth: CompetenceMonthString;
@@ -216,6 +233,8 @@ export async function createRecurrenceRule(
         spaceId: params.spaceId,
         title: params.title.trim(),
         description: params.description?.trim(),
+        type: params.type === 'income' ? 'income' : 'expense',
+        nature: params.nature === 'fixed' ? 'fixed' : 'recurring',
         amountCents: params.amountCents,
         frequency: params.frequency || 'monthly',
         interval: params.interval || 1,
@@ -267,10 +286,50 @@ export async function generateRecurrenceInstance(
       }
 
       const now = new Date().toISOString();
+      const compSlug = params.competenceMonth.replace('-', '_');
+      const txId = `tx_rec_${params.ruleId}_${compSlug}`;
+      const dueDate = clampDateInCompetenceMonth(params.competenceMonth, rule.dueDay || 10);
+      let generatedTransactionId: string | undefined;
+
+      if (rule.scope === 'personal') {
+        generatedTransactionId = txId;
+        const txs = loadDemoTransactions();
+        if (!txs.some((t) => t.id === txId)) {
+          const txDoc: PersonalTransaction = cleanUndefined({
+            id: txId,
+            userId: rule.userId,
+            description: rule.title,
+            amountCents: rule.amountCents,
+            type: rule.type === 'income' ? 'income' : 'expense',
+            status: 'pending',
+            categoryId: rule.categoryId || 'cat_default',
+            categoryName: 'Recorrência / Fixo',
+            accountId: rule.defaultAccountId,
+            competenceDate: dueDate,
+            dueDate,
+            originType: 'recurrence',
+            originRefId: params.ruleId,
+            idempotencyKey: `rec_inst:${params.ruleId}:${params.competenceMonth}`,
+            paidAmountCents: 0,
+            remainingAmountCents: rule.amountCents,
+            notes:
+              rule.description ||
+              (rule.nature === 'fixed'
+                ? 'Obrigação/Receita fixa mensal gerada pela regra'
+                : 'Recorrência periódica gerada pela regra'),
+            createdAt: now,
+            updatedAt: now,
+          });
+          txs.push(txDoc);
+          saveDemoTransactions(txs);
+        }
+      }
+
       const newInstance: RecurrenceInstance = cleanUndefined({
         id: params.competenceMonth,
         ruleId: params.ruleId,
         competenceMonth: params.competenceMonth,
+        generatedTransactionId,
         generationStatus: 'generated',
         actualAmountCents: rule.amountCents,
         generatedAt: now,
@@ -384,6 +443,26 @@ export async function createInstallmentContract(
   ) {
     throw new Error('totalInstallmentsCount deve ser no mínimo 2 parcelas.');
   }
+  const initialInstallmentNumber =
+    params.initialInstallmentNumber !== undefined && params.initialInstallmentNumber !== null
+      ? Number(params.initialInstallmentNumber)
+      : 1;
+  if (
+    !Number.isSafeInteger(initialInstallmentNumber) ||
+    initialInstallmentNumber < 1 ||
+    initialInstallmentNumber > params.totalInstallmentsCount
+  ) {
+    throw new Error(
+      'initialInstallmentNumber deve ser um inteiro entre 1 e o número total de parcelas.'
+    );
+  }
+  if (
+    params.remainingAmountCents !== undefined &&
+    params.remainingAmountCents !== null &&
+    !validatePositiveCents(params.remainingAmountCents)
+  ) {
+    throw new Error('remainingAmountCents deve ser um inteiro positivo em centavos.');
+  }
   if (!/^\d{4}-\d{2}$/.test(params.startCompetenceMonth)) {
     throw new Error('startCompetenceMonth deve estar no formato YYYY-MM.');
   }
@@ -392,6 +471,7 @@ export async function createInstallmentContract(
   }
 
   const dueDay = params.dueDay || 10;
+  const fundingSource: InstallmentContractFundingSource = params.fundingSource || 'credit_card';
 
   if (isDemo) {
     return await withDemoLock(async () => {
@@ -406,6 +486,12 @@ export async function createInstallmentContract(
         return { contract: found, isIdempotentReplay: true };
       }
 
+      const projectedCount = params.totalInstallmentsCount - initialInstallmentNumber + 1;
+      const amountToAllocateCents =
+        params.remainingAmountCents !== undefined && params.remainingAmountCents !== null
+          ? params.remainingAmountCents
+          : params.totalContractAmountCents;
+
       const now = new Date().toISOString();
       const newContract: InstallmentContract = cleanUndefined({
         id: contractId,
@@ -414,8 +500,10 @@ export async function createInstallmentContract(
         spaceId: params.spaceId,
         title: params.title.trim(),
         totalContractAmountCents: params.totalContractAmountCents,
+        remainingAmountCents: amountToAllocateCents,
         totalInstallmentsCount: params.totalInstallmentsCount,
-        fundingSource: params.fundingSource || 'credit_card',
+        initialInstallmentNumber,
+        fundingSource,
         sourceCardAccountId: params.sourceCardAccountId,
         startCompetenceMonth: params.startCompetenceMonth,
         status: 'active',
@@ -425,29 +513,57 @@ export async function createInstallmentContract(
       contracts.push(newContract);
       saveDemoInstallmentContracts(contracts);
 
-      // Divisão estrita com conservação contábil
-      const baseInstallment = Math.floor(
-        params.totalContractAmountCents / params.totalInstallmentsCount
-      );
-      const remainder =
-        params.totalContractAmountCents -
-        baseInstallment * params.totalInstallmentsCount;
+      // Divisão estrita com conservação contábil sobre as parcelas vigentes/futuras
+      const baseInstallment = Math.floor(amountToAllocateCents / projectedCount);
+      const remainder = amountToAllocateCents - baseInstallment * projectedCount;
 
       const occurrences = loadDemoInstallmentOccurrences();
+      const demoTxs = loadDemoTransactions();
+      let txsModified = false;
 
       const [startYearStr, startMonthStr] = params.startCompetenceMonth.split('-');
       let curYear = parseInt(startYearStr, 10);
       let curMonth = parseInt(startMonthStr, 10);
 
-      for (let i = 1; i <= params.totalInstallmentsCount; i++) {
+      for (let i = initialInstallmentNumber; i <= params.totalInstallmentsCount; i++) {
         const monthPadded = String(curMonth).padStart(2, '0');
         const compMonth = `${curYear}-${monthPadded}`;
-        const dayPadded = String(dueDay).padStart(2, '0');
-        const dueDate = `${compMonth}-${dayPadded}`;
+        const dueDate = clampDateInCompetenceMonth(compMonth, dueDay);
         const occId = String(i).padStart(2, '0');
 
         const principalAmountCents =
-          i === 1 ? baseInstallment + remainder : baseInstallment;
+          i === initialInstallmentNumber ? baseInstallment + remainder : baseInstallment;
+
+        let linkedTransactionId: string | undefined;
+        const isCredit = fundingSource === 'credit_card' && Boolean(params.sourceCardAccountId);
+        if (!isCredit && params.scope === 'personal') {
+          linkedTransactionId = `tx_inst_${contractId}_${occId}`;
+          if (!demoTxs.some((t) => t.id === linkedTransactionId)) {
+            demoTxs.push(
+              cleanUndefined({
+                id: linkedTransactionId,
+                userId: params.userId,
+                description: `${params.title.trim()} (${i}/${params.totalInstallmentsCount})`,
+                amountCents: principalAmountCents,
+                type: 'expense',
+                status: 'pending',
+                categoryId: 'installment',
+                categoryName: 'Parcelamento',
+                competenceDate: dueDate,
+                dueDate,
+                originType: 'installment',
+                originRefId: contractId,
+                idempotencyKey: `inst_occ:${contractId}:${occId}`,
+                paidAmountCents: 0,
+                remainingAmountCents: principalAmountCents,
+                notes: `Parcela ${i} de ${params.totalInstallmentsCount} do contrato "${params.title.trim()}"`,
+                createdAt: now,
+                updatedAt: now,
+              })
+            );
+            txsModified = true;
+          }
+        }
 
         const occurrenceDoc: InstallmentOccurrence = cleanUndefined({
           id: occId,
@@ -457,6 +573,7 @@ export async function createInstallmentContract(
           principalAmountCents,
           interestAmountCents: 0,
           totalInstallmentAmountCents: principalAmountCents,
+          linkedTransactionId,
           status: 'scheduled',
           dueDate,
         });
@@ -464,10 +581,12 @@ export async function createInstallmentContract(
         occurrences.push(occurrenceDoc);
 
         // Se fundingSource for cartão de crédito em demo, projeta nas faturas
-        if (params.fundingSource === 'credit_card' && params.sourceCardAccountId) {
+        if (isCredit && params.sourceCardAccountId) {
           const invoices = loadDemoInvoices();
           let inv = invoices.find(
-            (i) => i.accountId === params.sourceCardAccountId && i.invoiceMonth === compMonth
+            (invItem) =>
+              invItem.accountId === params.sourceCardAccountId &&
+              invItem.invoiceMonth === compMonth
           );
           if (inv) {
             inv.totalPurchasesAmountCents += principalAmountCents;
@@ -480,7 +599,7 @@ export async function createInstallmentContract(
               accountId: params.sourceCardAccountId,
               userId: params.userId,
               invoiceMonth: compMonth,
-              closingDate: `${compMonth}-20`,
+              closingDate: clampDateInCompetenceMonth(compMonth, 20),
               dueDate,
               totalPurchasesAmountCents: principalAmountCents,
               carriedOverBalanceCents: 0,
@@ -503,6 +622,9 @@ export async function createInstallmentContract(
         }
       }
 
+      if (txsModified) {
+        saveDemoTransactions(demoTxs);
+      }
       saveDemoInstallmentOccurrences(occurrences);
 
       return { contract: newContract, isIdempotentReplay: false };

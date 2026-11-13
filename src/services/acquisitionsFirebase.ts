@@ -239,6 +239,65 @@ export async function deleteWorkspaceFromFirestore(workspaceId: string): Promise
 // 4. COLEÇÃO `acquisition_lists`
 // ============================================================================
 
+export async function fetchIndividualListsFromFirestore(
+  ownerUid: string
+): Promise<AcquisitionList[]> {
+  if (!ownerUid) return [];
+  try {
+    const listsRef = collection(db, 'acquisition_lists');
+    const q = query(
+      listsRef,
+      where('scopeType', '==', 'individual'),
+      where('ownerUid', '==', ownerUid)
+    );
+    const snapshot = await getDocs(q);
+    return snapshot.docs
+      .filter((d) => !d.data().isArchived)
+      .map((d) => ({ id: d.id, ...(d.data() as Omit<AcquisitionList, 'id'>) }));
+  } catch (err) {
+    console.warn('[Firestore] fetchIndividualListsFromFirestore:', err);
+    return [];
+  }
+}
+
+export async function fetchSharedListsFromFirestore(
+  spaceId: string
+): Promise<AcquisitionList[]> {
+  if (!spaceId) return [];
+  try {
+    const listsRef = collection(db, 'acquisition_lists');
+    const q = query(
+      listsRef,
+      where('scopeType', '==', 'shared'),
+      where('spaceId', '==', spaceId)
+    );
+    const snapshot = await getDocs(q);
+    return snapshot.docs
+      .filter((d) => !d.data().isArchived)
+      .map((d) => ({ id: d.id, ...(d.data() as Omit<AcquisitionList, 'id'>) }));
+  } catch (err) {
+    console.warn('[Firestore] fetchSharedListsFromFirestore:', err);
+    return [];
+  }
+}
+
+export async function fetchItemsForListFromFirestore(
+  listId: string
+): Promise<AcquisitionItem[]> {
+  if (!listId) return [];
+  try {
+    const itemsRef = collection(db, 'acquisition_lists', listId, 'items');
+    const snapshot = await getDocs(itemsRef);
+    return snapshot.docs.map((d) => ({
+      id: d.id,
+      ...(d.data() as Omit<AcquisitionItem, 'id'>),
+    }));
+  } catch (err) {
+    console.warn('[Firestore] fetchItemsForListFromFirestore:', err);
+    return [];
+  }
+}
+
 export async function fetchListsForWorkspaceFromFirestore(
   workspaceId: string,
   userEmail: string
@@ -258,10 +317,12 @@ export async function saveListToFirestore(list: AcquisitionList): Promise<void> 
   try {
     const listRef = doc(db, 'acquisition_lists', list.id);
     const currentUser = auth.currentUser;
-    const docData: any = {
+    const isShared = list.scopeType === 'shared' && Boolean(list.spaceId);
+    const docData: Record<string, any> = {
       ...list,
-      scopeType: 'individual',
-      ownerUid: currentUser?.uid || '',
+      scopeType: isShared ? 'shared' : 'individual',
+      spaceId: isShared ? list.spaceId : null,
+      ownerUid: list.ownerUid || currentUser?.uid || '',
       updatedAt: new Date().toISOString(),
     };
     await setDoc(listRef, docData, { merge: true });
@@ -298,9 +359,9 @@ export async function saveItemToFirestore(item: AcquisitionItem): Promise<void> 
     }
     const itemRef = doc(db, 'acquisition_lists', item.listId, 'items', item.id);
     const currentUser = auth.currentUser;
-    const docData: any = {
+    const docData: Record<string, any> = {
       ...item,
-      createdByUid: currentUser?.uid || '',
+      createdByUid: item.createdByUid || currentUser?.uid || '',
       updatedAt: new Date().toISOString(),
     };
     await setDoc(itemRef, docData, { merge: true });
@@ -311,20 +372,24 @@ export async function saveItemToFirestore(item: AcquisitionItem): Promise<void> 
 
 export async function recordProductInSubcollection(
   item: AcquisitionItem,
-  product: ProductPurchase
+  _product: ProductPurchase
 ): Promise<void> {
   try {
     if (item.listId) {
-      const productRef = doc(db, 'acquisition_lists', item.listId, 'items', item.id, 'purchases', product.id);
-      await setDoc(productRef, product);
+      // As compras oficiais na subcoleção `purchases` são gravadas via Cloud Function (Admin SDK).
+      // Aqui sincronizamos apenas o documento do item com o cache visual e estágio atual.
       const itemRef = doc(db, 'acquisition_lists', item.listId, 'items', item.id);
-      await updateDoc(itemRef, {
-        stage: item.stage,
-        currentStock: item.currentStock ?? 0,
-        cartDraft: item.cartDraft ?? null,
-        productsHistory: item.productsHistory,
-        updatedAt: item.updatedAt,
-      });
+      await setDoc(
+        itemRef,
+        {
+          stage: item.stage,
+          currentStock: item.currentStock ?? 0,
+          cartDraft: item.cartDraft ?? null,
+          productsHistory: item.productsHistory,
+          updatedAt: item.updatedAt,
+        },
+        { merge: true }
+      );
     }
   } catch (err) {
     console.warn('[Firestore / Offline fallback] recordProductInSubcollection:', err);
@@ -374,7 +439,8 @@ export async function uploadFileToFirebaseStorage(
   ownerId: string
 ): Promise<string> {
   const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
-  const storagePath = `${folder}/${ownerId}/${Date.now()}_${safeName}`;
+  const effectiveUid = auth.currentUser?.uid || ownerId;
+  const storagePath = `users/${effectiveUid}/${folder}/${Date.now()}_${safeName}`;
   try {
     const storageRef = ref(storage, storagePath);
     const snapshot = await uploadBytes(storageRef, file);

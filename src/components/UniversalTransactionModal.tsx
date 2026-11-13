@@ -260,6 +260,19 @@ export const UniversalTransactionModal: React.FC<UniversalTransactionModalProps>
     selectedMonth,
   ]);
 
+  useEffect(() => {
+    if (!isOpen) return;
+    if (!accountId && accounts.length > 0) {
+      setAccountId(presetAccountId || accounts[0].id);
+    }
+    if (!categoryId && categories.length > 0) {
+      const matchingCats = categories.filter(
+        (c) => c.type === type || c.type === 'both'
+      );
+      setCategoryId(matchingCats[0]?.id || categories[0].id);
+    }
+  }, [isOpen, accounts, categories, accountId, categoryId, presetAccountId, type]);
+
   const selectedAccount = accounts.find((a) => a.id === accountId) || accounts[0];
   const selectedCategory =
     categories.find((c) => c.id === categoryId) || categories[0];
