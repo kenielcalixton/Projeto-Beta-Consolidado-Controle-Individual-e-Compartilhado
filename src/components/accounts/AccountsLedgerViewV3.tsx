@@ -474,22 +474,22 @@ export const AccountsLedgerViewV3: React.FC<AccountsLedgerViewV3Props> = ({
       )}
 
       {/* Header com Identificação Canônica v3.1 */}
-      <div className="bg-white rounded-2xl p-6 shadow-sm border border-slate-100 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+      <div className="bg-slate-800/90 rounded-2xl p-6 shadow-sm border border-slate-700/80 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
         <div>
           <div className="flex items-center gap-2">
-            <span className="px-2.5 py-0.5 text-xs font-semibold tracking-wider uppercase bg-blue-50 text-blue-700 rounded-md border border-blue-200">
+            <span className="px-2.5 py-0.5 text-xs font-semibold tracking-wider uppercase bg-indigo-500/15 text-indigo-300 rounded-md border border-indigo-500/30">
               Arquitetura v3.1 Homologada
             </span>
             {isDemo && (
-              <span className="px-2.5 py-0.5 text-xs font-semibold tracking-wider uppercase bg-amber-50 text-amber-700 rounded-md border border-amber-200">
+              <span className="px-2.5 py-0.5 text-xs font-semibold tracking-wider uppercase bg-amber-500/15 text-amber-300 rounded-md border border-amber-500/30">
                 Modo Demonstração (Isolado)
               </span>
             )}
           </div>
-          <h1 className="text-2xl font-bold text-slate-900 mt-1">
+          <h1 className="text-2xl font-bold text-white mt-1">
             Contas & Livro Financeiro (Ledger Oficial)
           </h1>
-          <p className="text-sm text-slate-500 mt-0.5">
+          <p className="text-sm text-slate-400 mt-0.5">
             Histórico imutável append-only com projeção de saldos em centavos inteiros e reconciliação contábil.
           </p>
         </div>
@@ -500,7 +500,7 @@ export const AccountsLedgerViewV3: React.FC<AccountsLedgerViewV3Props> = ({
             resetAccountForm();
             setIsCreateModalOpen(true);
           }}
-          className="flex items-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold rounded-xl shadow-sm transition-all"
+          className="flex items-center gap-2 px-4 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold rounded-xl shadow-sm transition-all cursor-pointer"
         >
           <Plus className="w-4 h-4" />
           Nova Conta Bancária
@@ -509,16 +509,16 @@ export const AccountsLedgerViewV3: React.FC<AccountsLedgerViewV3Props> = ({
 
       {/* Cards de Métricas Consolidadas */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm">
+        <div className="bg-slate-800/90 p-5 rounded-2xl border border-slate-700/80 shadow-sm">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
+            <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
               Saldo Total Projetado
             </span>
-            <div className="p-2 bg-emerald-50 text-emerald-600 rounded-xl">
+            <div className="p-2 bg-emerald-500/15 text-emerald-400 rounded-xl border border-emerald-500/30">
               <DollarSign className="w-5 h-5" />
             </div>
           </div>
-          <div className="mt-2 text-2xl font-black text-slate-900">
+          <div className="mt-2 text-2xl font-black text-white">
             {formatCentsToBRL(totalBalanceCents)}
           </div>
           <div className="text-xs text-slate-400 mt-1">
@@ -526,16 +526,16 @@ export const AccountsLedgerViewV3: React.FC<AccountsLedgerViewV3Props> = ({
           </div>
         </div>
 
-        <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm">
+        <div className="bg-slate-800/90 p-5 rounded-2xl border border-slate-700/80 shadow-sm">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
+            <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
               Contas Ativas
             </span>
-            <div className="p-2 bg-blue-50 text-blue-600 rounded-xl">
+            <div className="p-2 bg-indigo-500/15 text-indigo-400 rounded-xl border border-indigo-500/30">
               <Building2 className="w-5 h-5" />
             </div>
           </div>
-          <div className="mt-2 text-2xl font-black text-slate-900">
+          <div className="mt-2 text-2xl font-black text-white">
             {activeAccountsCount}
           </div>
           <div className="text-xs text-slate-400 mt-1">
@@ -543,16 +543,16 @@ export const AccountsLedgerViewV3: React.FC<AccountsLedgerViewV3Props> = ({
           </div>
         </div>
 
-        <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm">
+        <div className="bg-slate-800/90 p-5 rounded-2xl border border-slate-700/80 shadow-sm">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
+            <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
               Contas Arquivadas
             </span>
-            <div className="p-2 bg-slate-100 text-slate-600 rounded-xl">
+            <div className="p-2 bg-slate-700/50 text-slate-300 rounded-xl border border-slate-600/50">
               <Archive className="w-5 h-5" />
             </div>
           </div>
-          <div className="mt-2 text-2xl font-black text-slate-900">
+          <div className="mt-2 text-2xl font-black text-white">
             {archivedAccountsCount}
           </div>
           <div className="text-xs text-slate-400 mt-1">
@@ -563,33 +563,33 @@ export const AccountsLedgerViewV3: React.FC<AccountsLedgerViewV3Props> = ({
 
       {/* Barra de Filtros e Status */}
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-1.5 p-1 bg-slate-100 rounded-xl">
+        <div className="flex items-center gap-1.5 p-1 bg-slate-900 border border-slate-700/80 rounded-xl">
           <button
             onClick={() => setFilterStatus('active')}
-            className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all ${
+            className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
               filterStatus === 'active'
-                ? 'bg-white text-slate-900 shadow-xs'
-                : 'text-slate-600 hover:text-slate-900'
+                ? 'bg-indigo-600 text-white shadow-xs'
+                : 'text-slate-400 hover:text-white'
             }`}
           >
             Ativas ({activeAccountsCount})
           </button>
           <button
             onClick={() => setFilterStatus('archived')}
-            className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all ${
+            className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
               filterStatus === 'archived'
-                ? 'bg-white text-slate-900 shadow-xs'
-                : 'text-slate-600 hover:text-slate-900'
+                ? 'bg-indigo-600 text-white shadow-xs'
+                : 'text-slate-400 hover:text-white'
             }`}
           >
             Arquivadas ({archivedAccountsCount})
           </button>
           <button
             onClick={() => setFilterStatus('all')}
-            className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all ${
+            className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
               filterStatus === 'all'
-                ? 'bg-white text-slate-900 shadow-xs'
-                : 'text-slate-600 hover:text-slate-900'
+                ? 'bg-indigo-600 text-white shadow-xs'
+                : 'text-slate-400 hover:text-white'
             }`}
           >
             Todas ({accounts.length})
@@ -599,7 +599,7 @@ export const AccountsLedgerViewV3: React.FC<AccountsLedgerViewV3Props> = ({
         <button
           onClick={loadAccounts}
           disabled={loading}
-          className="flex items-center gap-1.5 text-xs font-medium text-slate-600 hover:text-slate-900 px-3 py-1.5 rounded-lg border border-slate-200 bg-white"
+          className="flex items-center gap-1.5 text-xs font-medium text-slate-300 hover:text-white px-3 py-1.5 rounded-lg border border-slate-700 bg-slate-800/90 hover:bg-slate-700 transition-colors cursor-pointer"
         >
           <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
           Atualizar Lista
@@ -608,16 +608,16 @@ export const AccountsLedgerViewV3: React.FC<AccountsLedgerViewV3Props> = ({
 
       {/* Lista de Contas em Grid */}
       {loading ? (
-        <div className="text-center py-16 bg-white rounded-2xl border border-slate-100">
-          <RefreshCw className="w-8 h-8 animate-spin text-blue-600 mx-auto" />
-          <p className="text-sm font-medium text-slate-500 mt-3">
+        <div className="text-center py-16 bg-slate-800/90 rounded-2xl border border-slate-700/80">
+          <RefreshCw className="w-8 h-8 animate-spin text-indigo-400 mx-auto" />
+          <p className="text-sm font-medium text-slate-400 mt-3">
             Carregando contas financeiras...
           </p>
         </div>
       ) : filteredAccounts.length === 0 ? (
-        <div className="text-center py-16 bg-white rounded-2xl border border-dashed border-slate-200 p-8">
-          <Building2 className="w-12 h-12 text-slate-300 mx-auto mb-3" />
-          <h3 className="text-base font-semibold text-slate-700">
+        <div className="text-center py-16 bg-slate-800/90 rounded-2xl border border-dashed border-slate-700 p-8">
+          <Building2 className="w-12 h-12 text-slate-500 mx-auto mb-3" />
+          <h3 className="text-base font-semibold text-slate-200">
             Nenhuma conta encontrada
           </h3>
           <p className="text-xs text-slate-400 mt-1 max-w-sm mx-auto">
@@ -632,7 +632,7 @@ export const AccountsLedgerViewV3: React.FC<AccountsLedgerViewV3Props> = ({
                 resetAccountForm();
                 setIsCreateModalOpen(true);
               }}
-              className="mt-4 px-4 py-2 bg-blue-600 text-white text-xs font-semibold rounded-xl hover:bg-blue-700 transition-all"
+              className="mt-4 px-4 py-2 bg-indigo-600 text-white text-xs font-semibold rounded-xl hover:bg-indigo-500 transition-all cursor-pointer"
             >
               Criar Conta Agora
             </button>
@@ -647,47 +647,47 @@ export const AccountsLedgerViewV3: React.FC<AccountsLedgerViewV3Props> = ({
               <div
                 key={accKey}
                 onClick={() => handleSelectAccountForLedger(acc)}
-                className={`relative bg-white rounded-2xl border transition-all cursor-pointer p-5 flex flex-col justify-between hover:shadow-md ${
+                className={`relative bg-slate-800/90 rounded-2xl border transition-all cursor-pointer p-5 flex flex-col justify-between hover:border-indigo-500/50 hover:shadow-lg ${
                   isSelected
-                    ? 'border-blue-500 ring-2 ring-blue-100 shadow-sm'
-                    : 'border-slate-100 hover:border-slate-200'
-                } ${acc.isArchived ? 'opacity-70 bg-slate-50/50' : ''}`}
+                    ? 'border-indigo-500 ring-2 ring-indigo-500/30 shadow-md'
+                    : 'border-slate-700/80'
+                } ${acc.isArchived ? 'opacity-70 bg-slate-900/40' : ''}`}
               >
                 {/* Header do Card */}
                 <div>
                   <div className="flex items-start justify-between gap-2">
                     <div className="flex items-center gap-3">
                       <div
-                        className="w-10 h-10 rounded-xl flex items-center justify-center text-white shadow-xs"
+                        className="w-10 h-10 rounded-xl flex items-center justify-center text-white shadow-xs shrink-0"
                         style={{ backgroundColor: acc.color || '#2563EB' }}
                       >
                         {getAccountTypeIcon(acc.type)}
                       </div>
-                      <div>
-                        <h3 className="text-base font-bold text-slate-900 leading-tight">
+                      <div className="min-w-0">
+                        <h3 className="text-base font-bold text-white leading-tight truncate">
                           {acc.name}
                         </h3>
-                        <div className="text-xs text-slate-500 flex items-center gap-1.5 mt-0.5">
+                        <div className="text-xs text-slate-400 flex items-center gap-1.5 mt-0.5">
                           <span>{getAccountTypeLabel(acc.type)}</span>
                         </div>
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-1">
+                    <div className="flex items-center gap-1 shrink-0">
                       <button
                         title="Editar Conta"
                         onClick={(e) => handleOpenEditAccount(acc, e)}
-                        className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition-all"
+                        className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-700/60 rounded-lg transition-all cursor-pointer"
                       >
                         <Edit2 className="w-3.5 h-3.5" />
                       </button>
                       <button
                         title={acc.isArchived ? 'Desarquivar Conta' : 'Arquivar Conta'}
                         onClick={(e) => handleToggleArchive(acc, e)}
-                        className="p-1.5 text-slate-400 hover:text-amber-700 hover:bg-amber-50 rounded-lg transition-all"
+                        className="p-1.5 text-slate-400 hover:text-amber-300 hover:bg-amber-500/10 rounded-lg transition-all cursor-pointer"
                       >
                         {acc.isArchived ? (
-                          <ArchiveRestore className="w-3.5 h-3.5 text-amber-600" />
+                          <ArchiveRestore className="w-3.5 h-3.5 text-amber-400" />
                         ) : (
                           <Archive className="w-3.5 h-3.5" />
                         )}
@@ -696,15 +696,15 @@ export const AccountsLedgerViewV3: React.FC<AccountsLedgerViewV3Props> = ({
                   </div>
 
                   {/* Saldo Projetado */}
-                  <div className="mt-5 pt-4 border-t border-slate-100">
+                  <div className="mt-5 pt-4 border-t border-slate-700/70">
                     <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
                       Saldo Projetado Oficial
                     </span>
                     <div
-                      className={`text-2xl font-black tracking-tight mt-0.5 ${
+                      className={`text-2xl font-black tracking-tight mt-0.5 font-mono ${
                         acc.projectedBalanceCents >= 0
-                          ? 'text-slate-900'
-                          : 'text-rose-600'
+                          ? 'text-white'
+                          : 'text-rose-400'
                       }`}
                     >
                       {formatCentsToBRL(acc.projectedBalanceCents)}
@@ -713,18 +713,18 @@ export const AccountsLedgerViewV3: React.FC<AccountsLedgerViewV3Props> = ({
                 </div>
 
                 {/* Footer do Card */}
-                <div className="mt-4 pt-3 flex items-center justify-between text-xs border-t border-slate-50">
+                <div className="mt-4 pt-3 flex items-center justify-between text-xs border-t border-slate-700/60">
                   <span
                     className={`px-2 py-0.5 rounded-md font-medium text-[11px] ${
                       acc.isArchived
-                        ? 'bg-slate-100 text-slate-600'
-                        : 'bg-emerald-50 text-emerald-700'
+                        ? 'bg-slate-700/50 text-slate-300 border border-slate-600/50'
+                        : 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
                     }`}
                   >
                     {acc.isArchived ? 'Arquivada' : 'Ativa'}
                   </span>
 
-                  <span className="flex items-center gap-1 text-blue-600 font-semibold group-hover:underline">
+                  <span className="flex items-center gap-1 text-indigo-400 font-semibold group-hover:underline">
                     <BookOpen className="w-3.5 h-3.5" />
                     Abrir Livro-Razão →
                   </span>
@@ -737,9 +737,9 @@ export const AccountsLedgerViewV3: React.FC<AccountsLedgerViewV3Props> = ({
 
       {/* PAINEL DO LIVRO DE MOVIMENTAÇÕES (FINANCIAL MOVEMENT LEDGER) */}
       {selectedAccount && (
-        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden mt-8">
+        <div className="bg-slate-800/90 rounded-2xl border border-slate-700/80 shadow-sm overflow-hidden mt-8">
           {/* Header do Livro da Conta */}
-          <div className="p-6 bg-slate-900 text-white flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div className="p-6 bg-slate-900 text-white flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-700/80">
             <div className="flex items-center gap-4">
               <div
                 className="w-12 h-12 rounded-2xl flex items-center justify-center text-white shrink-0 shadow-inner"
@@ -758,7 +758,7 @@ export const AccountsLedgerViewV3: React.FC<AccountsLedgerViewV3Props> = ({
                     </span>
                   )}
                 </div>
-                <h2 className="text-xl font-black mt-0.5">
+                <h2 className="text-xl font-black mt-0.5 text-white">
                   {selectedAccount.name}
                 </h2>
                 <div className="text-xs text-slate-400 mt-0.5">
@@ -836,14 +836,14 @@ export const AccountsLedgerViewV3: React.FC<AccountsLedgerViewV3Props> = ({
           </div>
 
           {/* Banner de Garantia Arquitetural */}
-          <div className="bg-blue-50/70 border-b border-blue-100 px-6 py-2.5 flex items-center justify-between text-xs text-blue-900">
+          <div className="bg-blue-950/40 border-b border-blue-900/50 px-6 py-2.5 flex items-center justify-between text-xs text-blue-300">
             <div className="flex items-center gap-2">
-              <ShieldCheck className="w-4 h-4 text-blue-600 shrink-0" />
+              <ShieldCheck className="w-4 h-4 text-blue-400 shrink-0" />
               <span>
                 <strong>Princípio Contábil Homologado v3.1:</strong> Registro estritamente append-only. Movimentações são imutáveis e estornos geram movimentos compensatórios opostos.
               </span>
             </div>
-            <span className="font-semibold text-blue-700 shrink-0">
+            <span className="font-semibold text-blue-400 shrink-0">
               {movements.length} registro(s)
             </span>
           </div>
@@ -852,15 +852,15 @@ export const AccountsLedgerViewV3: React.FC<AccountsLedgerViewV3Props> = ({
           <div className="p-6">
             {loadingMovements ? (
               <div className="text-center py-12">
-                <RefreshCw className="w-6 h-6 animate-spin text-blue-600 mx-auto" />
-                <p className="text-xs text-slate-500 mt-2">
+                <RefreshCw className="w-6 h-6 animate-spin text-blue-400 mx-auto" />
+                <p className="text-xs text-slate-400 mt-2">
                   Carregando histórico do livro-razão...
                 </p>
               </div>
             ) : movements.length === 0 ? (
-              <div className="text-center py-12 border border-dashed border-slate-200 rounded-xl">
-                <FileSpreadsheet className="w-10 h-10 text-slate-300 mx-auto mb-2" />
-                <p className="text-sm font-semibold text-slate-700">
+              <div className="text-center py-12 border border-dashed border-slate-700/80 rounded-xl">
+                <FileSpreadsheet className="w-10 h-10 text-slate-500 mx-auto mb-2" />
+                <p className="text-sm font-semibold text-slate-200">
                   Livro-Razão sem lançamentos registrados
                 </p>
                 <p className="text-xs text-slate-400 mt-0.5">
@@ -880,10 +880,10 @@ export const AccountsLedgerViewV3: React.FC<AccountsLedgerViewV3Props> = ({
                       key={movKey}
                       className={`p-4 rounded-xl border transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
                         isCompensatory
-                          ? 'bg-amber-50/60 border-amber-200'
+                          ? 'bg-amber-950/30 border-amber-800/60'
                           : isAlreadyReversed
-                          ? 'bg-slate-50 border-slate-200 opacity-75'
-                          : 'bg-white border-slate-200/80 hover:border-slate-300'
+                          ? 'bg-slate-900/40 border-slate-700/50 opacity-60'
+                          : 'bg-slate-900/70 border-slate-700/70 hover:border-slate-600'
                       }`}
                     >
                       {/* Lado Esquerdo: Direção, Descrição, Metadados */}
@@ -891,10 +891,10 @@ export const AccountsLedgerViewV3: React.FC<AccountsLedgerViewV3Props> = ({
                         <div
                           className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 mt-0.5 ${
                             isCompensatory
-                              ? 'bg-amber-100 text-amber-800'
+                              ? 'bg-amber-900/40 text-amber-300 border border-amber-700/50'
                               : isInflow
-                              ? 'bg-emerald-100 text-emerald-800'
-                              : 'bg-rose-100 text-rose-800'
+                              ? 'bg-emerald-950/60 text-emerald-400 border border-emerald-800/40'
+                              : 'bg-rose-950/60 text-rose-400 border border-rose-800/40'
                           }`}
                         >
                           {isCompensatory ? (
@@ -908,23 +908,23 @@ export const AccountsLedgerViewV3: React.FC<AccountsLedgerViewV3Props> = ({
 
                         <div>
                           <div className="flex flex-wrap items-center gap-2">
-                            <span className="font-bold text-slate-900 text-sm">
+                            <span className="font-bold text-white text-sm">
                               {mov.description}
                             </span>
 
                             {isCompensatory && (
-                              <span className="px-2 py-0.5 bg-amber-200 text-amber-900 text-[10px] font-bold rounded">
+                              <span className="px-2 py-0.5 bg-amber-900/60 text-amber-300 border border-amber-700/50 text-[10px] font-bold rounded">
                                 ESTORNO COMPENSATÓRIO
                               </span>
                             )}
 
                             {isAlreadyReversed && !isCompensatory && (
-                              <span className="px-2 py-0.5 bg-slate-200 text-slate-700 text-[10px] font-semibold rounded">
+                              <span className="px-2 py-0.5 bg-slate-800 text-slate-300 border border-slate-700 text-[10px] font-semibold rounded">
                                 COMPENSADO POR ESTORNO
                               </span>
                             )}
 
-                            <span className="px-1.5 py-0.5 bg-slate-100 text-slate-600 text-[10px] font-medium rounded">
+                            <span className="px-1.5 py-0.5 bg-slate-800 text-slate-300 border border-slate-700 text-[10px] font-medium rounded">
                               {mov.originType}
                             </span>
                           </div>
@@ -941,7 +941,7 @@ export const AccountsLedgerViewV3: React.FC<AccountsLedgerViewV3Props> = ({
                           </div>
 
                           {mov.notes && (
-                            <div className="text-xs text-slate-600 mt-1 italic">
+                            <div className="text-xs text-slate-400 mt-1 italic">
                               "{mov.notes}"
                             </div>
                           )}
@@ -949,11 +949,11 @@ export const AccountsLedgerViewV3: React.FC<AccountsLedgerViewV3Props> = ({
                       </div>
 
                       {/* Lado Direito: Valor e Ação de Estorno */}
-                      <div className="flex items-center justify-between sm:justify-end gap-4 shrink-0 pt-2 sm:pt-0 border-t sm:border-t-0 border-slate-100">
+                      <div className="flex items-center justify-between sm:justify-end gap-4 shrink-0 pt-2 sm:pt-0 border-t sm:border-t-0 border-slate-700/60">
                         <div className="text-right">
                           <span
                             className={`text-base font-black ${
-                              isInflow ? 'text-emerald-600' : 'text-rose-600'
+                              isInflow ? 'text-emerald-400' : 'text-rose-400'
                             }`}
                           >
                             {isInflow ? '+ ' : '- '}
@@ -972,7 +972,7 @@ export const AccountsLedgerViewV3: React.FC<AccountsLedgerViewV3Props> = ({
                               setReversalReason('');
                               setIsReversalModalOpen(true);
                             }}
-                            className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold text-amber-700 bg-amber-50 hover:bg-amber-100 border border-amber-200 rounded-lg transition-all"
+                            className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold text-amber-300 bg-amber-950/50 hover:bg-amber-900/60 border border-amber-800/60 rounded-lg transition-all"
                             title="Registra um movimento compensatório de direção oposta"
                           >
                             <RotateCcw className="w-3.5 h-3.5" />
@@ -991,15 +991,15 @@ export const AccountsLedgerViewV3: React.FC<AccountsLedgerViewV3Props> = ({
 
       {/* MODAL: CRIAR OU EDITAR CONTA */}
       {isCreateModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-xs">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-xl border border-slate-100">
-            <div className="flex items-center justify-between pb-4 border-b border-slate-100">
-              <h3 className="text-lg font-bold text-slate-900">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-xs">
+          <div className="bg-slate-900 rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-700">
+            <div className="flex items-center justify-between pb-4 border-b border-slate-800">
+              <h3 className="text-lg font-bold text-white">
                 {editingAccount ? 'Editar Conta Bancária' : 'Nova Conta Bancária'}
               </h3>
               <button
                 onClick={() => setIsCreateModalOpen(false)}
-                className="p-1 text-slate-400 hover:text-slate-600 rounded-lg"
+                className="p-1 text-slate-400 hover:text-slate-200 rounded-lg"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -1007,7 +1007,7 @@ export const AccountsLedgerViewV3: React.FC<AccountsLedgerViewV3Props> = ({
 
             <form onSubmit={handleSaveAccount} className="space-y-4 mt-4">
               <div>
-                <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
+                <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">
                   Nome da Conta *
                 </label>
                 <input
@@ -1016,18 +1016,18 @@ export const AccountsLedgerViewV3: React.FC<AccountsLedgerViewV3Props> = ({
                   placeholder="Ex: Conta Principal, Itaú, Nubank, Carteira..."
                   value={accName}
                   onChange={(e) => setAccName(e.target.value)}
-                  className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full px-3.5 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-sm text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
+                <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">
                   Tipo de Conta *
                 </label>
                 <select
                   value={accType}
                   onChange={(e) => setAccType(e.target.value as AccountType)}
-                  className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full px-3.5 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-sm text-white focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
                 >
                   <option value="checking">Conta Corrente</option>
                   <option value="wallet">Carteira Física / Dinheiro</option>
@@ -1037,7 +1037,7 @@ export const AccountsLedgerViewV3: React.FC<AccountsLedgerViewV3Props> = ({
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
+                <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">
                   Cor de Identificação
                 </label>
                 <div className="flex items-center gap-3">
@@ -1045,24 +1045,24 @@ export const AccountsLedgerViewV3: React.FC<AccountsLedgerViewV3Props> = ({
                     type="color"
                     value={accColor}
                     onChange={(e) => setAccColor(e.target.value)}
-                    className="w-10 h-10 rounded-xl cursor-pointer border border-slate-200 p-0.5 bg-white"
+                    className="w-10 h-10 rounded-xl cursor-pointer border border-slate-700 p-0.5 bg-slate-800"
                   />
-                  <span className="text-xs font-mono text-slate-500">{accColor}</span>
+                  <span className="text-xs font-mono text-slate-400">{accColor}</span>
                 </div>
               </div>
 
-              <div className="pt-4 border-t border-slate-100 flex items-center justify-end gap-3">
+              <div className="pt-4 border-t border-slate-800 flex items-center justify-end gap-3">
                 <button
                   type="button"
                   onClick={() => setIsCreateModalOpen(false)}
-                  className="px-4 py-2 text-sm font-semibold text-slate-600 hover:text-slate-800"
+                  className="px-4 py-2 text-sm font-semibold text-slate-400 hover:text-slate-200"
                 >
                   Cancelar
                 </button>
                 <button
                   type="submit"
                   disabled={accSubmitting}
-                  className="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold rounded-xl shadow-sm transition-all disabled:opacity-50"
+                  className="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold rounded-xl shadow-sm transition-all disabled:opacity-50"
                 >
                   {accSubmitting
                     ? 'Salvando...'
@@ -1078,9 +1078,9 @@ export const AccountsLedgerViewV3: React.FC<AccountsLedgerViewV3Props> = ({
 
       {/* MODAL: NOVA ENTRADA / SAÍDA NO LIVRO */}
       {isMovementModalOpen && selectedAccount && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-xs">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-xl border border-slate-100">
-            <div className="flex items-center justify-between pb-4 border-b border-slate-100">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-xs">
+          <div className="bg-slate-900 rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-700">
+            <div className="flex items-center justify-between pb-4 border-b border-slate-800">
               <div className="flex items-center gap-2">
                 <div
                   className={`p-2 rounded-xl text-white ${
@@ -1094,19 +1094,19 @@ export const AccountsLedgerViewV3: React.FC<AccountsLedgerViewV3Props> = ({
                   )}
                 </div>
                 <div>
-                  <h3 className="text-lg font-bold text-slate-900">
+                  <h3 className="text-lg font-bold text-white">
                     {movementDirection === 'inflow'
                       ? 'Nova Entrada (+)'
                       : 'Nova Saída (-)'}
                   </h3>
-                  <p className="text-xs text-slate-500">
-                    Conta: <strong>{selectedAccount.name}</strong>
+                  <p className="text-xs text-slate-400">
+                    Conta: <strong className="text-slate-200">{selectedAccount.name}</strong>
                   </p>
                 </div>
               </div>
               <button
                 onClick={() => setIsMovementModalOpen(false)}
-                className="p-1 text-slate-400 hover:text-slate-600 rounded-lg"
+                className="p-1 text-slate-400 hover:text-slate-200 rounded-lg"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -1114,7 +1114,7 @@ export const AccountsLedgerViewV3: React.FC<AccountsLedgerViewV3Props> = ({
 
             <form onSubmit={handleRecordMovement} className="space-y-4 mt-4">
               <div>
-                <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
+                <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">
                   Descrição da Movimentação *
                 </label>
                 <input
@@ -1123,12 +1123,12 @@ export const AccountsLedgerViewV3: React.FC<AccountsLedgerViewV3Props> = ({
                   placeholder="Ex: Salário, Depósito, Almoço, Manutenção..."
                   value={movDescription}
                   onChange={(e) => setMovDescription(e.target.value)}
-                  className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full px-3.5 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-sm text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
+                <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">
                   Valor em Reais (R$) *
                 </label>
                 <div className="relative">
@@ -1141,7 +1141,7 @@ export const AccountsLedgerViewV3: React.FC<AccountsLedgerViewV3Props> = ({
                     placeholder="0,00"
                     value={movAmountInput}
                     onChange={(e) => setMovAmountInput(e.target.value)}
-                    className="w-full pl-11 pr-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    className="w-full pl-11 pr-3.5 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-sm font-semibold text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
                 </div>
                 <p className="text-[11px] text-slate-400 mt-1">
@@ -1150,7 +1150,7 @@ export const AccountsLedgerViewV3: React.FC<AccountsLedgerViewV3Props> = ({
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
+                <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">
                   Data de Débito/Crédito Efetivo *
                 </label>
                 <input
@@ -1158,15 +1158,15 @@ export const AccountsLedgerViewV3: React.FC<AccountsLedgerViewV3Props> = ({
                   required
                   value={movEffectiveDate}
                   onChange={(e) => setMovEffectiveDate(e.target.value)}
-                  className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full px-3.5 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-sm text-white focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
               </div>
 
-              <div className="pt-4 border-t border-slate-100 flex items-center justify-end gap-3">
+              <div className="pt-4 border-t border-slate-800 flex items-center justify-end gap-3">
                 <button
                   type="button"
                   onClick={() => setIsMovementModalOpen(false)}
-                  className="px-4 py-2 text-sm font-semibold text-slate-600 hover:text-slate-800"
+                  className="px-4 py-2 text-sm font-semibold text-slate-400 hover:text-slate-200"
                 >
                   Cancelar
                 </button>
@@ -1175,8 +1175,8 @@ export const AccountsLedgerViewV3: React.FC<AccountsLedgerViewV3Props> = ({
                   disabled={movSubmitting}
                   className={`px-5 py-2.5 text-white text-sm font-semibold rounded-xl shadow-sm transition-all disabled:opacity-50 ${
                     movementDirection === 'inflow'
-                      ? 'bg-emerald-600 hover:bg-emerald-700'
-                      : 'bg-rose-600 hover:bg-rose-700'
+                      ? 'bg-emerald-600 hover:bg-emerald-500'
+                      : 'bg-rose-600 hover:bg-rose-500'
                   }`}
                 >
                   {movSubmitting ? 'Registrando...' : 'Gravar Movimentação'}
@@ -1189,35 +1189,35 @@ export const AccountsLedgerViewV3: React.FC<AccountsLedgerViewV3Props> = ({
 
       {/* MODAL: ESTORNO COMPENSATÓRIO COM JUSTIFICATIVA */}
       {isReversalModalOpen && movementToReverse && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-xs">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-xl border border-amber-200">
-            <div className="flex items-center justify-between pb-4 border-b border-slate-100">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-xs">
+          <div className="bg-slate-900 rounded-2xl max-w-md w-full p-6 shadow-2xl border border-amber-800/60">
+            <div className="flex items-center justify-between pb-4 border-b border-slate-800">
               <div className="flex items-center gap-2">
-                <div className="p-2 rounded-xl bg-amber-100 text-amber-800">
+                <div className="p-2 rounded-xl bg-amber-950/60 text-amber-300 border border-amber-800/50">
                   <RotateCcw className="w-5 h-5" />
                 </div>
                 <div>
-                  <h3 className="text-lg font-bold text-slate-900">
+                  <h3 className="text-lg font-bold text-white">
                     Estorno Compensatório
                   </h3>
-                  <p className="text-xs text-amber-700 font-medium">
+                  <p className="text-xs text-amber-400 font-medium">
                     Regra Canônica v3.1: Sem exclusão física
                   </p>
                 </div>
               </div>
               <button
                 onClick={() => setIsReversalModalOpen(false)}
-                className="p-1 text-slate-400 hover:text-slate-600 rounded-lg"
+                className="p-1 text-slate-400 hover:text-slate-200 rounded-lg"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            <div className="my-4 p-4 bg-amber-50 rounded-xl border border-amber-200 text-xs space-y-1.5 text-amber-900">
-              <div className="font-semibold text-amber-950">
+            <div className="my-4 p-4 bg-amber-950/40 rounded-xl border border-amber-800/60 text-xs space-y-1.5 text-amber-200">
+              <div className="font-semibold text-amber-100">
                 Movimentação a ser compensada:
               </div>
-              <div>• Descrição: <strong>{movementToReverse.description}</strong></div>
+              <div>• Descrição: <strong className="text-white">{movementToReverse.description}</strong></div>
               <div>
                 • Valor:{' '}
                 <strong>
@@ -1226,7 +1226,7 @@ export const AccountsLedgerViewV3: React.FC<AccountsLedgerViewV3Props> = ({
                 </strong>
               </div>
               <div>• Data Efetiva: {movementToReverse.effectiveDate}</div>
-              <div className="mt-2 pt-2 border-t border-amber-200 text-[11px] text-amber-800">
+              <div className="mt-2 pt-2 border-t border-amber-800/60 text-[11px] text-amber-300">
                 Um novo movimento de direção{' '}
                 <strong>
                   {movementToReverse.direction === 'inflow' ? 'SAÍDA (-)' : 'ENTRADA (+)'}
@@ -1237,7 +1237,7 @@ export const AccountsLedgerViewV3: React.FC<AccountsLedgerViewV3Props> = ({
 
             <form onSubmit={handleExecuteReversal} className="space-y-4">
               <div>
-                <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
+                <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">
                   Justificativa Obrigatória do Estorno *
                 </label>
                 <textarea
@@ -1246,22 +1246,22 @@ export const AccountsLedgerViewV3: React.FC<AccountsLedgerViewV3Props> = ({
                   placeholder="Ex: Lançamento em duplicidade, valor incorreto, cancelamento de operação..."
                   value={reversalReason}
                   onChange={(e) => setReversalReason(e.target.value)}
-                  className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:outline-none focus:ring-2 focus:ring-amber-500"
+                  className="w-full px-3.5 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-sm text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-amber-500"
                 />
               </div>
 
-              <div className="pt-4 border-t border-slate-100 flex items-center justify-end gap-3">
+              <div className="pt-4 border-t border-slate-800 flex items-center justify-end gap-3">
                 <button
                   type="button"
                   onClick={() => setIsReversalModalOpen(false)}
-                  className="px-4 py-2 text-sm font-semibold text-slate-600 hover:text-slate-800"
+                  className="px-4 py-2 text-sm font-semibold text-slate-400 hover:text-slate-200"
                 >
                   Cancelar
                 </button>
                 <button
                   type="submit"
                   disabled={reversalSubmitting}
-                  className="px-5 py-2.5 bg-amber-600 hover:bg-amber-700 text-white text-sm font-semibold rounded-xl shadow-sm transition-all disabled:opacity-50"
+                  className="px-5 py-2.5 bg-amber-600 hover:bg-amber-500 text-white text-sm font-semibold rounded-xl shadow-sm transition-all disabled:opacity-50"
                 >
                   {reversalSubmitting ? 'Gravando Estorno...' : 'Confirmar Estorno Oficial'}
                 </button>

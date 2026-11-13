@@ -454,7 +454,7 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
           </div>
           <button
             onClick={() => setFeedbackMessage(null)}
-            className="text-gray-400 hover:text-gray-600"
+            className="text-slate-400 hover:text-slate-300"
           >
             <i className="ph ph-x" />
           </button>
@@ -462,7 +462,7 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
       )}
 
       {/* Header com Visão Geral e Controles */}
-      <div className="bg-white border border-gray-200 rounded-2xl p-6 shadow-sm">
+      <div className="bg-slate-800/90 border border-slate-700/80 rounded-2xl p-6 shadow-sm">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div>
             <div className="flex items-center gap-3">
@@ -470,10 +470,10 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
                 <i className="ph ph-users-three" />
               </div>
               <div>
-                <h1 className="text-xl font-bold text-gray-900">
+                <h1 className="text-xl font-bold text-white">
                   Espaços Compartilhados (Arquitetura v3.1)
                 </h1>
-                <p className="text-xs text-gray-500">
+                <p className="text-xs text-slate-400">
                   Governança coletiva sem fundos ou caixas coletivos, com autoridade soberana, convites com hash SHA-256 e isolamento absoluto de dados pessoais.
                 </p>
               </div>
@@ -483,7 +483,7 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
           <div className="flex items-center gap-2 flex-wrap">
             <button
               onClick={() => setIsAcceptModalOpen(true)}
-              className="px-4 py-2 border border-gray-300 rounded-xl text-xs font-semibold text-gray-700 hover:bg-gray-50 flex items-center gap-1.5 transition-colors"
+              className="px-4 py-2 border border-slate-700 rounded-xl text-xs font-semibold text-slate-300 hover:bg-slate-700 hover:text-white bg-slate-800 flex items-center gap-1.5 transition-colors"
             >
               <i className="ph ph-ticket text-base" />
               Aceitar Convite
@@ -491,7 +491,7 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
 
             <button
               onClick={() => setIsNotifOpen(true)}
-              className="relative px-4 py-2 border border-gray-300 rounded-xl text-xs font-semibold text-gray-700 hover:bg-gray-50 flex items-center gap-1.5 transition-colors"
+              className="relative px-4 py-2 border border-slate-700 rounded-xl text-xs font-semibold text-slate-300 hover:bg-slate-700 hover:text-white bg-slate-800 flex items-center gap-1.5 transition-colors"
             >
               <i className="ph ph-bell text-base" />
               Notificações
@@ -513,17 +513,17 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
         </div>
 
         {/* Resumo de Indicadores */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mt-6 pt-6 border-t border-gray-100">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mt-6 pt-6 border-t border-slate-700/80">
           <div>
-            <span className="text-[11px] font-medium text-gray-400 uppercase tracking-wider">
+            <span className="text-[11px] font-medium text-slate-400 uppercase tracking-wider">
               Espaços Ativos
             </span>
-            <p className="text-xl font-bold text-gray-900 mt-1">
+            <p className="text-xl font-bold text-white mt-1">
               {spaces.filter((s) => s.spaceStatus === 'active').length}
             </p>
           </div>
           <div>
-            <span className="text-[11px] font-medium text-gray-400 uppercase tracking-wider">
+            <span className="text-[11px] font-medium text-slate-400 uppercase tracking-wider">
               Criados por Mim
             </span>
             <p className="text-xl font-bold text-indigo-600 mt-1">
@@ -531,15 +531,15 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
             </p>
           </div>
           <div>
-            <span className="text-[11px] font-medium text-gray-400 uppercase tracking-wider">
+            <span className="text-[11px] font-medium text-slate-400 uppercase tracking-wider">
               Arquivados
             </span>
-            <p className="text-xl font-bold text-gray-500 mt-1">
+            <p className="text-xl font-bold text-slate-400 mt-1">
               {spaces.filter((s) => s.spaceStatus === 'archived').length}
             </p>
           </div>
           <div>
-            <span className="text-[11px] font-medium text-gray-400 uppercase tracking-wider">
+            <span className="text-[11px] font-medium text-slate-400 uppercase tracking-wider">
               Filtro de Arquivados
             </span>
             <div className="mt-1 flex items-center gap-2">
@@ -550,9 +550,9 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
                   onChange={(e) => setIncludeArchived(e.target.checked)}
                   className="sr-only peer"
                 />
-                <div className="w-9 h-5 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-indigo-600" />
+                <div className="w-9 h-5 bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-indigo-600" />
               </label>
-              <span className="text-xs text-gray-600">
+              <span className="text-xs text-slate-300">
                 {includeArchived ? 'Exibindo' : 'Ocultos'}
               </span>
             </div>
@@ -563,9 +563,9 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
       {/* Conteúdo Principal: Lista ou Detalhes */}
       {!selectedSpace ? (
         /* LISTAGEM DE ESPAÇOS */
-        <div className="bg-white border border-gray-200 rounded-2xl p-6 shadow-sm">
+        <div className="bg-slate-800/90 border border-slate-700/80 rounded-2xl p-6 shadow-sm">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
-            <h2 className="text-sm font-bold text-gray-900 uppercase tracking-wider">
+            <h2 className="text-sm font-bold text-white uppercase tracking-wider">
               Meus Espaços Compartilhados ({spaces.length})
             </h2>
 
@@ -575,8 +575,8 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
                 onClick={() => setSpaceFilter('active')}
                 className={`px-3 py-1 rounded-lg transition-all ${
                   spaceFilter === 'active'
-                    ? 'bg-white text-indigo-600 shadow-xs'
-                    : 'text-gray-600 hover:text-gray-900'
+                    ? 'bg-indigo-600 text-white shadow-xs'
+                    : 'text-slate-300 hover:text-white'
                 }`}
               >
                 Ativos
@@ -586,8 +586,8 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
                 onClick={() => setSpaceFilter('historical')}
                 className={`px-3 py-1 rounded-lg transition-all ${
                   spaceFilter === 'historical'
-                    ? 'bg-white text-indigo-600 shadow-xs'
-                    : 'text-gray-600 hover:text-gray-900'
+                    ? 'bg-indigo-600 text-white shadow-xs'
+                    : 'text-slate-300 hover:text-white'
                 }`}
               >
                 Histórico (Ex-Membro)
@@ -597,8 +597,8 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
                 onClick={() => setSpaceFilter('all')}
                 className={`px-3 py-1 rounded-lg transition-all ${
                   spaceFilter === 'all'
-                    ? 'bg-white text-indigo-600 shadow-xs'
-                    : 'text-gray-600 hover:text-gray-900'
+                    ? 'bg-indigo-600 text-white shadow-xs'
+                    : 'text-slate-300 hover:text-white'
                 }`}
               >
                 Todos
@@ -607,17 +607,17 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
           </div>
 
           {loading ? (
-            <div className="py-12 text-center text-gray-400 text-sm">
+            <div className="py-12 text-center text-slate-400 text-sm">
               <i className="ph ph-spinner animate-spin text-2xl mb-2" />
               <p>Carregando espaços...</p>
             </div>
           ) : spaces.length === 0 ? (
-            <div className="py-12 text-center border-2 border-dashed border-gray-200 rounded-xl">
+            <div className="py-12 text-center border-2 border-dashed border-slate-700/80 rounded-xl bg-slate-800/40">
               <i className="ph ph-users-three text-3xl text-gray-300 mb-2" />
-              <p className="text-sm font-medium text-gray-600">
+              <p className="text-sm font-medium text-slate-300">
                 Nenhum espaço compartilhado encontrado.
               </p>
-              <p className="text-xs text-gray-400 mt-1">
+              <p className="text-xs text-slate-400 mt-1">
                 Crie um novo espaço ou utilize um token de convite para ingressar.
               </p>
             </div>
@@ -631,7 +631,7 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
                   <div
                     key={s.id}
                     onClick={() => setSelectedSpace(s)}
-                    className="border border-gray-200 hover:border-indigo-400 rounded-xl p-5 cursor-pointer transition-all hover:shadow-md bg-white flex flex-col justify-between"
+                    className="border border-slate-700 hover:border-indigo-400 rounded-xl p-5 cursor-pointer transition-all bg-slate-800/90 hover:shadow-md flex flex-col justify-between"
                   >
                     <div>
                       <div className="flex items-center justify-between mb-3">
@@ -648,7 +648,7 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
                             </span>
                           )}
                           {isUserHistorical ? (
-                            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-700">
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-200">
                               Histórico (Ex-Membro)
                             </span>
                           ) : isUserCreator ? (
@@ -656,20 +656,20 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
                               Criador
                             </span>
                           ) : (
-                            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-gray-100 text-gray-600">
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-gray-100 text-slate-300">
                               Membro
                             </span>
                           )}
                         </div>
                       </div>
 
-                      <h3 className="text-base font-bold text-gray-900 truncate">{s.name}</h3>
-                      <p className="text-xs text-gray-500 mt-1 line-clamp-2 min-h-[32px]">
+                      <h3 className="text-base font-bold text-white truncate">{s.name}</h3>
+                      <p className="text-xs text-slate-400 mt-1 line-clamp-2 min-h-[32px]">
                         {s.description || 'Sem descrição cadastrada.'}
                       </p>
                     </div>
 
-                    <div className="mt-4 pt-4 border-t border-gray-100 flex items-center justify-between text-xs text-gray-500">
+                    <div className="mt-4 pt-4 border-t border-slate-700/80 flex items-center justify-between text-xs text-slate-400">
                       <span className="flex items-center gap-1">
                         <i className="ph ph-users" /> {s.memberUids.length} participante(s)
                       </span>
@@ -735,12 +735,12 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
           )}
 
           {/* Top Bar do Espaço */}
-          <div className="bg-white border border-gray-200 rounded-2xl p-6 shadow-sm">
+          <div className="bg-slate-800/90 border border-slate-700/80 rounded-2xl p-6 shadow-sm">
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
               <div className="flex items-center gap-4">
                 <button
                   onClick={() => setSelectedSpace(null)}
-                  className="p-2 border border-gray-200 rounded-xl hover:bg-gray-50 text-gray-600 transition-colors"
+                  className="p-2 border border-slate-700 rounded-xl hover:bg-slate-700 text-slate-300 hover:text-white bg-slate-800 transition-colors"
                   title="Voltar aos Espaços"
                 >
                   <i className="ph ph-arrow-left text-lg" />
@@ -753,19 +753,38 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
                 </div>
                 <div>
                   <div className="flex items-center gap-2">
-                    <h2 className="text-xl font-bold text-gray-900">{selectedSpace.name}</h2>
+                    <div className="flex items-center gap-3 flex-wrap">
+                      <h2 className="text-xl font-bold text-white">{selectedSpace.name}</h2>
+                      {spaces.length > 1 && (
+                        <select
+                          value={selectedSpace.id}
+                          onChange={(e) => {
+                            const target = spaces.find(s => s.id === e.target.value);
+                            if (target) setSelectedSpace(target);
+                          }}
+                          className="bg-slate-800 border border-slate-700 text-xs text-white rounded-xl px-2.5 py-1.5 focus:outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer"
+                          title="Alternar entre espaços ativos"
+                        >
+                          {spaces.map(s => (
+                            <option key={s.id} value={s.id}>
+                              {s.name} {s.spaceStatus === 'archived' ? '(Arquivado)' : ''}
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                    </div>
                     {isArchived && (
                       <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800">
                         Arquivado
                       </span>
                     )}
                     {isHistoricalOnly && (
-                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-700">
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-200">
                         Acesso Histórico
                       </span>
                     )}
                   </div>
-                  <p className="text-xs text-gray-500 mt-0.5">
+                  <p className="text-xs text-slate-400 mt-0.5">
                     {selectedSpace.description || 'Sem descrição cadastrada.'}
                   </p>
                 </div>
@@ -774,7 +793,7 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
               {/* Ações de Governança no Espaço */}
               <div className="flex items-center gap-2 flex-wrap">
                 {isHistoricalOnly && (
-                  <span className="px-3 py-1.5 rounded-xl text-xs font-semibold bg-slate-100 text-slate-700 border border-slate-200 flex items-center gap-1.5">
+                  <span className="px-3 py-1.5 rounded-xl text-xs font-semibold bg-slate-100 text-slate-200 border border-slate-200 flex items-center gap-1.5">
                     <i className="ph ph-eye" /> Modo Consulta Histórica
                   </span>
                 )}
@@ -807,7 +826,7 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
                 {isActiveMember && !isCreator && currentUserMember?.participationStatus === 'active' && !isArchived && (
                   <button
                     onClick={handleLeaveSpace}
-                    className="px-3 py-2 rounded-xl text-xs font-semibold border border-gray-300 text-gray-700 hover:bg-gray-50 flex items-center gap-1.5 transition-colors"
+                    className="px-3 py-2 rounded-xl text-xs font-semibold border border-slate-700 text-slate-300 hover:bg-slate-700 hover:text-white bg-slate-800 flex items-center gap-1.5 transition-colors"
                   >
                     <i className="ph ph-sign-out" />
                     Sair do Espaço
@@ -817,13 +836,13 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
             </div>
 
             {/* Abas Internas */}
-            <div className="flex items-center gap-2 border-b border-gray-100 mt-6 pt-2 overflow-x-auto">
+            <div className="flex items-center gap-2 border-b border-slate-700/80 mt-6 pt-2 overflow-x-auto">
               <button
                 onClick={() => setSelectedTab('expenses')}
                 className={`pb-3 px-3 text-xs font-bold transition-all border-b-2 flex items-center gap-1.5 whitespace-nowrap ${
                   selectedTab === 'expenses'
-                    ? 'border-indigo-600 text-indigo-600'
-                    : 'border-transparent text-gray-500 hover:text-gray-700'
+                    ? 'border-indigo-400 text-indigo-400'
+                    : 'border-transparent text-slate-400 hover:text-slate-200'
                 }`}
               >
                 <i className="ph ph-receipt text-base" />
@@ -834,8 +853,8 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
                 onClick={() => setSelectedTab('liabilities')}
                 className={`pb-3 px-3 text-xs font-bold transition-all border-b-2 flex items-center gap-1.5 whitespace-nowrap ${
                   selectedTab === 'liabilities'
-                    ? 'border-indigo-600 text-indigo-600'
-                    : 'border-transparent text-gray-500 hover:text-gray-700'
+                    ? 'border-indigo-400 text-indigo-400'
+                    : 'border-transparent text-slate-400 hover:text-slate-200'
                 }`}
               >
                 <i className="ph ph-hand-coins text-base" />
@@ -846,8 +865,8 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
                 onClick={() => setSelectedTab('validations')}
                 className={`pb-3 px-3 text-xs font-bold transition-all border-b-2 flex items-center gap-1.5 whitespace-nowrap ${
                   selectedTab === 'validations'
-                    ? 'border-indigo-600 text-indigo-600'
-                    : 'border-transparent text-gray-500 hover:text-gray-700'
+                    ? 'border-indigo-400 text-indigo-400'
+                    : 'border-transparent text-slate-400 hover:text-slate-200'
                 }`}
               >
                 <i className="ph ph-check-square-offset text-base" />
@@ -858,8 +877,8 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
                 onClick={() => setSelectedTab('refunds')}
                 className={`pb-3 px-3 text-xs font-bold transition-all border-b-2 flex items-center gap-1.5 whitespace-nowrap ${
                   selectedTab === 'refunds'
-                    ? 'border-indigo-600 text-indigo-600'
-                    : 'border-transparent text-gray-500 hover:text-gray-700'
+                    ? 'border-indigo-400 text-indigo-400'
+                    : 'border-transparent text-slate-400 hover:text-slate-200'
                 }`}
               >
                 <i className="ph ph-arrows-clockwise text-base" />
@@ -870,8 +889,8 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
                 onClick={() => setSelectedTab('custody')}
                 className={`pb-3 px-3 text-xs font-bold transition-all border-b-2 flex items-center gap-1.5 whitespace-nowrap ${
                   selectedTab === 'custody'
-                    ? 'border-indigo-600 text-indigo-600'
-                    : 'border-transparent text-gray-500 hover:text-gray-700'
+                    ? 'border-indigo-400 text-indigo-400'
+                    : 'border-transparent text-slate-400 hover:text-slate-200'
                 }`}
               >
                 <i className="ph ph-hand-holding text-base" />
@@ -882,8 +901,8 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
                 onClick={() => setSelectedTab('members')}
                 className={`pb-3 px-3 text-xs font-bold transition-all border-b-2 flex items-center gap-1.5 whitespace-nowrap ${
                   selectedTab === 'members'
-                    ? 'border-indigo-600 text-indigo-600'
-                    : 'border-transparent text-gray-500 hover:text-gray-700'
+                    ? 'border-indigo-400 text-indigo-400'
+                    : 'border-transparent text-slate-400 hover:text-slate-200'
                 }`}
               >
                 <i className="ph ph-users text-base" />
@@ -894,8 +913,8 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
                 onClick={() => setSelectedTab('invites')}
                 className={`pb-3 px-3 text-xs font-bold transition-all border-b-2 flex items-center gap-1.5 whitespace-nowrap ${
                   selectedTab === 'invites'
-                    ? 'border-indigo-600 text-indigo-600'
-                    : 'border-transparent text-gray-500 hover:text-gray-700'
+                    ? 'border-indigo-400 text-indigo-400'
+                    : 'border-transparent text-slate-400 hover:text-slate-200'
                 }`}
               >
                 <i className="ph ph-ticket text-base" />
@@ -906,8 +925,8 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
                 onClick={() => setSelectedTab('audit')}
                 className={`pb-3 px-3 text-xs font-bold transition-all border-b-2 flex items-center gap-1.5 whitespace-nowrap ${
                   selectedTab === 'audit'
-                    ? 'border-indigo-600 text-indigo-600'
-                    : 'border-transparent text-gray-500 hover:text-gray-700'
+                    ? 'border-indigo-400 text-indigo-400'
+                    : 'border-transparent text-slate-400 hover:text-slate-200'
                 }`}
               >
                 <i className="ph ph-clock-counter-clockwise text-base" />
@@ -918,8 +937,8 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
                 onClick={() => setSelectedTab('dissolution')}
                 className={`pb-3 px-3 text-xs font-bold transition-all border-b-2 flex items-center gap-1.5 whitespace-nowrap ${
                   selectedTab === 'dissolution'
-                    ? 'border-indigo-600 text-indigo-600'
-                    : 'border-transparent text-gray-500 hover:text-gray-700'
+                    ? 'border-indigo-400 text-indigo-400'
+                    : 'border-transparent text-slate-400 hover:text-slate-200'
                 }`}
               >
                 <i className="ph ph-shield-warning text-base" />
@@ -949,13 +968,13 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
 
           {/* ABA: PARTICIPANTES */}
           {selectedTab === 'members' && (
-            <div className="bg-white border border-gray-200 rounded-2xl p-6 shadow-sm space-y-4">
+            <div className="bg-slate-800/90 border border-slate-700/80 rounded-2xl p-6 shadow-sm space-y-4">
               <div className="flex items-center justify-between">
                 <div>
-                  <h3 className="text-sm font-bold text-gray-900">
+                  <h3 className="text-sm font-bold text-white">
                     Participantes do Espaço
                   </h3>
-                  <p className="text-xs text-gray-500">
+                  <p className="text-xs text-slate-400">
                     Membros ativos têm acesso operacional. A remoção de participante revoga imediatamente o acesso sem apagar seu histórico.
                   </p>
                 </div>
@@ -974,7 +993,7 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
 
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-xs">
-                  <thead className="bg-gray-50 border-y border-gray-100 text-gray-400 font-semibold uppercase tracking-wider">
+                  <thead className="bg-slate-900/80 border-y border-slate-700/80 text-slate-400 font-semibold uppercase tracking-wider">
                     <tr>
                       <th className="py-2.5 px-3">Participante</th>
                       <th className="py-2.5 px-3">Papel</th>
@@ -988,17 +1007,17 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
                       const isTargetCreator = m.uid === selectedSpace.creatorUid;
                       const isMe = m.uid === userId;
                       return (
-                        <tr key={m.id} className="hover:bg-gray-50/50">
+                        <tr key={m.id} className="hover:bg-slate-800/50">
                           <td className="py-3 px-3">
-                            <div className="font-bold text-gray-900 flex items-center gap-1.5">
+                            <div className="font-bold text-white flex items-center gap-1.5">
                               {m.displayName}
                               {isMe && (
-                                <span className="text-[10px] bg-gray-100 text-gray-600 px-1.5 py-0.2 rounded font-normal">
+                                <span className="text-[10px] bg-gray-100 text-slate-300 px-1.5 py-0.2 rounded font-normal">
                                   Você
                                 </span>
                               )}
                             </div>
-                            <div className="text-[11px] text-gray-400 font-mono">
+                            <div className="text-[11px] text-slate-400 font-mono">
                               UID: {m.uid.substring(0, 10)}...
                             </div>
                           </td>
@@ -1009,14 +1028,14 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
                                 onChange={(e) =>
                                   handleChangeRole(m.uid, e.target.value as SpaceMemberRole)
                                 }
-                                className="bg-gray-50 border border-gray-200 rounded-lg px-2 py-1 text-xs font-semibold text-gray-700"
+                                className="bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-xs font-semibold text-slate-300"
                               >
                                 <option value="member">Membro</option>
                                 <option value="admin">Administrador</option>
                                 <option value="owner">Proprietário</option>
                               </select>
                             ) : (
-                              <span className="font-semibold text-gray-700 capitalize">
+                              <span className="font-semibold text-slate-200 capitalize">
                                 {m.role === 'owner' ? 'Proprietário' : m.role === 'admin' ? 'Administrador' : 'Membro'}
                               </span>
                             )}
@@ -1028,7 +1047,7 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
                                   ? 'bg-emerald-50 text-emerald-700'
                                   : m.participationStatus === 'removed_by_admin'
                                   ? 'bg-rose-50 text-rose-700'
-                                  : 'bg-gray-100 text-gray-600'
+                                  : 'bg-gray-100 text-slate-300'
                               }`}
                             >
                               {m.participationStatus === 'active'
@@ -1040,7 +1059,7 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
                                 : 'Convidado'}
                             </span>
                           </td>
-                          <td className="py-3 px-3 text-gray-500">
+                          <td className="py-3 px-3 text-slate-400">
                             {m.joinedAt ? new Date(m.joinedAt).toLocaleDateString() : '—'}
                           </td>
                           <td className="py-3 px-3 text-right">
@@ -1065,11 +1084,11 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
 
           {/* ABA 2: CONVITES */}
           {selectedTab === 'invites' && (
-            <div className="bg-white border border-gray-200 rounded-2xl p-6 shadow-sm space-y-4">
+            <div className="bg-slate-800/90 border border-slate-700/80 rounded-2xl p-6 shadow-sm space-y-4">
               <div className="flex items-center justify-between">
                 <div>
-                  <h3 className="text-sm font-bold text-gray-900">Convites do Espaço</h3>
-                  <p className="text-xs text-gray-500">
+                  <h3 className="text-sm font-bold text-white">Convites do Espaço</h3>
+                  <p className="text-xs text-slate-400">
                     Convites utilizam hash criptográfico SHA-256 e controle de uso único atômico.
                   </p>
                 </div>
@@ -1087,13 +1106,13 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
               </div>
 
               {invites.length === 0 ? (
-                <div className="py-8 text-center text-gray-400 text-xs">
+                <div className="py-8 text-center text-slate-400 text-xs">
                   Nenhum convite emitido para este espaço.
                 </div>
               ) : (
                 <div className="overflow-x-auto">
                   <table className="w-full text-left text-xs">
-                    <thead className="bg-gray-50 border-y border-gray-100 text-gray-400 font-semibold uppercase tracking-wider">
+                    <thead className="bg-slate-900/80 border-y border-slate-700/80 text-slate-400 font-semibold uppercase tracking-wider">
                       <tr>
                         <th className="py-2.5 px-3">Destinatário</th>
                         <th className="py-2.5 px-3">Papel Previsto</th>
@@ -1104,16 +1123,16 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
                     </thead>
                     <tbody className="divide-y divide-gray-100">
                       {invites.map((inv) => (
-                        <tr key={inv.id} className="hover:bg-gray-50/50">
+                        <tr key={inv.id} className="hover:bg-slate-800/50">
                           <td className="py-3 px-3">
                             <span className="font-semibold text-gray-800">
                               {inv.invitedEmail || 'Qualquer pessoa com o link'}
                             </span>
-                            <div className="text-[10px] text-gray-400 font-mono">
+                            <div className="text-[10px] text-slate-400 font-mono">
                               Hash: {inv.id.substring(0, 16)}...
                             </div>
                           </td>
-                          <td className="py-3 px-3 font-semibold text-gray-700 capitalize">
+                          <td className="py-3 px-3 font-semibold text-slate-200 capitalize">
                             {inv.invitedRole}
                           </td>
                           <td className="py-3 px-3">
@@ -1129,7 +1148,7 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
                               {inv.tokenStatus}
                             </span>
                           </td>
-                          <td className="py-3 px-3 text-gray-500">
+                          <td className="py-3 px-3 text-slate-400">
                             {new Date(inv.expiresAt).toLocaleDateString()}
                           </td>
                           <td className="py-3 px-3 text-right">
@@ -1153,18 +1172,18 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
 
           {/* ABA 3: AUDITORIA E HISTÓRICO */}
           {selectedTab === 'audit' && (
-            <div className="bg-white border border-gray-200 rounded-2xl p-6 shadow-sm space-y-4">
+            <div className="bg-slate-800/90 border border-slate-700/80 rounded-2xl p-6 shadow-sm space-y-4">
               <div>
-                <h3 className="text-sm font-bold text-gray-900">
+                <h3 className="text-sm font-bold text-white">
                   Trilha de Auditoria e Governança Imutável
                 </h3>
-                <p className="text-xs text-gray-500">
+                <p className="text-xs text-slate-400">
                   Eventos gravados cronologicamente e protegidos contra mutação ou exclusão.
                 </p>
               </div>
 
               {auditEvents.length === 0 ? (
-                <div className="py-8 text-center text-gray-400 text-xs">
+                <div className="py-8 text-center text-slate-400 text-xs">
                   Nenhum evento registrado ainda.
                 </div>
               ) : (
@@ -1172,21 +1191,21 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
                   {auditEvents.map((evt) => (
                     <div
                       key={evt.id}
-                      className="border border-gray-100 rounded-xl p-3 text-xs flex items-start gap-3 hover:bg-gray-50 transition-colors"
+                      className="border border-gray-100 rounded-xl p-3 text-xs flex items-start gap-3 hover:bg-slate-800/80 transition-colors"
                     >
                       <div className="w-8 h-8 rounded-lg bg-indigo-50 text-indigo-600 flex items-center justify-center text-base flex-shrink-0 mt-0.5">
                         <i className="ph ph-shield-check" />
                       </div>
                       <div className="flex-1">
                         <div className="flex items-center justify-between">
-                          <span className="font-bold text-gray-900">
+                          <span className="font-bold text-white">
                             {evt.eventType.replace(/_/g, ' ').toUpperCase()}
                           </span>
-                          <span className="text-[11px] text-gray-400">
+                          <span className="text-[11px] text-slate-400">
                             {new Date(evt.timestamp).toLocaleString()}
                           </span>
                         </div>
-                        <p className="text-gray-600 mt-0.5">
+                        <p className="text-slate-300 mt-0.5">
                           Executado por: <span className="font-semibold">{evt.performedByName}</span>
                           {evt.targetName && (
                             <span>
@@ -1196,7 +1215,7 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
                           )}
                         </p>
                         {evt.details && (
-                          <div className="mt-1 text-[11px] text-gray-500 font-mono bg-gray-50 p-1.5 rounded">
+                          <div className="mt-1 text-[11px] text-slate-400 font-mono bg-slate-900/80 p-1.5 rounded border border-slate-700/60">
                             {JSON.stringify(evt.details)}
                           </div>
                         )}
@@ -1210,24 +1229,24 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
 
           {/* ABA 4: GOVERNANÇA E DISSOLUÇÃO */}
           {selectedTab === 'dissolution' && (
-            <div className="bg-white border border-gray-200 rounded-2xl p-6 shadow-sm space-y-6">
+            <div className="bg-slate-800/90 border border-slate-700/80 rounded-2xl p-6 shadow-sm space-y-6">
               <div>
-                <h3 className="text-base font-bold text-gray-900">
+                <h3 className="text-base font-bold text-white">
                   Processo Formal de Dissolução Definitiva (v3.1)
                 </h3>
-                <p className="text-xs text-gray-500 mt-1">
+                <p className="text-xs text-slate-400 mt-1">
                   Em estrita conformidade com as regras aprovadas (D5, A4 e A5), a exclusão definitiva exige a autorização do criador e colhe individualmente a manifestação de cada autor.
                 </p>
               </div>
 
               {/* Status do Processo */}
               {!dissolutionReq ? (
-                <div className="bg-gray-50 border border-gray-200 rounded-xl p-6 text-center">
-                  <i className="ph ph-info text-2xl text-gray-400 mb-2" />
-                  <p className="text-sm font-semibold text-gray-700">
+                <div className="bg-slate-900/60 border border-slate-700 rounded-xl p-6 text-center">
+                  <i className="ph ph-info text-2xl text-slate-400 mb-2" />
+                  <p className="text-sm font-semibold text-slate-200">
                     Nenhuma solicitação de dissolução ativa no momento.
                   </p>
-                  <p className="text-xs text-gray-500 max-w-md mx-auto mt-1">
+                  <p className="text-xs text-slate-400 max-w-md mx-auto mt-1">
                     O criador original do espaço pode iniciar a solicitação caso o grupo decida encerrar as atividades compartilhadas.
                   </p>
                   {isActiveMember && isCreator && !isArchived && (
@@ -1240,13 +1259,13 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
                   )}
                 </div>
               ) : (
-                <div className="border border-gray-200 rounded-xl p-5 space-y-4">
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-gray-100 pb-3">
+                <div className="border border-slate-700 rounded-xl p-5 space-y-4 bg-slate-900/40">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-700/80 pb-3">
                     <div>
-                      <span className="text-[11px] font-bold text-gray-400 uppercase">
+                      <span className="text-[11px] font-bold text-slate-400 uppercase">
                         Status do Processo
                       </span>
-                      <p className="text-base font-bold text-gray-900 mt-0.5">
+                      <p className="text-base font-bold text-white mt-0.5">
                         {dissolutionReq.requestStatus === 'pending_author_responses'
                           ? 'Aguardando Manifestação dos Autores'
                           : dissolutionReq.requestStatus === 'fully_approved_ready'
@@ -1258,10 +1277,10 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
                     </div>
 
                     <div className="text-right">
-                      <span className="text-[11px] font-bold text-gray-400 uppercase">
+                      <span className="text-[11px] font-bold text-slate-400 uppercase">
                         Prazo Limite (30 dias)
                       </span>
-                      <p className="text-xs font-semibold text-gray-700 mt-0.5">
+                      <p className="text-xs font-semibold text-slate-200 mt-0.5">
                         {new Date(dissolutionReq.deadlineDate).toLocaleDateString()}
                       </p>
                     </div>
@@ -1286,10 +1305,10 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
                           return (
                             <div
                               key={authorUid}
-                              className="p-3 flex items-center justify-between hover:bg-gray-50"
+                              className="p-3 flex items-center justify-between hover:bg-slate-800/80"
                             >
                               <div>
-                                <span className="font-bold text-gray-900">
+                                <span className="font-bold text-white">
                                   {authorMember?.displayName || authorUid}
                                 </span>
                                 {isAuthorMe && (
@@ -1339,7 +1358,7 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
                     {isActiveMember && isCreator && dissolutionReq.requestStatus === 'pending_author_responses' && (
                       <button
                         onClick={handleCancelDissolution}
-                        className="px-3 py-1.5 border border-gray-300 rounded-xl text-xs font-bold text-gray-700 hover:bg-gray-50"
+                        className="px-3 py-1.5 border border-slate-700 rounded-xl text-xs font-bold text-slate-300 hover:bg-slate-700 hover:text-white bg-slate-800"
                       >
                         Cancelar Solicitação
                       </button>
@@ -1365,12 +1384,12 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
       {/* MODAL 1: CRIAR ESPAÇO */}
       {isCreateSpaceModalOpen && (
         <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-xl border border-gray-200">
+          <div className="bg-slate-900 rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-700">
             <div className="flex items-center justify-between mb-4">
-              <h3 className="text-base font-bold text-gray-900">Novo Espaço Compartilhado</h3>
+              <h3 className="text-base font-bold text-white">Novo Espaço Compartilhado</h3>
               <button
                 onClick={() => setIsCreateSpaceModalOpen(false)}
-                className="text-gray-400 hover:text-gray-600"
+                className="text-slate-400 hover:text-slate-300"
               >
                 <i className="ph ph-x text-lg" />
               </button>
@@ -1378,7 +1397,7 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
 
             <form onSubmit={handleCreateSpace} className="space-y-4">
               <div>
-                <label className="block text-xs font-bold text-gray-700 mb-1">
+                <label className="block text-xs font-bold text-slate-200 mb-1">
                   Nome do Espaço *
                 </label>
                 <input
@@ -1392,7 +1411,7 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-gray-700 mb-1">Descrição</label>
+                <label className="block text-xs font-bold text-slate-200 mb-1">Descrição</label>
                 <textarea
                   rows={2}
                   value={newSpaceDesc}
@@ -1404,7 +1423,7 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-xs font-bold text-gray-700 mb-1">Cor</label>
+                  <label className="block text-xs font-bold text-slate-200 mb-1">Cor</label>
                   <input
                     type="color"
                     value={newSpaceColor}
@@ -1413,7 +1432,7 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-bold text-gray-700 mb-1">Ícone</label>
+                  <label className="block text-xs font-bold text-slate-200 mb-1">Ícone</label>
                   <select
                     value={newSpaceIcon}
                     onChange={(e) => setNewSpaceIcon(e.target.value)}
@@ -1429,7 +1448,7 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-gray-700 mb-1">
+                <label className="block text-xs font-bold text-slate-200 mb-1">
                   Orçamento Mensal Estimado (Centavos / Opcional)
                 </label>
                 <input
@@ -1443,11 +1462,11 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
                 />
               </div>
 
-              <div className="flex justify-end gap-2 pt-2 border-t border-gray-100">
+              <div className="flex justify-end gap-2 pt-2 border-t border-slate-700/80">
                 <button
                   type="button"
                   onClick={() => setIsCreateSpaceModalOpen(false)}
-                  className="px-4 py-2 border border-gray-300 rounded-xl text-xs font-semibold text-gray-700 hover:bg-gray-50"
+                  className="px-4 py-2 border border-slate-700 rounded-xl text-xs font-semibold text-slate-300 hover:bg-slate-700 hover:text-white bg-slate-800"
                 >
                   Cancelar
                 </button>
@@ -1466,12 +1485,12 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
       {/* MODAL 2: NOVO CONVITE */}
       {isInviteModalOpen && selectedSpace && (
         <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-xl border border-gray-200">
+          <div className="bg-slate-900 rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-700">
             <div className="flex items-center justify-between mb-4">
-              <h3 className="text-base font-bold text-gray-900">Convidar para o Espaço</h3>
+              <h3 className="text-base font-bold text-white">Convidar para o Espaço</h3>
               <button
                 onClick={() => setIsInviteModalOpen(false)}
-                className="text-gray-400 hover:text-gray-600"
+                className="text-slate-400 hover:text-slate-300"
               >
                 <i className="ph ph-x text-lg" />
               </button>
@@ -1480,7 +1499,7 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
             {!generatedInviteResult ? (
               <form onSubmit={handleCreateInvite} className="space-y-4">
                 <div>
-                  <label className="block text-xs font-bold text-gray-700 mb-1">
+                  <label className="block text-xs font-bold text-slate-200 mb-1">
                     E-mail do Convidado (Opcional)
                   </label>
                   <input
@@ -1490,14 +1509,14 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
                     placeholder="amigo@exemplo.com"
                     className="w-full text-xs px-3 py-2 border border-gray-300 rounded-xl"
                   />
-                  <p className="text-[11px] text-gray-400 mt-1">
+                  <p className="text-[11px] text-slate-400 mt-1">
                     Se omitido, qualquer pessoa autenticada com o token poderá ingressar.
                   </p>
                 </div>
 
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="block text-xs font-bold text-gray-700 mb-1">Papel</label>
+                    <label className="block text-xs font-bold text-slate-200 mb-1">Papel</label>
                     <select
                       value={inviteRole}
                       onChange={(e) => setInviteRole(e.target.value as SpaceMemberRole)}
@@ -1509,7 +1528,7 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
                   </div>
 
                   <div>
-                    <label className="block text-xs font-bold text-gray-700 mb-1">
+                    <label className="block text-xs font-bold text-slate-200 mb-1">
                       Validade (Dias)
                     </label>
                     <input
@@ -1523,11 +1542,11 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
                   </div>
                 </div>
 
-                <div className="flex justify-end gap-2 pt-2 border-t border-gray-100">
+                <div className="flex justify-end gap-2 pt-2 border-t border-slate-700/80">
                   <button
                     type="button"
                     onClick={() => setIsInviteModalOpen(false)}
-                    className="px-4 py-2 border border-gray-300 rounded-xl text-xs font-semibold text-gray-700 hover:bg-gray-50"
+                    className="px-4 py-2 border border-slate-700 rounded-xl text-xs font-semibold text-slate-300 hover:bg-slate-700 hover:text-white bg-slate-800"
                   >
                     Cancelar
                   </button>
@@ -1549,27 +1568,27 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
                 </div>
 
                 <div>
-                  <label className="block text-xs font-bold text-gray-700 mb-1">Token de Convite</label>
+                  <label className="block text-xs font-bold text-slate-200 mb-1">Token de Convite</label>
                   <div className="flex items-center gap-2">
                     <input
                       type="text"
                       readOnly
                       value={generatedInviteResult.rawToken}
-                      className="w-full text-xs font-mono bg-gray-50 px-3 py-2 border border-gray-300 rounded-xl text-gray-800 select-all"
+                      className="w-full text-xs font-mono bg-slate-800 px-3 py-2 border border-slate-700 rounded-xl text-gray-800 select-all"
                     />
                     <button
                       onClick={() => {
                         navigator.clipboard.writeText(generatedInviteResult.rawToken);
                         alert('Token copiado!');
                       }}
-                      className="px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-xl text-xs font-bold"
+                      className="px-3 py-2 bg-gray-100 hover:bg-gray-200 text-slate-200 rounded-xl text-xs font-bold"
                     >
                       Copiar
                     </button>
                   </div>
                 </div>
 
-                <div className="flex justify-end pt-2 border-t border-gray-100">
+                <div className="flex justify-end pt-2 border-t border-slate-700/80">
                   <button
                     onClick={() => {
                       setIsInviteModalOpen(false);
@@ -1589,12 +1608,12 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
       {/* MODAL 3: ACEITAR CONVITE */}
       {isAcceptModalOpen && (
         <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-xl border border-gray-200">
+          <div className="bg-slate-900 rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-700">
             <div className="flex items-center justify-between mb-4">
-              <h3 className="text-base font-bold text-gray-900">Aceitar Convite de Espaço</h3>
+              <h3 className="text-base font-bold text-white">Aceitar Convite de Espaço</h3>
               <button
                 onClick={() => setIsAcceptModalOpen(false)}
-                className="text-gray-400 hover:text-gray-600"
+                className="text-slate-400 hover:text-slate-300"
               >
                 <i className="ph ph-x text-lg" />
               </button>
@@ -1602,7 +1621,7 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
 
             <div className="space-y-4">
               <div>
-                <label className="block text-xs font-bold text-gray-700 mb-1">
+                <label className="block text-xs font-bold text-slate-200 mb-1">
                   Cole o Token de Convite
                 </label>
                 <div className="flex items-center gap-2">
@@ -1616,7 +1635,7 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
                   <button
                     type="button"
                     onClick={handleCheckTokenPreview}
-                    className="px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-xl text-xs font-bold flex-shrink-0"
+                    className="px-3 py-2 bg-gray-100 hover:bg-gray-200 text-slate-200 rounded-xl text-xs font-bold flex-shrink-0"
                   >
                     Verificar
                   </button>
@@ -1638,11 +1657,11 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
                 </div>
               )}
 
-              <div className="flex justify-end gap-2 pt-2 border-t border-gray-100">
+              <div className="flex justify-end gap-2 pt-2 border-t border-slate-700/80">
                 <button
                   type="button"
                   onClick={() => setIsAcceptModalOpen(false)}
-                  className="px-4 py-2 border border-gray-300 rounded-xl text-xs font-semibold text-gray-700 hover:bg-gray-50"
+                  className="px-4 py-2 border border-slate-700 rounded-xl text-xs font-semibold text-slate-300 hover:bg-slate-700 hover:text-white bg-slate-800"
                 >
                   Cancelar
                 </button>
@@ -1663,21 +1682,21 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
       {/* MODAL 4: DECISÃO DO AUTOR NA DISSOLUÇÃO */}
       {isDecisionModalOpen && (
         <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-xl border border-gray-200">
+          <div className="bg-slate-900 rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-slate-700">
             <div className="flex items-center justify-between mb-4">
-              <h3 className="text-base font-bold text-gray-900">
+              <h3 className="text-base font-bold text-white">
                 Destinação dos Seus Registros no Espaço
               </h3>
               <button
                 onClick={() => setIsDecisionModalOpen(false)}
-                className="text-gray-400 hover:text-gray-600"
+                className="text-slate-400 hover:text-slate-300"
               >
                 <i className="ph ph-x text-lg" />
               </button>
             </div>
 
             <div className="space-y-4">
-              <p className="text-xs text-gray-600">
+              <p className="text-xs text-slate-300">
                 Em respeito à soberania de cada autor, você escolhe livremente o destino dos registros cadastrados por você neste espaço:
               </p>
 
@@ -1709,7 +1728,7 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
                     className={`block p-3 border rounded-xl cursor-pointer text-xs transition-all ${
                       selectedDecision === opt.value
                         ? 'border-indigo-600 bg-indigo-50/50'
-                        : 'border-gray-200 hover:bg-gray-50'
+                        : 'border-slate-700 hover:bg-slate-800'
                     }`}
                   >
                     <div className="flex items-start gap-2">
@@ -1724,8 +1743,8 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
                         className="mt-0.5 text-indigo-600"
                       />
                       <div>
-                        <span className="font-bold text-gray-900">{opt.label}</span>
-                        <p className="text-gray-500 text-[11px] mt-0.5">{opt.desc}</p>
+                        <span className="font-bold text-white">{opt.label}</span>
+                        <p className="text-slate-400 text-[11px] mt-0.5">{opt.desc}</p>
                       </div>
                     </div>
                   </label>
@@ -1734,7 +1753,7 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
 
               {selectedDecision === 'migrate_to_existing_personal_space' && (
                 <div>
-                  <label className="block text-xs font-bold text-gray-700 mb-1">
+                  <label className="block text-xs font-bold text-slate-200 mb-1">
                     ID do Espaço Individual de Destino (Opcional)
                   </label>
                   <input
@@ -1747,11 +1766,11 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
                 </div>
               )}
 
-              <div className="flex justify-end gap-2 pt-2 border-t border-gray-100">
+              <div className="flex justify-end gap-2 pt-2 border-t border-slate-700/80">
                 <button
                   type="button"
                   onClick={() => setIsDecisionModalOpen(false)}
-                  className="px-4 py-2 border border-gray-300 rounded-xl text-xs font-semibold text-gray-700 hover:bg-gray-50"
+                  className="px-4 py-2 border border-slate-700 rounded-xl text-xs font-semibold text-slate-300 hover:bg-slate-700 hover:text-white bg-slate-800"
                 >
                   Cancelar
                 </button>
@@ -1771,15 +1790,15 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
       {/* DRAWER / MODAL DE NOTIFICAÇÕES */}
       {isNotifOpen && (
         <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-xl border border-gray-200 max-h-[85vh] flex flex-col">
-            <div className="flex items-center justify-between mb-4 border-b border-gray-100 pb-3">
+          <div className="bg-slate-900 rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-700 max-h-[85vh] flex flex-col">
+            <div className="flex items-center justify-between mb-4 border-b border-slate-700/80 pb-3">
               <div className="flex items-center gap-2">
                 <i className="ph ph-bell text-lg text-indigo-600" />
-                <h3 className="text-base font-bold text-gray-900">Notificações do Espaço</h3>
+                <h3 className="text-base font-bold text-white">Notificações do Espaço</h3>
               </div>
               <button
                 onClick={() => setIsNotifOpen(false)}
-                className="text-gray-400 hover:text-gray-600"
+                className="text-slate-400 hover:text-slate-300"
               >
                 <i className="ph ph-x text-lg" />
               </button>
@@ -1787,7 +1806,7 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
 
             <div className="flex-1 overflow-y-auto space-y-2 pr-1">
               {notifications.length === 0 ? (
-                <div className="py-12 text-center text-gray-400 text-xs">
+                <div className="py-12 text-center text-slate-400 text-xs">
                   Nenhuma notificação recebida.
                 </div>
               ) : (
@@ -1797,26 +1816,26 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
                     onClick={() => markNotificationAsRead(userId, n.id, isDemo)}
                     className={`p-3 rounded-xl border text-xs cursor-pointer transition-all ${
                       n.read
-                        ? 'border-gray-100 bg-gray-50/50 text-gray-600'
-                        : 'border-indigo-200 bg-indigo-50/40 text-gray-900 font-medium'
+                        ? 'border-slate-800 bg-slate-900/40 text-slate-400'
+                        : 'border-indigo-500/40 bg-indigo-950/40 text-white font-medium'
                     }`}
                   >
                     <div className="flex items-center justify-between mb-1">
                       <span className="font-bold text-indigo-900 truncate">{n.title}</span>
-                      <span className="text-[10px] text-gray-400 flex-shrink-0">
+                      <span className="text-[10px] text-slate-400 flex-shrink-0">
                         {new Date(n.createdAt).toLocaleDateString()}
                       </span>
                     </div>
-                    <p className="text-[11px] text-gray-600">{n.message}</p>
+                    <p className="text-[11px] text-slate-300">{n.message}</p>
                   </div>
                 ))
               )}
             </div>
 
-            <div className="pt-3 border-t border-gray-100 flex justify-end">
+            <div className="pt-3 border-t border-slate-700/80 flex justify-end">
               <button
                 onClick={() => setIsNotifOpen(false)}
-                className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-xl text-xs font-bold"
+                className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-slate-200 rounded-xl text-xs font-bold"
               >
                 Fechar
               </button>

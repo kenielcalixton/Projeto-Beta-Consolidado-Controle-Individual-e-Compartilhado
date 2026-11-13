@@ -13,7 +13,7 @@
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test src/utils/financeEngine.test.ts src/services/authService.test.ts src/services/movementLedger.test.ts src/services/personalFinance.test.ts src/services/sharedSpaces.test.ts src/services/sharedFinance.test.ts src/services/custodyService.test.ts src/services/acquisitionsService.test.ts src/services/recurrenceService.test.ts",
+    "test": "tsx --test src/utils/financeEngine.test.ts src/services/authService.test.ts src/services/movementLedger.test.ts src/services/personalFinance.test.ts src/services/sharedSpaces.test.ts src/services/sharedFinance.test.ts src/services/custodyService.test.ts src/services/acquisitionsService.test.ts src/services/recurrenceService.test.ts src/services/multiSpacesIsolation.test.ts",
     "seed": "tsx scripts/seedTwoUsers.ts",
     "test:rules": "firebase emulators:exec --only firestore --project demo-projeto-beta-v3 \"tsx --test src/services/firestore.rules.test.ts\"",
     "test:scenario": "firebase emulators:exec --only auth,firestore,storage,functions --project demo-projeto-beta-v3 \"tsx --test --test-concurrency=1 --test-force-exit src/services/twoUsersScenario.emulator.test.ts\"",

@@ -42,11 +42,8 @@ import {
 } from './utils/financeEngine';
 import { AuthScreen } from './components/AuthScreen';
 import { DashboardView } from './components/DashboardView';
-import { AccountsCardsView } from './components/AccountsCardsView';
 import { AccountsLedgerViewV3 } from './components/accounts/AccountsLedgerViewV3';
 import { PersonalFinanceViewV3 } from './components/finance/PersonalFinanceViewV3';
-import { TransactionsView } from './components/TransactionsView';
-import { SpacesLedgerView } from './components/SpacesLedgerView';
 import { SharedSpacesViewV3 } from './components/spaces/SharedSpacesViewV3';
 import { PendingDisputesView } from './components/PendingDisputesView';
 import { UniversalTransactionModal } from './components/UniversalTransactionModal';
@@ -142,9 +139,6 @@ function AppInner() {
     return '2026-11';
   });
   const [dashboardScope, setDashboardScope] = useState('overview');
-  const [accountsSubView, setAccountsSubView] = useState<'v3_ledger' | 'legacy'>('v3_ledger');
-  const [transactionsSubView, setTransactionsSubView] = useState<'v3_individual' | 'legacy'>('v3_individual');
-  const [spacesSubView, setSpacesSubView] = useState<'v3_spaces' | 'legacy'>('v3_spaces');
 
   // Sincroniza mês selecionado no localStorage para manter a visualização após recarregar a página
   useEffect(() => {
@@ -2491,216 +2485,26 @@ function AppInner() {
           )}
 
           {activeTab === 'accounts' && (
-            <div className="space-y-5">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white p-3 rounded-2xl border border-slate-100 shadow-xs">
-                <div className="flex items-center gap-2">
-                  <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider pl-1">
-                    Visualização:
-                  </span>
-                  <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl">
-                    <button
-                      onClick={() => setAccountsSubView('v3_ledger')}
-                      className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all ${
-                        accountsSubView === 'v3_ledger'
-                          ? 'bg-blue-600 text-white shadow-xs'
-                          : 'text-slate-600 hover:text-slate-900'
-                      }`}
-                    >
-                      Livro-Razão v3.1 (Canônico)
-                    </button>
-                    <button
-                      onClick={() => setAccountsSubView('legacy')}
-                      className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all ${
-                        accountsSubView === 'legacy'
-                          ? 'bg-blue-600 text-white shadow-xs'
-                          : 'text-slate-600 hover:text-slate-900'
-                      }`}
-                    >
-                      Cartões & Faturas (Legado)
-                    </button>
-                  </div>
-                </div>
-
-                <div className="text-[11px] text-slate-400 pr-2">
-                  {accountsSubView === 'v3_ledger'
-                    ? 'Motor Contábil v3.1 ativo com histórico append-only e isolamento canônico'
-                    : 'Módulo legado de cartões de crédito e faturas'}
-                </div>
-              </div>
-
-              {accountsSubView === 'v3_ledger' ? (
-                <AccountsLedgerViewV3
-                  userId={currentUser?.uid || 'usr_anonymous'}
-                  isDemo={!!currentUser?.isDemo}
-                />
-              ) : (
-                <AccountsCardsView
-                  accounts={accounts}
-                  transactions={transactions}
-                  selectedMonth={selectedMonth}
-                  onCreateAccount={handleCreateAccount}
-                  onUpdateAccount={handleUpdateAccount}
-                  onDeleteAccount={handleDeleteAccount}
-                  onPayInvoice={handlePayInvoice}
-                  onOpenNewTransactionForAccount={(accId) => {
-                    setEditingTx(null);
-                    setPresetAccountId(accId);
-                    setPresetSpaceId(undefined);
-                    setIsTxModalOpen(true);
-                  }}
-                  onSelectTransaction={(tx) => setDetailTx(tx)}
-                />
-              )}
-            </div>
+            <AccountsLedgerViewV3
+              userId={currentUser?.uid || 'usr_anonymous'}
+              isDemo={!!currentUser?.isDemo}
+            />
           )}
 
           {activeTab === 'transactions' && (
-            <div className="space-y-5">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white p-3 rounded-2xl border border-slate-100 shadow-xs">
-                <div className="flex items-center gap-2">
-                  <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider pl-1">
-                    Visualização:
-                  </span>
-                  <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl">
-                    <button
-                      onClick={() => setTransactionsSubView('v3_individual')}
-                      className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all ${
-                        transactionsSubView === 'v3_individual'
-                          ? 'bg-blue-600 text-white shadow-xs'
-                          : 'text-slate-600 hover:text-slate-900'
-                      }`}
-                    >
-                      Financeiro Individual v3.1 (Canônico)
-                    </button>
-                    <button
-                      onClick={() => setTransactionsSubView('legacy')}
-                      className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all ${
-                        transactionsSubView === 'legacy'
-                          ? 'bg-blue-600 text-white shadow-xs'
-                          : 'text-slate-600 hover:text-slate-900'
-                      }`}
-                    >
-                      Lançamentos Legados
-                    </button>
-                  </div>
-                </div>
-
-                <div className="text-[11px] text-slate-400 pr-2">
-                  {transactionsSubView === 'v3_individual'
-                    ? 'Receitas, despesas, faturas, transferências, orçamentos e reembolsos individuais v3.1'
-                    : 'Visualização de lançamentos do modelo financeiro legado'}
-                </div>
-              </div>
-
-              {transactionsSubView === 'v3_individual' ? (
-                <PersonalFinanceViewV3
-                  userId={currentUser?.uid || 'usr_anonymous'}
-                  isDemo={!!currentUser?.isDemo}
-                />
-              ) : (
-                <TransactionsView
-                  transactions={transactions}
-                  selectedMonth={selectedMonth}
-                  onOpenNewModal={() => {
-                    setEditingTx(null);
-                    setPresetAccountId(undefined);
-                    setPresetSpaceId(undefined);
-                    setIsTxModalOpen(true);
-                  }}
-                  onEditTransaction={(tx) => {
-                    setEditingTx(tx);
-                    setIsTxModalOpen(true);
-                  }}
-                  onSelectTransaction={(tx) => setDetailTx(tx)}
-                  onUpdateStatusCascade={handleUpdateStatusCascade}
-                  onRequestSettleTransaction={(tx) => setSettlingTxModal({ tx })}
-                  onDeleteCascade={handleDeleteCascade}
-                />
-              )}
-            </div>
+            <PersonalFinanceViewV3
+              userId={currentUser?.uid || 'usr_anonymous'}
+              isDemo={!!currentUser?.isDemo}
+            />
           )}
 
           {activeTab === 'spaces' && (
-            <div className="space-y-4">
-              {/* Seletor de Sub-Visão: Espaços Compartilhados v3.1 vs Espaços Legados */}
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white p-3 rounded-xl border border-slate-200 shadow-2xs">
-                <div className="flex items-center gap-2">
-                  <div className="text-xs font-semibold text-slate-500 uppercase tracking-wider pl-1">
-                    Módulo de Espaços:
-                  </div>
-                  <div className="inline-flex bg-slate-100 p-1 rounded-lg">
-                    <button
-                      onClick={() => setSpacesSubView('v3_spaces')}
-                      className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all ${
-                        spacesSubView === 'v3_spaces'
-                          ? 'bg-blue-600 text-white shadow-xs'
-                          : 'text-slate-600 hover:text-slate-900'
-                      }`}
-                    >
-                      Espaços Compartilhados v3.1 (Canônico)
-                    </button>
-                    <button
-                      onClick={() => setSpacesSubView('legacy')}
-                      className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all ${
-                        spacesSubView === 'legacy'
-                          ? 'bg-blue-600 text-white shadow-xs'
-                          : 'text-slate-600 hover:text-slate-900'
-                      }`}
-                    >
-                      Espaços Legados
-                    </button>
-                  </div>
-                </div>
-
-                <div className="text-[11px] text-slate-400 pr-2">
-                  {spacesSubView === 'v3_spaces'
-                    ? 'Governança soberana, convites SHA-256, autoridade de criador e dissolução 30 dias v3.1'
-                    : 'Visualização de espaços e rateios do modelo legado'}
-                </div>
-              </div>
-
-              {spacesSubView === 'v3_spaces' ? (
-                <SharedSpacesViewV3
-                  userId={currentUser?.uid || 'usr_anonymous'}
-                  userName={currentUser?.name || 'Usuário'}
-                  userEmail={currentUser?.email || ''}
-                  isDemo={!!currentUser?.isDemo}
-                />
-              ) : (
-                <SpacesLedgerView
-                  spaces={spaces}
-                  transactions={transactions}
-                  selectedMonth={selectedMonth}
-                  onChangeMonth={setSelectedMonth}
-                  userEmail={currentUser.email}
-                  userName={currentUser.name}
-                  activeLedgerSpace={activeLedgerSpace}
-                  onSetActiveLedgerSpace={setActiveLedgerSpace}
-                  onCreateSpace={handleCreateSpace}
-                  onUpdateSpace={handleUpdateSpace}
-                  onDeleteSpace={handleDeleteSpace}
-                  onInviteToSpace={handleInviteToSpace}
-                  onSettleTransfer={handleSettleTransfer}
-                  onConfirmSpaceIncome={handleConfirmSpaceIncome}
-                  onSettleSpaceExpense={handleSettleSpaceExpense}
-                  onOpenNewTransactionInSpace={(spId, pType) => {
-                    setEditingTx(null);
-                    setPresetAccountId(undefined);
-                    setPresetSpaceId(spId);
-                    setPresetTxType(pType);
-                    setIsTxModalOpen(true);
-                  }}
-                  onSelectTransaction={(tx) => setDetailTx(tx)}
-                  onNotifyToast={showToast}
-                  onNavigateToAcquisitions={(spaceId) => {
-                    setInspectAcqWorkspaceId(spaceId);
-                    setActiveTab('acquisitions');
-                  }}
-                  initialCreateSpacePreset={createSpacePreset}
-                  onClearInitialCreatePreset={() => setCreateSpacePreset(null)}
-                />
-              )}
-            </div>
+            <SharedSpacesViewV3
+              userId={currentUser?.uid || 'usr_anonymous'}
+              userName={currentUser?.name || 'Usuário'}
+              userEmail={currentUser?.email || ''}
+              isDemo={!!currentUser?.isDemo}
+            />
           )}
 
           {activeTab === 'acquisitions' && (

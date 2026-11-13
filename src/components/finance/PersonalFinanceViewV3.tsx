@@ -1015,14 +1015,14 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
 
       {/* Alerta de Erro */}
       {error && (
-        <div className="flex items-center justify-between p-4 bg-rose-50 border border-rose-200 text-rose-800 rounded-xl">
+        <div className="flex items-center justify-between p-4 bg-rose-950/60 border border-rose-800/80 text-rose-300 rounded-xl">
           <div className="flex items-center gap-2">
             <AlertCircle className="w-5 h-5 shrink-0 text-rose-600" />
             <span className="text-sm font-medium">{error}</span>
           </div>
           <button
             onClick={() => setError(null)}
-            className="text-rose-600 hover:text-rose-800 text-sm font-bold ml-4"
+            className="text-rose-400 hover:text-rose-200 text-sm font-bold ml-4"
           >
             ✕
           </button>
@@ -1030,19 +1030,19 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
       )}
 
       {/* Header Principal do Financeiro Individual */}
-      <div className="bg-white rounded-2xl p-6 shadow-sm border border-slate-100 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+      <div className="bg-slate-800/90 rounded-2xl p-6 shadow-sm border border-slate-700/80 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
         <div>
           <div className="flex items-center gap-2">
-            <span className="px-2.5 py-0.5 text-xs font-semibold tracking-wider uppercase bg-blue-50 text-blue-700 rounded-md border border-blue-200">
+            <span className="px-2.5 py-0.5 text-xs font-semibold tracking-wider uppercase bg-blue-950/60 text-blue-300 rounded-md border border-blue-800/60">
               Financeiro Individual v3.1
             </span>
             {isDemo && (
-              <span className="px-2.5 py-0.5 text-xs font-semibold tracking-wider uppercase bg-amber-50 text-amber-700 rounded-md border border-amber-200">
+              <span className="px-2.5 py-0.5 text-xs font-semibold tracking-wider uppercase bg-amber-950/60 text-amber-300 rounded-md border border-amber-800/60">
                 Modo Demonstração (Isolado)
               </span>
             )}
           </div>
-          <h1 className="text-2xl font-black text-slate-900 mt-1">
+          <h1 className="text-2xl font-black text-white mt-1">
             Gestão Financeira Pessoal
           </h1>
           <p className="text-xs text-slate-500 mt-0.5">
@@ -1052,13 +1052,13 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
 
         {/* Seletor de Mês e Botão de Ação Rápida */}
         <div className="flex flex-wrap items-center gap-3">
-          <div className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 rounded-xl text-xs font-semibold text-slate-700">
+          <div className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 rounded-xl text-xs font-semibold text-slate-300 border border-slate-700">
             <Calendar className="w-4 h-4 text-slate-500" />
             <input
               type="month"
               value={selectedMonth}
               onChange={(e) => setSelectedMonth(e.target.value as CompetenceMonthString)}
-              className="bg-transparent border-0 focus:outline-none cursor-pointer text-slate-800 font-bold"
+              className="bg-transparent border-0 focus:outline-none cursor-pointer text-white font-bold"
             />
           </div>
 
@@ -1091,16 +1091,16 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
       {/* Cards de Métricas Consolidadas do Mês */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {/* Saldo Líquido Consolidado */}
-        <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm">
+        <div className="bg-slate-800/90 p-5 rounded-2xl border border-slate-700/80 shadow-sm">
           <div className="flex items-center justify-between">
             <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
               Saldo Consolidado
             </span>
-            <div className="p-2 bg-blue-50 text-blue-600 rounded-xl">
+            <div className="p-2 bg-blue-950/60 text-blue-400 border border-blue-800/50 rounded-xl">
               <DollarSign className="w-4 h-4" />
             </div>
           </div>
-          <div className="mt-2 text-2xl font-black text-slate-900">
+          <div className="mt-2 text-2xl font-black text-white">
             {formatCentsToBRL(totalBalanceCents)}
           </div>
           <div className="text-[11px] text-slate-400 mt-1">
@@ -1109,12 +1109,12 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
         </div>
 
         {/* Receitas Efetivadas */}
-        <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm">
+        <div className="bg-slate-800/90 p-5 rounded-2xl border border-slate-700/80 shadow-sm">
           <div className="flex items-center justify-between">
             <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
               Receitas do Mês
             </span>
-            <div className="p-2 bg-emerald-50 text-emerald-600 rounded-xl">
+            <div className="p-2 bg-emerald-950/60 text-emerald-400 border border-emerald-800/50 rounded-xl">
               <ArrowDownLeft className="w-4 h-4" />
             </div>
           </div>
@@ -1127,12 +1127,12 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
         </div>
 
         {/* Despesas Reconhecidas */}
-        <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm">
+        <div className="bg-slate-800/90 p-5 rounded-2xl border border-slate-700/80 shadow-sm">
           <div className="flex items-center justify-between">
             <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
               Despesas Realizadas
             </span>
-            <div className="p-2 bg-rose-50 text-rose-600 rounded-xl">
+            <div className="p-2 bg-rose-950/60 text-rose-400 border border-rose-800/50 rounded-xl">
               <ArrowUpRight className="w-4 h-4" />
             </div>
           </div>
@@ -1145,12 +1145,12 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
         </div>
 
         {/* Despesas Pendentes */}
-        <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm">
+        <div className="bg-slate-800/90 p-5 rounded-2xl border border-slate-700/80 shadow-sm">
           <div className="flex items-center justify-between">
             <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
               Contas a Pagar
             </span>
-            <div className="p-2 bg-amber-50 text-amber-600 rounded-xl">
+            <div className="p-2 bg-amber-950/60 text-amber-400 border border-amber-800/50 rounded-xl">
               <Clock className="w-4 h-4" />
             </div>
           </div>
@@ -1164,14 +1164,14 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
       </div>
 
       {/* Navegação por Abas Funcionais */}
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 pb-2">
-        <div className="flex flex-wrap items-center gap-1.5 p-1 bg-slate-100 rounded-xl">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-700/80 pb-2">
+        <div className="flex flex-wrap items-center gap-1.5 p-1 bg-slate-800 rounded-xl border border-slate-700">
           <button
             onClick={() => setActiveTab('transactions')}
             className={`flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all ${
               activeTab === 'transactions'
-                ? 'bg-white text-slate-900 shadow-xs'
-                : 'text-slate-600 hover:text-slate-900'
+                ? 'bg-indigo-600 text-white shadow-xs'
+                : 'text-slate-400 hover:text-white'
             }`}
           >
             <FileText className="w-3.5 h-3.5" />
@@ -1182,8 +1182,8 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
             onClick={() => setActiveTab('invoices')}
             className={`flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all ${
               activeTab === 'invoices'
-                ? 'bg-white text-slate-900 shadow-xs'
-                : 'text-slate-600 hover:text-slate-900'
+                ? 'bg-indigo-600 text-white shadow-xs'
+                : 'text-slate-400 hover:text-white'
             }`}
           >
             <CreditCard className="w-3.5 h-3.5" />
@@ -1194,8 +1194,8 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
             onClick={() => setActiveTab('transfers')}
             className={`flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all ${
               activeTab === 'transfers'
-                ? 'bg-white text-slate-900 shadow-xs'
-                : 'text-slate-600 hover:text-slate-900'
+                ? 'bg-indigo-600 text-white shadow-xs'
+                : 'text-slate-400 hover:text-white'
             }`}
           >
             <ArrowLeftRight className="w-3.5 h-3.5" />
@@ -1206,8 +1206,8 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
             onClick={() => setActiveTab('budgets')}
             className={`flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all ${
               activeTab === 'budgets'
-                ? 'bg-white text-slate-900 shadow-xs'
-                : 'text-slate-600 hover:text-slate-900'
+                ? 'bg-indigo-600 text-white shadow-xs'
+                : 'text-slate-400 hover:text-white'
             }`}
           >
             <Target className="w-3.5 h-3.5" />
@@ -1218,8 +1218,8 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
             onClick={() => setActiveTab('refunds')}
             className={`flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all ${
               activeTab === 'refunds'
-                ? 'bg-white text-slate-900 shadow-xs'
-                : 'text-slate-600 hover:text-slate-900'
+                ? 'bg-indigo-600 text-white shadow-xs'
+                : 'text-slate-400 hover:text-white'
             }`}
           >
             <RotateCcw className="w-3.5 h-3.5" />
@@ -1230,8 +1230,8 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
             onClick={() => setActiveTab('categories')}
             className={`flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all ${
               activeTab === 'categories'
-                ? 'bg-white text-slate-900 shadow-xs'
-                : 'text-slate-600 hover:text-slate-900'
+                ? 'bg-indigo-600 text-white shadow-xs'
+                : 'text-slate-400 hover:text-white'
             }`}
           >
             <Tag className="w-3.5 h-3.5" />
@@ -1242,8 +1242,8 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
             onClick={() => setActiveTab('recurrences')}
             className={`flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all ${
               activeTab === 'recurrences'
-                ? 'bg-white text-slate-900 shadow-xs'
-                : 'text-slate-600 hover:text-slate-900'
+                ? 'bg-indigo-600 text-white shadow-xs'
+                : 'text-slate-400 hover:text-white'
             }`}
           >
             <Repeat className="w-3.5 h-3.5" />
@@ -1254,8 +1254,8 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
             onClick={() => setActiveTab('installments')}
             className={`flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all ${
               activeTab === 'installments'
-                ? 'bg-white text-slate-900 shadow-xs'
-                : 'text-slate-600 hover:text-slate-900'
+                ? 'bg-indigo-600 text-white shadow-xs'
+                : 'text-slate-400 hover:text-white'
             }`}
           >
             <Layers className="w-3.5 h-3.5" />
@@ -1266,7 +1266,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
         <button
           onClick={loadAllData}
           disabled={loading}
-          className="flex items-center gap-1.5 text-xs font-medium text-slate-600 hover:text-slate-900 px-3 py-1.5 rounded-lg border border-slate-200 bg-white"
+          className="flex items-center gap-1.5 text-xs font-medium text-slate-300 hover:text-white px-3 py-1.5 rounded-lg border border-slate-700 bg-slate-800"
         >
           <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
           Atualizar Dados
@@ -1277,7 +1277,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
       {activeTab === 'transactions' && (
         <div className="space-y-4">
           {/* Barra de Filtros */}
-          <div className="bg-white p-4 rounded-xl border border-slate-100 shadow-xs flex flex-wrap items-center justify-between gap-3">
+          <div className="bg-slate-800/90 p-4 rounded-xl border border-slate-700/80 shadow-xs flex flex-wrap items-center justify-between gap-3">
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
                 Filtros:
@@ -1285,7 +1285,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
               <select
                 value={filterType}
                 onChange={(e) => setFilterType(e.target.value as any)}
-                className="px-3 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="px-3 py-1.5 text-xs bg-slate-800 border border-slate-700 text-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
               >
                 <option value="all">Todos os Tipos</option>
                 <option value="income">Apenas Receitas</option>
@@ -1295,7 +1295,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
               <select
                 value={filterStatus}
                 onChange={(e) => setFilterStatus(e.target.value as any)}
-                className="px-3 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="px-3 py-1.5 text-xs bg-slate-800 border border-slate-700 text-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
               >
                 <option value="all">Todos os Status</option>
                 <option value="paid">Pagas / Recebidas</option>
@@ -1308,7 +1308,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
               <select
                 value={filterCategory}
                 onChange={(e) => setFilterCategory(e.target.value)}
-                className="px-3 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="px-3 py-1.5 text-xs bg-slate-800 border border-slate-700 text-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
               >
                 <option value="all">Todas as Categorias</option>
                 {categories.map((c) => (
@@ -1326,14 +1326,14 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
 
           {/* Listagem de Transações */}
           {loading ? (
-            <div className="text-center py-12 bg-white rounded-xl">
+            <div className="text-center py-12 bg-slate-800/90 rounded-xl border border-slate-700/80">
               <RefreshCw className="w-6 h-6 animate-spin text-blue-600 mx-auto" />
               <p className="text-xs text-slate-400 mt-2">Carregando transações...</p>
             </div>
           ) : filteredTransactions.length === 0 ? (
-            <div className="text-center py-12 bg-white rounded-2xl border border-dashed border-slate-200 p-8">
+            <div className="text-center py-12 bg-slate-800/90 rounded-2xl border border-dashed border-slate-700/80 p-8">
               <FileText className="w-10 h-10 text-slate-300 mx-auto mb-2" />
-              <p className="text-sm font-semibold text-slate-700">
+              <p className="text-sm font-semibold text-slate-200">
                 Nenhum lançamento encontrado
               </p>
               <p className="text-xs text-slate-400 mt-0.5">
@@ -1353,8 +1353,8 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                     key={tx.id}
                     className={`p-4 rounded-xl border transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
                       isCancelled
-                        ? 'bg-slate-50 border-slate-200 opacity-60'
-                        : 'bg-white border-slate-200 hover:border-slate-300'
+                        ? 'bg-slate-900/40 border-slate-700/60 opacity-60'
+                        : 'bg-slate-900/70 border-slate-700/70 hover:border-slate-600'
                     }`}
                   >
                     <div className="flex items-start gap-3">
@@ -1378,7 +1378,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
 
                       <div>
                         <div className="flex flex-wrap items-center gap-2">
-                          <span className="font-bold text-slate-900 text-sm">
+                          <span className="font-bold text-white text-sm">
                             {tx.description}
                           </span>
                           <span className="px-2 py-0.5 text-[10px] font-semibold bg-slate-100 text-slate-700 rounded-md">
@@ -1419,7 +1419,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                       </div>
                     </div>
 
-                    <div className="flex items-center justify-between sm:justify-end gap-3 shrink-0 pt-2 sm:pt-0 border-t sm:border-t-0 border-slate-100">
+                    <div className="flex items-center justify-between sm:justify-end gap-3 shrink-0 pt-2 sm:pt-0 border-t sm:border-t-0 border-slate-700/60">
                       <div className="text-right">
                         <span
                           className={`text-base font-black ${
@@ -1472,7 +1472,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
         <div className="space-y-6">
           <div className="flex items-center justify-between">
             <div>
-              <h2 className="text-lg font-bold text-slate-900">
+              <h2 className="text-lg font-bold text-white">
                 Faturas de Cartões de Crédito
               </h2>
               <p className="text-xs text-slate-500">
@@ -1482,9 +1482,9 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
           </div>
 
           {invoices.length === 0 ? (
-            <div className="text-center py-12 bg-white rounded-2xl border border-dashed border-slate-200 p-8">
+            <div className="text-center py-12 bg-slate-800/90 rounded-2xl border border-dashed border-slate-700/80 p-8">
               <CreditCard className="w-10 h-10 text-slate-300 mx-auto mb-2" />
-              <p className="text-sm font-semibold text-slate-700">
+              <p className="text-sm font-semibold text-slate-200">
                 Nenhuma fatura encontrada
               </p>
               <p className="text-xs text-slate-400 mt-0.5">
@@ -1502,7 +1502,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                 return (
                   <div
                     key={`${inv.accountId}-${inv.invoiceMonth}`}
-                    className="bg-white rounded-2xl p-5 border border-slate-200 shadow-sm flex flex-col justify-between"
+                    className="bg-slate-800/90 rounded-2xl p-5 border border-slate-700/80 shadow-sm flex flex-col justify-between"
                   >
                     <div>
                       <div className="flex items-start justify-between">
@@ -1511,7 +1511,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                             <CreditCard className="w-5 h-5" />
                           </div>
                           <div>
-                            <h3 className="font-bold text-slate-900 text-sm">
+                            <h3 className="font-bold text-white text-sm">
                               {card?.name || 'Cartão de Crédito'}
                             </h3>
                             <span className="text-xs text-slate-400">
@@ -1536,7 +1536,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                       </div>
 
                       {/* Valores da Fatura */}
-                      <div className="mt-4 pt-3 border-t border-slate-100 space-y-1.5 text-xs">
+                      <div className="mt-4 pt-3 border-t border-slate-800 space-y-1.5 text-xs">
                         <div className="flex justify-between text-slate-500">
                           <span>Compras do período:</span>
                           <span className="font-semibold text-slate-800">
@@ -1561,9 +1561,9 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                             {formatCentsToBRL(inv.totalPaidAmountCents)}
                           </span>
                         </div>
-                        <div className="flex justify-between text-sm font-bold pt-2 border-t border-slate-100">
+                        <div className="flex justify-between text-sm font-bold pt-2 border-t border-slate-800">
                           <span>Saldo Restante:</span>
-                          <span className={inv.remainingBalanceCents > 0 ? 'text-rose-600' : 'text-slate-900'}>
+                          <span className={inv.remainingBalanceCents > 0 ? 'text-rose-400' : 'text-slate-300'}>
                             {formatCentsToBRL(inv.remainingBalanceCents)}
                           </span>
                         </div>
@@ -1575,7 +1575,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                     </div>
 
                     {/* Botão Pagar Fatura */}
-                    <div className="mt-4 pt-3 border-t border-slate-100 flex items-center gap-2">
+                    <div className="mt-4 pt-3 border-t border-slate-800 flex items-center gap-2">
                       {!isSettled && (
                         <button
                           onClick={() => {
@@ -1602,7 +1602,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
         <div className="space-y-4">
           <div className="flex items-center justify-between">
             <div>
-              <h2 className="text-lg font-bold text-slate-900">
+              <h2 className="text-lg font-bold text-white">
                 Transferências entre Contas Próprias
               </h2>
               <p className="text-xs text-slate-500">
@@ -1620,9 +1620,9 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
           </div>
 
           {transfers.length === 0 ? (
-            <div className="text-center py-12 bg-white rounded-2xl border border-dashed border-slate-200 p-8">
+            <div className="text-center py-12 bg-slate-800/90 rounded-2xl border border-dashed border-slate-700/80 p-8">
               <ArrowLeftRight className="w-10 h-10 text-slate-300 mx-auto mb-2" />
-              <p className="text-sm font-semibold text-slate-700">
+              <p className="text-sm font-semibold text-slate-200">
                 Nenhuma transferência realizada
               </p>
               <p className="text-xs text-slate-400 mt-0.5">
@@ -1638,14 +1638,14 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                 return (
                   <div
                     key={xfer.id}
-                    className="p-4 bg-white rounded-xl border border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs"
+                    className="p-4 bg-slate-800/90 rounded-xl border border-slate-700/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs"
                   >
                     <div className="flex items-center gap-3">
                       <div className="w-9 h-9 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center shrink-0">
                         <ArrowLeftRight className="w-4 h-4" />
                       </div>
                       <div>
-                        <div className="text-sm font-bold text-slate-900">
+                        <div className="text-sm font-bold text-white">
                           {xfer.description}
                         </div>
                         <div className="text-xs text-slate-500 mt-0.5 flex items-center gap-2">
@@ -1662,7 +1662,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                     </div>
 
                     <div className="text-right">
-                      <div className="text-base font-black text-slate-900">
+                      <div className="text-base font-black text-white">
                         {formatCentsToBRL(xfer.amountCents)}
                       </div>
                       <span className="text-[10px] text-slate-400 uppercase font-semibold">
@@ -1682,7 +1682,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
         <div className="space-y-4">
           <div className="flex items-center justify-between">
             <div>
-              <h2 className="text-lg font-bold text-slate-900">
+              <h2 className="text-lg font-bold text-white">
                 Orçamentos Planejados ({selectedMonth})
               </h2>
               <p className="text-xs text-slate-500">
@@ -1700,9 +1700,9 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
           </div>
 
           {budgets.length === 0 ? (
-            <div className="text-center py-12 bg-white rounded-2xl border border-dashed border-slate-200 p-8">
+            <div className="text-center py-12 bg-slate-800/90 rounded-2xl border border-dashed border-slate-700/80 p-8">
               <Target className="w-10 h-10 text-slate-300 mx-auto mb-2" />
-              <p className="text-sm font-semibold text-slate-700">
+              <p className="text-sm font-semibold text-slate-200">
                 Nenhum orçamento definido para este mês
               </p>
               <p className="text-xs text-slate-400 mt-0.5">
@@ -1718,16 +1718,16 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                 return (
                   <div
                     key={b.id}
-                    className="bg-white rounded-2xl p-5 border border-slate-200 shadow-sm flex flex-col justify-between"
+                    className="bg-slate-800/90 rounded-2xl p-5 border border-slate-700/80 shadow-sm flex flex-col justify-between"
                   >
                     <div>
                       <div className="flex items-start justify-between">
                         <div className="flex items-center gap-2.5">
-                          <div className="p-2 bg-blue-50 text-blue-600 rounded-xl">
+                          <div className="p-2 bg-blue-950/60 text-blue-400 border border-blue-800/50 rounded-xl">
                             <Target className="w-5 h-5" />
                           </div>
                           <div>
-                            <h3 className="font-bold text-slate-900 text-sm">
+                            <h3 className="font-bold text-white text-sm">
                               {b.name}
                             </h3>
                             <span className="text-[11px] text-slate-400">
@@ -1766,10 +1766,10 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                       </div>
 
                       {/* Valores: 3 indicadores distintos (Realizado, Comprometido, Previsto) */}
-                      <div className="mt-4 pt-3 border-t border-slate-100 space-y-1 text-xs">
+                      <div className="mt-4 pt-3 border-t border-slate-800 space-y-1 text-xs">
                         <div className="flex justify-between text-slate-500">
                           <span>Planejado:</span>
-                          <span className="font-semibold text-slate-900">
+                          <span className="font-semibold text-white">
                             {formatCentsToBRL(b.plannedAmountCents)}
                           </span>
                         </div>
@@ -1791,7 +1791,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                             {formatCentsToBRL(b.forecastedAmountCents ?? b.spentAmountCents)} ({b.percentageForecasted ?? b.percentageUsed}%)
                           </span>
                         </div>
-                        <div className="flex justify-between text-xs font-bold pt-1.5 border-t border-slate-100">
+                        <div className="flex justify-between text-xs font-bold pt-1.5 border-t border-slate-800">
                           <span>Saldo Disponível (Real):</span>
                           <span className={b.remainingAmountCents < 0 ? 'text-rose-600' : 'text-emerald-600'}>
                             {formatCentsToBRL(b.remainingAmountCents)}
@@ -1818,7 +1818,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
         <div className="space-y-4">
           <div className="flex items-center justify-between">
             <div>
-              <h2 className="text-lg font-bold text-slate-900">
+              <h2 className="text-lg font-bold text-white">
                 Reembolsos Vinculados a Despesas
               </h2>
               <p className="text-xs text-slate-500">
@@ -1836,9 +1836,9 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
           </div>
 
           {refunds.length === 0 ? (
-            <div className="text-center py-12 bg-white rounded-2xl border border-dashed border-slate-200 p-8">
+            <div className="text-center py-12 bg-slate-800/90 rounded-2xl border border-dashed border-slate-700/80 p-8">
               <RotateCcw className="w-10 h-10 text-slate-300 mx-auto mb-2" />
-              <p className="text-sm font-semibold text-slate-700">
+              <p className="text-sm font-semibold text-slate-200">
                 Nenhum reembolso cadastrado
               </p>
               <p className="text-xs text-slate-400 mt-0.5">
@@ -1853,14 +1853,14 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                 return (
                   <div
                     key={ref.id}
-                    className="p-4 bg-white rounded-xl border border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs"
+                    className="p-4 bg-slate-800/90 rounded-xl border border-slate-700/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs"
                   >
                     <div className="flex items-center gap-3">
                       <div className="w-9 h-9 rounded-xl bg-purple-50 text-purple-700 flex items-center justify-center shrink-0">
                         <RotateCcw className="w-4 h-4" />
                       </div>
                       <div>
-                        <div className="text-sm font-bold text-slate-900">
+                        <div className="text-sm font-bold text-white">
                           {ref.description} (Devedor: <strong>{ref.debtorName}</strong>)
                         </div>
                         <div className="text-xs text-slate-500 mt-0.5">
@@ -1872,7 +1872,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
 
                     <div className="flex items-center justify-between sm:justify-end gap-3 shrink-0">
                       <div className="text-right">
-                        <div className="text-sm font-black text-slate-900">
+                        <div className="text-sm font-black text-white">
                           Resta: {formatCentsToBRL(ref.remainingAmountCents)}
                         </div>
                       </div>
@@ -1903,7 +1903,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
         <div className="space-y-4">
           <div className="flex items-center justify-between">
             <div>
-              <h2 className="text-lg font-bold text-slate-900">
+              <h2 className="text-lg font-bold text-white">
                 Categorias Individuais
               </h2>
               <p className="text-xs text-slate-500">
@@ -1924,8 +1924,8 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
             {categories.map((cat) => (
               <div
                 key={cat.id}
-                className={`p-3.5 rounded-xl border bg-white flex items-center justify-between gap-2 shadow-xs ${
-                  cat.isArchived ? 'opacity-50 bg-slate-50' : 'border-slate-200'
+                className={`p-3.5 rounded-xl border bg-slate-800/90 border-slate-700/80 flex items-center justify-between gap-2 shadow-xs ${
+                  cat.isArchived ? 'opacity-50 bg-slate-800' : 'border-slate-700'
                 }`}
               >
                 <div className="flex items-center gap-2.5">
@@ -1934,7 +1934,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                     style={{ backgroundColor: cat.color || '#2563EB' }}
                   />
                   <div>
-                    <div className="text-xs font-bold text-slate-900 leading-tight">
+                    <div className="text-xs font-bold text-white leading-tight">
                       {cat.name}
                     </div>
                     <span className="text-[10px] text-slate-400 capitalize">
@@ -1950,7 +1950,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                     showToast(`Categoria ${nextState ? 'arquivada' : 'ativada'}.`);
                     await loadAllData();
                   }}
-                  className="text-[11px] text-slate-400 hover:text-slate-700 px-2 py-1 rounded bg-slate-50 hover:bg-slate-100"
+                  className="text-[11px] text-slate-400 hover:text-slate-200 px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700"
                 >
                   {cat.isArchived ? 'Desarquivar' : 'Arquivar'}
                 </button>
@@ -1965,7 +1965,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
         <div className="space-y-4">
           <div className="flex items-center justify-between">
             <div>
-              <h2 className="text-lg font-bold text-slate-900">
+              <h2 className="text-lg font-bold text-white">
                 Regras de Recorrência
               </h2>
               <p className="text-xs text-slate-500">
@@ -1983,9 +1983,9 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
           </div>
 
           {recurrenceRules.length === 0 ? (
-            <div className="p-8 text-center bg-white rounded-2xl border border-slate-100 shadow-xs">
+            <div className="p-8 text-center bg-slate-800/90 rounded-2xl border border-slate-700/80 shadow-xs">
               <Repeat className="w-10 h-10 text-slate-300 mx-auto mb-2" />
-              <div className="text-sm font-semibold text-slate-700">Nenhuma regra de recorrência cadastrada</div>
+              <div className="text-sm font-semibold text-slate-200">Nenhuma regra de recorrência cadastrada</div>
               <p className="text-xs text-slate-400 mt-1">
                 Cadastre assinaturas como Netflix, Spotify, plano de saúde, aluguel ou internet.
               </p>
@@ -1998,11 +1998,11 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                 return (
                   <div
                     key={rule.id}
-                    className="p-5 rounded-2xl border border-slate-100 bg-white shadow-xs space-y-3"
+                    className="p-5 rounded-2xl border border-slate-700/80 bg-slate-800/90 shadow-xs space-y-3"
                   >
                     <div className="flex items-start justify-between gap-2">
                       <div>
-                        <div className="text-sm font-bold text-slate-900">{rule.title}</div>
+                        <div className="text-sm font-bold text-white">{rule.title}</div>
                         {rule.description && (
                           <div className="text-xs text-slate-400 mt-0.5">{rule.description}</div>
                         )}
@@ -2020,7 +2020,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                       </span>
                     </div>
 
-                    <div className="text-xl font-black text-slate-900">
+                    <div className="text-xl font-black text-white">
                       {formatCentsToBRL(rule.amountCents)}
                       <span className="text-xs font-normal text-slate-400 ml-1">
                         / {rule.frequency === 'monthly' ? 'mês' : rule.frequency === 'weekly' ? 'semana' : 'ano'}
@@ -2029,10 +2029,10 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
 
                     <div className="grid grid-cols-2 gap-2 text-[11px] text-slate-500 pt-2 border-t border-slate-50">
                       <div>
-                        <span className="font-semibold text-slate-700">Vencimento:</span> Dia {rule.dueDay}
+                        <span className="font-semibold text-slate-200">Vencimento:</span> Dia {rule.dueDay}
                       </div>
                       <div>
-                        <span className="font-semibold text-slate-700">Início:</span> {rule.startCompetence}
+                        <span className="font-semibold text-slate-200">Início:</span> {rule.startCompetence}
                       </div>
                       {cat && (
                         <div className="col-span-2 flex items-center gap-1.5">
@@ -2042,13 +2042,13 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                       )}
                       {acc && (
                         <div className="col-span-2 text-slate-500">
-                          <span className="font-semibold text-slate-700">Conta:</span> {acc.name}
+                          <span className="font-semibold text-slate-200">Conta:</span> {acc.name}
                         </div>
                       )}
                     </div>
 
                     {rule.status !== 'cancelled' && (
-                      <div className="pt-2 border-t border-slate-100 flex items-center justify-between gap-1">
+                      <div className="pt-2 border-t border-slate-800 flex items-center justify-between gap-1">
                         <button
                           onClick={() => handleToggleRecurrenceStatus(rule.id, rule.status)}
                           className="flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-slate-600 hover:text-slate-900 bg-slate-50 hover:bg-slate-100 rounded-lg"
@@ -2095,7 +2095,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
         <div className="space-y-4">
           <div className="flex items-center justify-between">
             <div>
-              <h2 className="text-lg font-bold text-slate-900">
+              <h2 className="text-lg font-bold text-white">
                 Contratos de Parcelamento
               </h2>
               <p className="text-xs text-slate-500">
@@ -2113,9 +2113,9 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
           </div>
 
           {installmentContracts.length === 0 ? (
-            <div className="p-8 text-center bg-white rounded-2xl border border-slate-100 shadow-xs">
+            <div className="p-8 text-center bg-slate-800/90 rounded-2xl border border-slate-700/80 shadow-xs">
               <Layers className="w-10 h-10 text-slate-300 mx-auto mb-2" />
-              <div className="text-sm font-semibold text-slate-700">Nenhum contrato de parcelamento ativo</div>
+              <div className="text-sm font-semibold text-slate-200">Nenhum contrato de parcelamento ativo</div>
               <p className="text-xs text-slate-400 mt-1">
                 Registre compras parceladas no cartão de crédito, empréstimos bancários ou carnês.
               </p>
@@ -2131,12 +2131,12 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                 return (
                   <div
                     key={contract.id}
-                    className="p-5 rounded-2xl border border-slate-100 bg-white shadow-xs space-y-3"
+                    className="p-5 rounded-2xl border border-slate-700/80 bg-slate-800/90 shadow-xs space-y-3"
                   >
                     <div className="flex flex-wrap items-start justify-between gap-2">
                       <div>
                         <div className="flex items-center gap-2">
-                          <span className="text-sm font-bold text-slate-900">{contract.title}</span>
+                          <span className="text-sm font-bold text-white">{contract.title}</span>
                           <span
                             className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider ${
                               contract.status === 'active'
@@ -2159,7 +2159,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                       </div>
 
                       <div className="text-right">
-                        <div className="text-lg font-black text-slate-900">
+                        <div className="text-lg font-black text-white">
                           {formatCentsToBRL(contract.totalContractAmountCents)}
                         </div>
                         <div className="text-xs text-slate-400">
@@ -2168,7 +2168,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                       </div>
                     </div>
 
-                    <div className="pt-2 border-t border-slate-100 flex items-center justify-between">
+                    <div className="pt-2 border-t border-slate-800 flex items-center justify-between">
                       <button
                         onClick={() => handleToggleContractOccurrences(contract.id)}
                         className="flex items-center gap-1 text-xs font-semibold text-blue-600 hover:text-blue-800"
@@ -2190,7 +2190,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                             setCancelContractModal(contract);
                             setCancelContractReason('');
                           }}
-                          className="px-2.5 py-1 text-xs font-medium text-rose-600 hover:text-rose-800 hover:bg-rose-50 rounded-lg"
+                          className="px-2.5 py-1 text-xs font-medium text-rose-400 hover:text-rose-200 hover:bg-rose-50 rounded-lg"
                         >
                           Cancelar Antecipadamente
                         </button>
@@ -2198,7 +2198,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                     </div>
 
                     {isExpanded && (
-                      <div className="mt-3 pt-3 border-t border-slate-100 space-y-2">
+                      <div className="mt-3 pt-3 border-t border-slate-800 space-y-2">
                         {isLoadingOccs ? (
                           <div className="text-xs text-slate-400 py-2 text-center">Carregando parcelas...</div>
                         ) : occs.length === 0 ? (
@@ -2210,10 +2210,10 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                                 key={occ.id}
                                 className={`p-2.5 rounded-xl border text-xs ${
                                   occ.status === 'cancelled'
-                                    ? 'bg-slate-50 border-slate-200 opacity-60'
+                                    ? 'bg-slate-900/40 border-slate-700/60 opacity-60'
                                     : occ.status === 'paid'
                                     ? 'bg-emerald-50/50 border-emerald-100'
-                                    : 'bg-white border-slate-200'
+                                    : 'bg-slate-800/90 border-slate-700/80'
                                 }`}
                               >
                                 <div className="flex items-center justify-between font-semibold">
@@ -2240,7 +2240,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                                       : 'Agendada'}
                                   </span>
                                 </div>
-                                <div className="mt-1 font-bold text-slate-900">
+                                <div className="mt-1 font-bold text-white">
                                   {formatCentsToBRL(occ.totalInstallmentAmountCents)}
                                 </div>
                                 <div className="text-[10px] text-slate-400 mt-0.5">
@@ -2262,15 +2262,15 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
 
       {/* MODAL: NOVA TRANSAÇÃO */}
       {isTxModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-xs">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-xl border border-slate-100">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-              <h3 className="text-base font-bold text-slate-900">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-xs">
+          <div className="bg-slate-900 rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-700">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <h3 className="text-base font-bold text-white">
                 {txType === 'income' ? 'Nova Receita' : 'Nova Despesa'}
               </h3>
               <button
                 onClick={() => setIsTxModalOpen(false)}
-                className="p-1 text-slate-400 hover:text-slate-600 rounded-lg"
+                className="p-1 text-slate-400 hover:text-slate-200 rounded-lg"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -2278,7 +2278,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
 
             <form onSubmit={handleCreateTransaction} className="space-y-3.5 mt-3">
               <div>
-                <label className="block text-[11px] font-semibold text-slate-700 uppercase mb-1">
+                <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
                   Descrição *
                 </label>
                 <input
@@ -2287,13 +2287,13 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                   placeholder="Ex: Salário, Aluguel, Supermercado..."
                   value={txDesc}
                   onChange={(e) => setTxDesc(e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
               </div>
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-[11px] font-semibold text-slate-700 uppercase mb-1">
+                  <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
                     Valor (R$) *
                   </label>
                   <input
@@ -2302,12 +2302,12 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                     placeholder="0,00"
                     value={txAmount}
                     onChange={(e) => setTxAmount(e.target.value)}
-                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 font-bold"
+                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500 font-bold"
                   />
                 </div>
 
                 <div>
-                  <label className="block text-[11px] font-semibold text-slate-700 uppercase mb-1">
+                  <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
                     Data *
                   </label>
                   <input
@@ -2315,20 +2315,20 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                     required
                     value={txDate}
                     onChange={(e) => setTxDate(e.target.value)}
-                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
                 </div>
               </div>
 
               <div>
-                <label className="block text-[11px] font-semibold text-slate-700 uppercase mb-1">
+                <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
                   Categoria *
                 </label>
                 <select
                   required
                   value={txCategory}
                   onChange={(e) => setTxCategory(e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
                 >
                   <option value="">Selecione...</option>
                   {categories
@@ -2342,13 +2342,13 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
               </div>
 
               <div>
-                <label className="block text-[11px] font-semibold text-slate-700 uppercase mb-1">
+                <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
                   Status *
                 </label>
                 <select
                   value={txStatus}
                   onChange={(e) => setTxStatus(e.target.value as PersonalTransactionStatus)}
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
                 >
                   <option value="paid">{txType === 'income' ? 'Recebido (Crédito em Conta)' : 'Pago (Débito em Conta/Cartão)'}</option>
                   <option value="pending">Pendente (A pagar/receber)</option>
@@ -2358,14 +2358,14 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
 
               {txStatus === 'paid' && (
                 <div>
-                  <label className="block text-[11px] font-semibold text-slate-700 uppercase mb-1">
+                  <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
                     Conta / Cartão *
                   </label>
                   <select
                     required
                     value={txAccount}
                     onChange={(e) => setTxAccount(e.target.value)}
-                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
                   >
                     <option value="">Selecione...</option>
                     {accounts
@@ -2380,7 +2380,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
               )}
 
               <div>
-                <label className="block text-[11px] font-semibold text-slate-700 uppercase mb-1">
+                <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
                   Observações (Opcional)
                 </label>
                 <input
@@ -2388,15 +2388,15 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                   placeholder="Anotações internas..."
                   value={txNotes}
                   onChange={(e) => setTxNotes(e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
               </div>
 
-              <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2">
+              <div className="pt-3 border-t border-slate-800 flex items-center justify-end gap-2">
                 <button
                   type="button"
                   onClick={() => setIsTxModalOpen(false)}
-                  className="px-3 py-2 text-xs font-semibold text-slate-600 hover:text-slate-800"
+                  className="px-3 py-2 text-xs font-semibold text-slate-400 hover:text-slate-200"
                 >
                   Cancelar
                 </button>
@@ -2415,15 +2415,15 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
 
       {/* MODAL: AMORTIZAÇÃO / PAGAMENTO PARCIAL */}
       {partialTx && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-xs">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-xl border border-blue-200">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-              <h3 className="text-base font-bold text-slate-900">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-xs">
+          <div className="bg-slate-900 rounded-2xl max-w-md w-full p-6 shadow-2xl border border-blue-800/60">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <h3 className="text-base font-bold text-white">
                 Amortização Parcial
               </h3>
               <button
                 onClick={() => setPartialTx(null)}
-                className="p-1 text-slate-400 hover:text-slate-600 rounded-lg"
+                className="p-1 text-slate-400 hover:text-slate-200 rounded-lg"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -2442,7 +2442,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
 
             <form onSubmit={handleExecutePartialPayment} className="space-y-3">
               <div>
-                <label className="block text-[11px] font-semibold text-slate-700 uppercase mb-1">
+                <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
                   Valor da Amortização (R$) *
                 </label>
                 <input
@@ -2451,19 +2451,19 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                   placeholder="0,00"
                   value={partialAmount}
                   onChange={(e) => setPartialAmount(e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 font-bold"
+                  className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500 font-bold"
                 />
               </div>
 
               <div>
-                <label className="block text-[11px] font-semibold text-slate-700 uppercase mb-1">
+                <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
                   Conta para Movimentação *
                 </label>
                 <select
                   required
                   value={partialAccount}
                   onChange={(e) => setPartialAccount(e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
                 >
                   <option value="">Selecione...</option>
                   {accounts
@@ -2477,7 +2477,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
               </div>
 
               <div>
-                <label className="block text-[11px] font-semibold text-slate-700 uppercase mb-1">
+                <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
                   Data Efetiva *
                 </label>
                 <input
@@ -2485,15 +2485,15 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                   required
                   value={partialDate}
                   onChange={(e) => setPartialDate(e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
               </div>
 
-              <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2">
+              <div className="pt-3 border-t border-slate-800 flex items-center justify-end gap-2">
                 <button
                   type="button"
                   onClick={() => setPartialTx(null)}
-                  className="px-3 py-2 text-xs font-semibold text-slate-600 hover:text-slate-800"
+                  className="px-3 py-2 text-xs font-semibold text-slate-400 hover:text-slate-200"
                 >
                   Cancelar
                 </button>
@@ -2512,15 +2512,15 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
 
       {/* MODAL: TRANSFERÊNCIA ENTRE CONTAS PRÓPRIAS */}
       {isTransferModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-xs">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-xl border border-slate-100">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-              <h3 className="text-base font-bold text-slate-900">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-xs">
+          <div className="bg-slate-900 rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-700">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <h3 className="text-base font-bold text-white">
                 Transferência entre Contas Próprias
               </h3>
               <button
                 onClick={() => setIsTransferModalOpen(false)}
-                className="p-1 text-slate-400 hover:text-slate-600 rounded-lg"
+                className="p-1 text-slate-400 hover:text-slate-200 rounded-lg"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -2528,14 +2528,14 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
 
             <form onSubmit={handleExecuteTransfer} className="space-y-3.5 mt-3">
               <div>
-                <label className="block text-[11px] font-semibold text-slate-700 uppercase mb-1">
+                <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
                   Conta de Origem (Saída) *
                 </label>
                 <select
                   required
                   value={xferSource}
                   onChange={(e) => setXferSource(e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
                 >
                   <option value="">Selecione...</option>
                   {accounts
@@ -2549,14 +2549,14 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
               </div>
 
               <div>
-                <label className="block text-[11px] font-semibold text-slate-700 uppercase mb-1">
+                <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
                   Conta de Destino (Entrada) *
                 </label>
                 <select
                   required
                   value={xferDest}
                   onChange={(e) => setXferDest(e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
                 >
                   <option value="">Selecione...</option>
                   {accounts
@@ -2571,7 +2571,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-[11px] font-semibold text-slate-700 uppercase mb-1">
+                  <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
                     Valor (R$) *
                   </label>
                   <input
@@ -2580,12 +2580,12 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                     placeholder="0,00"
                     value={xferAmount}
                     onChange={(e) => setXferAmount(e.target.value)}
-                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 font-bold"
+                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500 font-bold"
                   />
                 </div>
 
                 <div>
-                  <label className="block text-[11px] font-semibold text-slate-700 uppercase mb-1">
+                  <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
                     Data da Transferência *
                   </label>
                   <input
@@ -2593,13 +2593,13 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                     required
                     value={xferDate}
                     onChange={(e) => setXferDate(e.target.value)}
-                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
                 </div>
               </div>
 
               <div>
-                <label className="block text-[11px] font-semibold text-slate-700 uppercase mb-1">
+                <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
                   Descrição (Opcional)
                 </label>
                 <input
@@ -2607,15 +2607,15 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                   placeholder="Ex: Saque para carteira, Reserva de emergência..."
                   value={xferDesc}
                   onChange={(e) => setXferDesc(e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
               </div>
 
-              <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2">
+              <div className="pt-3 border-t border-slate-800 flex items-center justify-end gap-2">
                 <button
                   type="button"
                   onClick={() => setIsTransferModalOpen(false)}
-                  className="px-3 py-2 text-xs font-semibold text-slate-600 hover:text-slate-800"
+                  className="px-3 py-2 text-xs font-semibold text-slate-400 hover:text-slate-200"
                 >
                   Cancelar
                 </button>
@@ -2634,15 +2634,15 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
 
       {/* MODAL: PAGAR FATURA DE CARTÃO */}
       {payInvoiceModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-xs">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-xl border border-purple-200">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-              <h3 className="text-base font-bold text-slate-900">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-xs">
+          <div className="bg-slate-900 rounded-2xl max-w-md w-full p-6 shadow-2xl border border-purple-800/60">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <h3 className="text-base font-bold text-white">
                 Pagar Fatura {payInvoiceModal.invoiceMonth}
               </h3>
               <button
                 onClick={() => setPayInvoiceModal(null)}
-                className="p-1 text-slate-400 hover:text-slate-600 rounded-lg"
+                className="p-1 text-slate-400 hover:text-slate-200 rounded-lg"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -2661,14 +2661,14 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
 
             <form onSubmit={handleExecutePayInvoice} className="space-y-3">
               <div>
-                <label className="block text-[11px] font-semibold text-slate-700 uppercase mb-1">
+                <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
                   Conta para Débito (Corrente / Carteira) *
                 </label>
                 <select
                   required
                   value={payInvSourceAcc}
                   onChange={(e) => setPayInvSourceAcc(e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
                 >
                   <option value="">Selecione...</option>
                   {accounts
@@ -2683,7 +2683,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-[11px] font-semibold text-slate-700 uppercase mb-1">
+                  <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
                     Valor a Pagar (R$) *
                   </label>
                   <input
@@ -2692,12 +2692,12 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                     placeholder="0,00"
                     value={payInvAmount}
                     onChange={(e) => setPayInvAmount(e.target.value)}
-                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 font-bold"
+                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500 font-bold"
                   />
                 </div>
 
                 <div>
-                  <label className="block text-[11px] font-semibold text-slate-700 uppercase mb-1">
+                  <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
                     Data do Pagamento *
                   </label>
                   <input
@@ -2705,16 +2705,16 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                     required
                     value={payInvDate}
                     onChange={(e) => setPayInvDate(e.target.value)}
-                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
                 </div>
               </div>
 
-              <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2">
+              <div className="pt-3 border-t border-slate-800 flex items-center justify-end gap-2">
                 <button
                   type="button"
                   onClick={() => setPayInvoiceModal(null)}
-                  className="px-3 py-2 text-xs font-semibold text-slate-600 hover:text-slate-800"
+                  className="px-3 py-2 text-xs font-semibold text-slate-400 hover:text-slate-200"
                 >
                   Cancelar
                 </button>
@@ -2733,15 +2733,15 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
 
       {/* MODAL: NOVO ORÇAMENTO */}
       {isBudgetModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-xs">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-xl border border-slate-100">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-              <h3 className="text-base font-bold text-slate-900">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-xs">
+          <div className="bg-slate-900 rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-700">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <h3 className="text-base font-bold text-white">
                 Novo Orçamento Mensal ({selectedMonth})
               </h3>
               <button
                 onClick={() => setIsBudgetModalOpen(false)}
-                className="p-1 text-slate-400 hover:text-slate-600 rounded-lg"
+                className="p-1 text-slate-400 hover:text-slate-200 rounded-lg"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -2749,7 +2749,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
 
             <form onSubmit={handleCreateBudget} className="space-y-3.5 mt-3">
               <div>
-                <label className="block text-[11px] font-semibold text-slate-700 uppercase mb-1">
+                <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
                   Nome do Orçamento *
                 </label>
                 <input
@@ -2758,12 +2758,12 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                   placeholder="Ex: Limite Alimentação, Gastos com Lazer..."
                   value={budgetName}
                   onChange={(e) => setBudgetName(e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
               </div>
 
               <div>
-                <label className="block text-[11px] font-semibold text-slate-700 uppercase mb-1">
+                <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
                   Valor Planejado (R$) *
                 </label>
                 <input
@@ -2772,15 +2772,15 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                   placeholder="0,00"
                   value={budgetAmount}
                   onChange={(e) => setBudgetAmount(e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 font-bold"
+                  className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500 font-bold"
                 />
               </div>
 
               <div>
-                <label className="block text-[11px] font-semibold text-slate-700 uppercase mb-1">
+                <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
                   Categorias Incluídas *
                 </label>
-                <div className="max-h-36 overflow-y-auto space-y-1.5 p-2 bg-slate-50 rounded-xl border border-slate-200">
+                <div className="max-h-36 overflow-y-auto space-y-1.5 p-2 bg-slate-800 rounded-xl border border-slate-700">
                   {categories
                     .filter((c) => !c.isArchived && (c.type === 'expense' || c.type === 'both'))
                     .map((c) => {
@@ -2806,11 +2806,11 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                 </div>
               </div>
 
-              <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2">
+              <div className="pt-3 border-t border-slate-800 flex items-center justify-end gap-2">
                 <button
                   type="button"
                   onClick={() => setIsBudgetModalOpen(false)}
-                  className="px-3 py-2 text-xs font-semibold text-slate-600 hover:text-slate-800"
+                  className="px-3 py-2 text-xs font-semibold text-slate-400 hover:text-slate-200"
                 >
                   Cancelar
                 </button>
@@ -2829,15 +2829,15 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
 
       {/* MODAL: NOVO REEMBOLSO */}
       {isRefundModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-xs">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-xl border border-slate-100">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-              <h3 className="text-base font-bold text-slate-900">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-xs">
+          <div className="bg-slate-900 rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-700">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <h3 className="text-base font-bold text-white">
                 Novo Reembolso a Receber
               </h3>
               <button
                 onClick={() => setIsRefundModalOpen(false)}
-                className="p-1 text-slate-400 hover:text-slate-600 rounded-lg"
+                className="p-1 text-slate-400 hover:text-slate-200 rounded-lg"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -2845,14 +2845,14 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
 
             <form onSubmit={handleCreateRefund} className="space-y-3 mt-3">
               <div>
-                <label className="block text-[11px] font-semibold text-slate-700 uppercase mb-1">
+                <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
                   Despesa Original Vinculada *
                 </label>
                 <select
                   required
                   value={refTxId}
                   onChange={(e) => setRefTxId(e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
                 >
                   <option value="">Selecione a despesa...</option>
                   {transactions
@@ -2866,7 +2866,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
               </div>
 
               <div>
-                <label className="block text-[11px] font-semibold text-slate-700 uppercase mb-1">
+                <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
                   Nome do Devedor / Amigo *
                 </label>
                 <input
@@ -2875,12 +2875,12 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                   placeholder="Ex: Carlos, Ana..."
                   value={refDebtor}
                   onChange={(e) => setRefDebtor(e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
               </div>
 
               <div>
-                <label className="block text-[11px] font-semibold text-slate-700 uppercase mb-1">
+                <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
                   Valor a Reembolsar (R$) *
                 </label>
                 <input
@@ -2889,12 +2889,12 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                   placeholder="0,00"
                   value={refAmount}
                   onChange={(e) => setRefAmount(e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 font-bold"
+                  className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500 font-bold"
                 />
               </div>
 
               <div>
-                <label className="block text-[11px] font-semibold text-slate-700 uppercase mb-1">
+                <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
                   Descrição (Opcional)
                 </label>
                 <input
@@ -2902,15 +2902,15 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                   placeholder="Ex: Parte do almoço..."
                   value={refDesc}
                   onChange={(e) => setRefDesc(e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
               </div>
 
-              <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2">
+              <div className="pt-3 border-t border-slate-800 flex items-center justify-end gap-2">
                 <button
                   type="button"
                   onClick={() => setIsRefundModalOpen(false)}
-                  className="px-3 py-2 text-xs font-semibold text-slate-600 hover:text-slate-800"
+                  className="px-3 py-2 text-xs font-semibold text-slate-400 hover:text-slate-200"
                 >
                   Cancelar
                 </button>
@@ -2929,15 +2929,15 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
 
       {/* MODAL: RECEBER REEMBOLSO */}
       {receiveRefundModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-xs">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-xl border border-emerald-200">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-              <h3 className="text-base font-bold text-slate-900">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-xs">
+          <div className="bg-slate-900 rounded-2xl max-w-md w-full p-6 shadow-2xl border border-emerald-800/60">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <h3 className="text-base font-bold text-white">
                 Receber Reembolso ({receiveRefundModal.debtorName})
               </h3>
               <button
                 onClick={() => setReceiveRefundModal(null)}
-                className="p-1 text-slate-400 hover:text-slate-600 rounded-lg"
+                className="p-1 text-slate-400 hover:text-slate-200 rounded-lg"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -2951,14 +2951,14 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
 
             <form onSubmit={handleExecuteReceiveRefund} className="space-y-3">
               <div>
-                <label className="block text-[11px] font-semibold text-slate-700 uppercase mb-1">
+                <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
                   Conta para Crédito (Entrada) *
                 </label>
                 <select
                   required
                   value={receiveAccount}
                   onChange={(e) => setReceiveAccount(e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
                 >
                   <option value="">Selecione...</option>
                   {accounts
@@ -2973,7 +2973,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-[11px] font-semibold text-slate-700 uppercase mb-1">
+                  <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
                     Valor Recebido (R$) *
                   </label>
                   <input
@@ -2982,12 +2982,12 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                     placeholder="0,00"
                     value={receiveAmount}
                     onChange={(e) => setReceiveAmount(e.target.value)}
-                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 font-bold"
+                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500 font-bold"
                   />
                 </div>
 
                 <div>
-                  <label className="block text-[11px] font-semibold text-slate-700 uppercase mb-1">
+                  <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
                     Data do Recebimento *
                   </label>
                   <input
@@ -2995,16 +2995,16 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                     required
                     value={receiveDate}
                     onChange={(e) => setReceiveDate(e.target.value)}
-                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
                 </div>
               </div>
 
-              <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2">
+              <div className="pt-3 border-t border-slate-800 flex items-center justify-end gap-2">
                 <button
                   type="button"
                   onClick={() => setReceiveRefundModal(null)}
-                  className="px-3 py-2 text-xs font-semibold text-slate-600 hover:text-slate-800"
+                  className="px-3 py-2 text-xs font-semibold text-slate-400 hover:text-slate-200"
                 >
                   Cancelar
                 </button>
@@ -3023,15 +3023,15 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
 
       {/* MODAL: NOVA CATEGORIA */}
       {isCategoryModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-xs">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-xl border border-slate-100">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-              <h3 className="text-base font-bold text-slate-900">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-xs">
+          <div className="bg-slate-900 rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-700">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <h3 className="text-base font-bold text-white">
                 Nova Categoria Individual
               </h3>
               <button
                 onClick={() => setIsCategoryModalOpen(false)}
-                className="p-1 text-slate-400 hover:text-slate-600 rounded-lg"
+                className="p-1 text-slate-400 hover:text-slate-200 rounded-lg"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -3039,7 +3039,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
 
             <form onSubmit={handleCreateCategory} className="space-y-3 mt-3">
               <div>
-                <label className="block text-[11px] font-semibold text-slate-700 uppercase mb-1">
+                <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
                   Nome da Categoria *
                 </label>
                 <input
@@ -3048,18 +3048,18 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                   placeholder="Ex: Farmácia, Viagens, Freelance..."
                   value={newCatName}
                   onChange={(e) => setNewCatName(e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
               </div>
 
               <div>
-                <label className="block text-[11px] font-semibold text-slate-700 uppercase mb-1">
+                <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
                   Tipo *
                 </label>
                 <select
                   value={newCatType}
                   onChange={(e) => setNewCatType(e.target.value as any)}
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
                 >
                   <option value="expense">Despesa</option>
                   <option value="income">Receita</option>
@@ -3067,7 +3067,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
               </div>
 
               <div>
-                <label className="block text-[11px] font-semibold text-slate-700 uppercase mb-1">
+                <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
                   Cor
                 </label>
                 <div className="flex items-center gap-3">
@@ -3075,17 +3075,17 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                     type="color"
                     value={newCatColor}
                     onChange={(e) => setNewCatColor(e.target.value)}
-                    className="w-9 h-9 rounded-xl cursor-pointer border border-slate-200 p-0.5 bg-white"
+                    className="w-9 h-9 rounded-xl cursor-pointer border border-slate-700 p-0.5 bg-slate-800"
                   />
                   <span className="text-xs font-mono text-slate-500">{newCatColor}</span>
                 </div>
               </div>
 
-              <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2">
+              <div className="pt-3 border-t border-slate-800 flex items-center justify-end gap-2">
                 <button
                   type="button"
                   onClick={() => setIsCategoryModalOpen(false)}
-                  className="px-3 py-2 text-xs font-semibold text-slate-600 hover:text-slate-800"
+                  className="px-3 py-2 text-xs font-semibold text-slate-400 hover:text-slate-200"
                 >
                   Cancelar
                 </button>
@@ -3103,15 +3103,15 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
       )}
       {/* MODAL: NOVA RECORRÊNCIA */}
       {isRecurrenceModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-xs">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-xl border border-slate-100">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-              <h3 className="text-base font-bold text-slate-900">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-xs">
+          <div className="bg-slate-900 rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-700">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <h3 className="text-base font-bold text-white">
                 Nova Regra de Recorrência
               </h3>
               <button
                 onClick={() => setIsRecurrenceModalOpen(false)}
-                className="p-1 text-slate-400 hover:text-slate-600 rounded-lg"
+                className="p-1 text-slate-400 hover:text-slate-200 rounded-lg"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -3119,7 +3119,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
 
             <form onSubmit={handleCreateRecurrence} className="space-y-3 mt-3">
               <div>
-                <label className="block text-[11px] font-semibold text-slate-700 uppercase mb-1">
+                <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
                   Título da Despesa Periódica *
                 </label>
                 <input
@@ -3128,13 +3128,13 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                   placeholder="Ex: Netflix, Internet Fibra, Aluguel..."
                   value={recTitle}
                   onChange={(e) => setRecTitle(e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
               </div>
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-[11px] font-semibold text-slate-700 uppercase mb-1">
+                  <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
                     Valor Previsto (R$) *
                   </label>
                   <input
@@ -3143,18 +3143,18 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                     placeholder="0,00"
                     value={recAmount}
                     onChange={(e) => setRecAmount(e.target.value)}
-                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 font-bold"
+                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500 font-bold"
                   />
                 </div>
 
                 <div>
-                  <label className="block text-[11px] font-semibold text-slate-700 uppercase mb-1">
+                  <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
                     Frequência *
                   </label>
                   <select
                     value={recFrequency}
                     onChange={(e) => setRecFrequency(e.target.value as any)}
-                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
                   >
                     <option value="monthly">Mensal</option>
                     <option value="weekly">Semanal</option>
@@ -3165,7 +3165,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-[11px] font-semibold text-slate-700 uppercase mb-1">
+                  <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
                     Dia de Vencimento (1 a 31) *
                   </label>
                   <input
@@ -3175,12 +3175,12 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                     required
                     value={recDueDay}
                     onChange={(e) => setRecDueDay(Number(e.target.value))}
-                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
                 </div>
 
                 <div>
-                  <label className="block text-[11px] font-semibold text-slate-700 uppercase mb-1">
+                  <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
                     Mês de Início (YYYY-MM) *
                   </label>
                   <input
@@ -3190,19 +3190,19 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                     placeholder="2026-11"
                     value={recStartCompetence}
                     onChange={(e) => setRecStartCompetence(e.target.value)}
-                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
                   />
                 </div>
               </div>
 
               <div>
-                <label className="block text-[11px] font-semibold text-slate-700 uppercase mb-1">
+                <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
                   Categoria
                 </label>
                 <select
                   value={recCategory}
                   onChange={(e) => setRecCategory(e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
                 >
                   <option value="">Selecione...</option>
                   {categories
@@ -3216,13 +3216,13 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
               </div>
 
               <div>
-                <label className="block text-[11px] font-semibold text-slate-700 uppercase mb-1">
+                <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
                   Conta Padrão (Opcional)
                 </label>
                 <select
                   value={recAccount}
                   onChange={(e) => setRecAccount(e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
                 >
                   <option value="">Nenhuma / Definir no lançamento</option>
                   {accounts
@@ -3236,7 +3236,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
               </div>
 
               <div>
-                <label className="block text-[11px] font-semibold text-slate-700 uppercase mb-1">
+                <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
                   Descrição Adicional
                 </label>
                 <input
@@ -3244,15 +3244,15 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                   placeholder="Ex: Assinatura premium família..."
                   value={recDesc}
                   onChange={(e) => setRecDesc(e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
               </div>
 
-              <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2">
+              <div className="pt-3 border-t border-slate-800 flex items-center justify-end gap-2">
                 <button
                   type="button"
                   onClick={() => setIsRecurrenceModalOpen(false)}
-                  className="px-3 py-2 text-xs font-semibold text-slate-600 hover:text-slate-800"
+                  className="px-3 py-2 text-xs font-semibold text-slate-400 hover:text-slate-200"
                 >
                   Cancelar
                 </button>
@@ -3271,15 +3271,15 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
 
       {/* MODAL: NOVO PARCELAMENTO */}
       {isInstallmentModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-xs">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-xl border border-slate-100">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-              <h3 className="text-base font-bold text-slate-900">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-xs">
+          <div className="bg-slate-900 rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-700">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <h3 className="text-base font-bold text-white">
                 Novo Contrato de Parcelamento
               </h3>
               <button
                 onClick={() => setIsInstallmentModalOpen(false)}
-                className="p-1 text-slate-400 hover:text-slate-600 rounded-lg"
+                className="p-1 text-slate-400 hover:text-slate-200 rounded-lg"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -3287,7 +3287,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
 
             <form onSubmit={handleCreateInstallment} className="space-y-3 mt-3">
               <div>
-                <label className="block text-[11px] font-semibold text-slate-700 uppercase mb-1">
+                <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
                   Título da Compra / Financiamento *
                 </label>
                 <input
@@ -3296,13 +3296,13 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                   placeholder="Ex: Smartphone Novo, IPVA 2026, Sofá da Sala..."
                   value={instTitle}
                   onChange={(e) => setInstTitle(e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
               </div>
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-[11px] font-semibold text-slate-700 uppercase mb-1">
+                  <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
                     Valor Total (R$) *
                   </label>
                   <input
@@ -3311,12 +3311,12 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                     placeholder="0,00"
                     value={instAmount}
                     onChange={(e) => setInstAmount(e.target.value)}
-                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 font-bold"
+                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500 font-bold"
                   />
                 </div>
 
                 <div>
-                  <label className="block text-[11px] font-semibold text-slate-700 uppercase mb-1">
+                  <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
                     Nº de Parcelas *
                   </label>
                   <input
@@ -3326,19 +3326,19 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                     required
                     value={instCount}
                     onChange={(e) => setInstCount(Number(e.target.value))}
-                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 font-bold"
+                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500 font-bold"
                   />
                 </div>
               </div>
 
               <div>
-                <label className="block text-[11px] font-semibold text-slate-700 uppercase mb-1">
+                <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
                   Forma de Pagamento *
                 </label>
                 <select
                   value={instFundingSource}
                   onChange={(e) => setInstFundingSource(e.target.value as any)}
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
                 >
                   <option value="credit_card">Cartão de Crédito (Projeção em Faturas)</option>
                   <option value="personal_loan">Empréstimo Pessoal / Financiamento</option>
@@ -3347,14 +3347,14 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
 
               {instFundingSource === 'credit_card' && (
                 <div>
-                  <label className="block text-[11px] font-semibold text-slate-700 uppercase mb-1">
+                  <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
                     Cartão de Crédito *
                   </label>
                   <select
                     required
                     value={instCardAccount}
                     onChange={(e) => setInstCardAccount(e.target.value)}
-                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
                   >
                     <option value="">Selecione o cartão...</option>
                     {accounts
@@ -3370,7 +3370,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-[11px] font-semibold text-slate-700 uppercase mb-1">
+                  <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
                     1º Mês de Competência *
                   </label>
                   <input
@@ -3380,12 +3380,12 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                     placeholder="2026-11"
                     value={instStartMonth}
                     onChange={(e) => setInstStartMonth(e.target.value)}
-                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
                   />
                 </div>
 
                 <div>
-                  <label className="block text-[11px] font-semibold text-slate-700 uppercase mb-1">
+                  <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
                     Dia de Vencimento *
                   </label>
                   <input
@@ -3395,16 +3395,16 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                     required
                     value={instDueDay}
                     onChange={(e) => setInstDueDay(Number(e.target.value))}
-                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
                 </div>
               </div>
 
-              <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2">
+              <div className="pt-3 border-t border-slate-800 flex items-center justify-end gap-2">
                 <button
                   type="button"
                   onClick={() => setIsInstallmentModalOpen(false)}
-                  className="px-3 py-2 text-xs font-semibold text-slate-600 hover:text-slate-800"
+                  className="px-3 py-2 text-xs font-semibold text-slate-400 hover:text-slate-200"
                 >
                   Cancelar
                 </button>
@@ -3423,15 +3423,15 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
 
       {/* MODAL: CANCELAR PARCELAMENTO ANTECIPADAMENTE */}
       {cancelContractModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-xs">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-xl border border-rose-200">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-              <h3 className="text-base font-bold text-slate-900">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-xs">
+          <div className="bg-slate-900 rounded-2xl max-w-md w-full p-6 shadow-2xl border border-rose-800/60">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <h3 className="text-base font-bold text-white">
                 Cancelar Contrato de Parcelamento
               </h3>
               <button
                 onClick={() => setCancelContractModal(null)}
-                className="p-1 text-slate-400 hover:text-slate-600 rounded-lg"
+                className="p-1 text-slate-400 hover:text-slate-200 rounded-lg"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -3447,7 +3447,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
 
             <form onSubmit={handleCancelInstallmentContractSubmit} className="space-y-3">
               <div>
-                <label className="block text-[11px] font-semibold text-slate-700 uppercase mb-1">
+                <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
                   Motivo do Cancelamento (Opcional)
                 </label>
                 <input
@@ -3455,15 +3455,15 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                   placeholder="Ex: Devolução da mercadoria, quitação antecipada..."
                   value={cancelContractReason}
                   onChange={(e) => setCancelContractReason(e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
               </div>
 
-              <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2">
+              <div className="pt-3 border-t border-slate-800 flex items-center justify-end gap-2">
                 <button
                   type="button"
                   onClick={() => setCancelContractModal(null)}
-                  className="px-3 py-2 text-xs font-semibold text-slate-600 hover:text-slate-800"
+                  className="px-3 py-2 text-xs font-semibold text-slate-400 hover:text-slate-200"
                 >
                   Voltar
                 </button>
