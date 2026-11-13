@@ -2442,8 +2442,8 @@ function AppInner() {
           </div>
         )}
 
-        {/* Conteúdo Principal Dinâmico (pb-32 garante folga uniforme para o dock flutuante e o botão de ação no rodapé) */}
-        <main className="flex-1 p-3.5 sm:p-6 md:p-8 pb-32 max-w-7xl w-full mx-auto min-w-0">
+        {/* Conteúdo Principal Dinâmico (Padding inferior seguro e responsivo para garantir isolamento e folga total sobre o dock flutuante e o FAB) */}
+        <main className="flex-1 px-3.5 sm:px-6 md:px-8 pt-3.5 sm:pt-6 md:pt-8 pb-36 sm:pb-36 md:pb-40 max-w-7xl w-full mx-auto min-w-0">
           {activeTab === 'admin' && userIsAdmin && (
             <AdminDashboardView
               users={adminUsers}
@@ -2745,6 +2745,9 @@ function AppInner() {
               onClearAllSpaceNotifs={handleDismissAllSpaceNotifications}
             />
           )}
+
+          {/* Espaçador de segurança para impedir sobreposição do menu flutuante e botões de ação em rolagem final */}
+          <div className="h-6 sm:h-8" aria-hidden="true" />
         </main>
 
         {/* Dock Flutuante Inferior de Navegação (Centralizado no Rodapé: apenas ícones no Mobile, texto completo no Desktop) */}
