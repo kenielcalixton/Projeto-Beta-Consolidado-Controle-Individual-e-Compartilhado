@@ -2,6 +2,11 @@ import React, { useState } from 'react';
 import { Category } from '../types/finance';
 import { TaxonomyGroup } from '../types/acquisitions';
 import { TaxonomyManagerView } from './acquisitions/TaxonomyManagerView';
+import { IconGridPicker, ColorPalettePicker } from './ui/VisualPickers';
+import {
+  resolveHexColor,
+  resolvePhosphorCategoryIcon,
+} from '../utils/visualPickerUtils';
 
 export type SettingsTab = 'account' | 'finance_categories' | 'product_categories';
 
@@ -43,31 +48,6 @@ interface SettingsModalProps {
   onNotifyToast: (msg: string) => void;
 }
 
-const FINANCE_ICONS = [
-  { icon: 'ph-house-line', label: 'Moradia' },
-  { icon: 'ph-fork-knife', label: 'Alimentação' },
-  { icon: 'ph-car', label: 'Transporte' },
-  { icon: 'ph-heartbeat', label: 'Saúde' },
-  { icon: 'ph-graduation-cap', label: 'Educação' },
-  { icon: 'ph-film-slate', label: 'Lazer' },
-  { icon: 'ph-shopping-bag', label: 'Compras' },
-  { icon: 'ph-money', label: 'Salário' },
-  { icon: 'ph-chart-line-up', label: 'Investimentos' },
-  { icon: 'ph-hand-coins', label: 'Renda Extra' },
-  { icon: 'ph-lightning', label: 'Contas' },
-  { icon: 'ph-tag', label: 'Geral' },
-];
-
-const FINANCE_COLORS = [
-  'indigo',
-  'emerald',
-  'rose',
-  'amber',
-  'purple',
-  'sky',
-  'teal',
-];
-
 export const SettingsModal: React.FC<SettingsModalProps> = ({
   isOpen,
   onClose,
@@ -107,7 +87,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [newCatName, setNewCatName] = useState('');
   const [newCatType, setNewCatType] = useState<'income' | 'expense' | 'both'>('expense');
   const [newCatIcon, setNewCatIcon] = useState('ph-tag');
-  const [newCatColor, setNewCatColor] = useState('indigo');
+  const [newCatColor, setNewCatColor] = useState('#4F46E5');
   const [isSubmittingCat, setIsSubmittingCat] = useState(false);
 
   if (!isOpen) return null;
@@ -385,48 +365,19 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
-                  <div>
-                    <label
-                      htmlFor="cat-icon-select"
-                      className="block text-[11px] font-semibold text-slate-300 mb-1"
-                    >
-                      Ícone
-                    </label>
-                    <select
-                      id="cat-icon-select"
-                      value={newCatIcon}
-                      onChange={(e) => setNewCatIcon(e.target.value)}
-                      className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white"
-                    >
-                      {FINANCE_ICONS.map((ic) => (
-                        <option key={ic.icon} value={ic.icon}>
-                          {ic.label} ({ic.icon})
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <label
-                      htmlFor="cat-color-select"
-                      className="block text-[11px] font-semibold text-slate-300 mb-1"
-                    >
-                      Cor
-                    </label>
-                    <select
-                      id="cat-color-select"
-                      value={newCatColor}
-                      onChange={(e) => setNewCatColor(e.target.value)}
-                      className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white"
-                    >
-                      {FINANCE_COLORS.map((col) => (
-                        <option key={col} value={col}>
-                          {col.charAt(0).toUpperCase() + col.slice(1)}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
+                <div className="space-y-3 pt-1">
+                  <IconGridPicker
+                    label="Ícone da Categoria"
+                    value={newCatIcon}
+                    onChange={setNewCatIcon}
+                    compact
+                  />
+                  <ColorPalettePicker
+                    label="Cor da Categoria"
+                    mode="hex"
+                    value={newCatColor}
+                    onChange={setNewCatColor}
+                  />
                 </div>
 
                 <button
@@ -445,41 +396,52 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   Categorias Ativas ({categories.length})
                 </h4>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                  {categories.map((cat) => (
-                    <div
-                      key={cat.id}
-                      className="p-3 rounded-xl bg-slate-800 border border-slate-700/80 flex items-center justify-between gap-3"
-                    >
-                      <div className="flex items-center gap-2.5 min-w-0">
-                        <div className="w-8 h-8 rounded-lg bg-indigo-500/20 text-indigo-400 flex items-center justify-center shrink-0">
-                          <i className={`ph-fill ${cat.icon || 'ph-tag'} text-base`}></i>
+                  {categories.map((cat) => {
+                    const resolvedHex = resolveHexColor(cat.color);
+                    const resolvedIcon = resolvePhosphorCategoryIcon(cat.icon);
+                    return (
+                      <div
+                        key={cat.id}
+                        className="p-3 rounded-xl bg-slate-800 border border-slate-700/80 flex items-center justify-between gap-3"
+                      >
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <div
+                            className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0 border"
+                            style={{
+                              backgroundColor: `${resolvedHex}26`,
+                              borderColor: `${resolvedHex}55`,
+                              color: resolvedHex,
+                            }}
+                          >
+                            <i className={`ph-fill ${resolvedIcon} text-base`}></i>
+                          </div>
+                          <div className="min-w-0">
+                            <span className="text-xs font-bold text-white block truncate">
+                              {cat.name}
+                            </span>
+                            <span className="text-[10px] text-slate-400 uppercase font-mono">
+                              {cat.type === 'expense'
+                                ? 'Despesa'
+                                : cat.type === 'income'
+                                ? 'Receita'
+                                : 'Receita & Despesa'}
+                            </span>
+                          </div>
                         </div>
-                        <div className="min-w-0">
-                          <span className="text-xs font-bold text-white block truncate">
-                            {cat.name}
-                          </span>
-                          <span className="text-[10px] text-slate-400 uppercase font-mono">
-                            {cat.type === 'expense'
-                              ? 'Despesa'
-                              : cat.type === 'income'
-                              ? 'Receita'
-                              : 'Receita & Despesa'}
-                          </span>
-                        </div>
-                      </div>
 
-                      {onDeleteCategory && (
-                        <button
-                          type="button"
-                          onClick={() => onDeleteCategory(cat.id)}
-                          aria-label={`Excluir categoria ${cat.name}`}
-                          className="w-7 h-7 rounded-lg hover:bg-rose-500/20 text-slate-400 hover:text-rose-400 flex items-center justify-center transition-colors cursor-pointer"
-                        >
-                          <i className="ph-bold ph-trash text-xs"></i>
-                        </button>
-                      )}
-                    </div>
-                  ))}
+                        {onDeleteCategory && (
+                          <button
+                            type="button"
+                            onClick={() => onDeleteCategory(cat.id)}
+                            aria-label={`Excluir categoria ${cat.name}`}
+                            className="w-7 h-7 rounded-lg hover:bg-rose-500/20 text-slate-400 hover:text-rose-400 flex items-center justify-center transition-colors cursor-pointer"
+                          >
+                            <i className="ph-bold ph-trash text-xs"></i>
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             </div>

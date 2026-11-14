@@ -660,6 +660,254 @@ export async function cancelPersonalTransaction(
   });
 }
 
+export interface UpdatePersonalTransactionInput {
+  description?: string;
+  categoryId?: string;
+  categoryName?: string;
+  competenceDate?: DateString;
+  dueDate?: DateString;
+  notes?: string;
+  amountCents?: CentsInteger;
+}
+
+/**
+ * Edita metadados de uma transação pessoal com segurança contábil.
+ * Permite alterar valor apenas quando paidAmountCents === 0 e status não pago.
+ */
+export async function updatePersonalTransaction(
+  userId: string,
+  txId: string,
+  patch: UpdatePersonalTransactionInput,
+  isDemo = false
+): Promise<PersonalTransaction> {
+  if (!userId || !txId) {
+    throw new Error('userId e txId são obrigatórios para edição.');
+  }
+
+  if (!isDemo) {
+    const callable = httpsCallable<
+      { userId: string; txId: string; patch: UpdatePersonalTransactionInput },
+      { transaction: PersonalTransaction }
+    >(functions, 'updatePersonalTransactionOfficial');
+
+    const res = await callable({ userId, txId, patch });
+    return res.data.transaction;
+  }
+
+  return withDemoLock(async () => {
+    const txs = loadDemoTransactions();
+    const idx = txs.findIndex((t) => t.id === txId && t.userId === userId);
+    if (idx < 0) throw new Error(`Transação "${txId}" não encontrada.`);
+
+    const tx = { ...txs[idx] };
+    if (tx.status === 'cancelled') {
+      throw new Error('Não é permitido editar uma transação cancelada.');
+    }
+
+    if (patch.description !== undefined) {
+      const cleanDesc = patch.description.trim();
+      if (!cleanDesc) {
+        throw new Error('A descrição do lançamento não pode ficar vazia.');
+      }
+      tx.description = cleanDesc;
+    }
+    if (patch.categoryId !== undefined) tx.categoryId = patch.categoryId || 'uncategorized';
+    if (patch.categoryName !== undefined) tx.categoryName = patch.categoryName || 'Geral';
+    if (patch.competenceDate !== undefined) tx.competenceDate = patch.competenceDate;
+    if (patch.dueDate !== undefined) tx.dueDate = patch.dueDate;
+    if (patch.notes !== undefined) tx.notes = patch.notes.trim() || undefined;
+
+    if (patch.amountCents !== undefined && patch.amountCents !== tx.amountCents) {
+      if (!validatePositiveCents(patch.amountCents)) {
+        throw new Error('O valor deve ser estritamente positivo em centavos.');
+      }
+      if ((tx.paidAmountCents || 0) > 0 || tx.status === 'paid' || tx.status === 'partially_paid') {
+        throw new Error(
+          'Não é permitido alterar o valor de um lançamento que já possui pagamentos/amortizações. Estorne o pagamento antes.'
+        );
+      }
+      tx.amountCents = patch.amountCents;
+      tx.remainingAmountCents = patch.amountCents;
+    }
+
+    tx.updatedAt = new Date().toISOString();
+    txs[idx] = tx;
+    saveDemoTransactions(txs);
+    return tx;
+  });
+}
+
+export interface ReversePersonalTransactionPaymentInput {
+  paymentId?: string;
+  reason: string;
+}
+
+export interface ReversePersonalTransactionPaymentResult {
+  transaction: PersonalTransaction;
+  reversal?: PersonalTransactionPaymentReversal;
+  isIdempotentReplay?: boolean;
+}
+
+/**
+ * Estorna compensatoriamente um pagamento ou amortização de transação individual,
+ * sem apagar registros históricos originais, restaurando o saldo a pagar.
+ */
+export async function reversePersonalTransactionPayment(
+  txId: string,
+  userId: string,
+  input: ReversePersonalTransactionPaymentInput,
+  isDemo = false
+): Promise<ReversePersonalTransactionPaymentResult> {
+  const cleanReason = (input.reason || '').trim();
+  if (!cleanReason) {
+    throw new Error('Justificativa obrigatória para estornar o pagamento.');
+  }
+
+  if (!isDemo) {
+    const callable = httpsCallable<
+      { userId: string; txId: string; paymentId?: string; reason: string },
+      ReversePersonalTransactionPaymentResult
+    >(functions, 'reversePersonalTransactionPaymentOfficial');
+
+    const res = await callable({
+      userId,
+      txId,
+      paymentId: input.paymentId,
+      reason: cleanReason,
+    });
+    return res.data;
+  }
+
+  return withDemoLock(async () => {
+    const txs = loadDemoTransactions();
+    const txIdx = txs.findIndex((t) => t.id === txId && t.userId === userId);
+    if (txIdx < 0) throw new Error(`Transação "${txId}" não encontrada.`);
+
+    const tx = { ...txs[txIdx] };
+    if (tx.status === 'cancelled') {
+      throw new Error('Transação cancelada não pode ter pagamentos estornados.');
+    }
+
+    const payments = loadDemoPayments().filter((p) => p.transactionId === txId && p.userId === userId);
+    const reversals = loadDemoPaymentReversals();
+    const reversedIds = new Set(reversals.filter((r) => r.transactionId === txId).map((r) => r.paymentId));
+
+    const activePayments = payments
+      .filter((p) => !reversedIds.has(p.id))
+      .sort((a, b) => (b.createdAt || b.paymentDate).localeCompare(a.createdAt || a.paymentDate));
+
+    let targetPayment: PersonalTransactionPayment | undefined;
+    if (input.paymentId) {
+      targetPayment = activePayments.find((p) => p.id === input.paymentId);
+      if (!targetPayment && reversedIds.has(input.paymentId)) {
+        return { transaction: tx, isIdempotentReplay: true };
+      }
+    } else if (activePayments.length > 0) {
+      targetPayment = activePayments[0];
+    } else if ((tx.paidAmountCents || 0) > 0 && tx.accountId) {
+      targetPayment = {
+        id: `legacy_pay_${txId}`,
+        transactionId: txId,
+        userId,
+        amountCents: tx.paidAmountCents || tx.amountCents,
+        paymentDate: tx.paymentDate || tx.competenceDate,
+        accountId: tx.accountId,
+        financialMovementId: tx.financialMovementId || '',
+        authorUid: userId,
+        createdAt: tx.createdAt,
+      };
+    }
+
+    if (!targetPayment) {
+      throw new Error('Nenhum pagamento ativo disponível para estorno nesta transação.');
+    }
+
+    const revDocId = generatePaymentReversalDocId(targetPayment.id);
+    const existingRev = reversals.find((r) => r.id === revDocId);
+    if (existingRev) {
+      return { transaction: tx, reversal: existingRev, isIdempotentReplay: true };
+    }
+
+    let reversalMovementId = '';
+    const targetAccId = targetPayment.accountId || tx.accountId;
+    if (targetPayment.financialMovementId && targetAccId && !targetPayment.financialMovementId.startsWith('txpay_')) {
+      const compMov = await reverseMovement(
+        targetAccId,
+        targetPayment.financialMovementId,
+        userId,
+        `Estorno de pagamento: ${cleanReason}`,
+        true,
+        { idempotent: true }
+      );
+      reversalMovementId = compMov.compensatoryMovement.id;
+    } else if (tx.type === 'expense' && tx.invoiceMonth && targetAccId) {
+      const invoices = loadDemoInvoices();
+      const invIdx = invoices.findIndex(
+        (inv) => inv.accountId === targetAccId && inv.invoiceMonth === tx.invoiceMonth
+      );
+      if (invIdx >= 0) {
+        const inv = invoices[invIdx];
+        const newPurchases = Math.max(0, inv.totalPurchasesAmountCents - targetPayment.amountCents);
+        const newTotalDue = newPurchases + inv.carriedOverBalanceCents + inv.interestAndFeesCents;
+        const newRemaining = Math.max(0, newTotalDue - inv.totalPaidAmountCents);
+        invoices[invIdx] = {
+          ...inv,
+          totalPurchasesAmountCents: newPurchases,
+          totalDueAmountCents: newTotalDue,
+          remainingBalanceCents: newRemaining,
+          updatedAt: new Date().toISOString(),
+        };
+        saveDemoInvoices(invoices);
+      }
+    }
+
+    const nowIso = new Date().toISOString();
+    const todayStr = nowIso.split('T')[0] as DateString;
+    const reversalRecord: PersonalTransactionPaymentReversal = {
+      id: revDocId,
+      transactionId: txId,
+      paymentId: targetPayment.id,
+      userId,
+      amountCents: targetPayment.amountCents,
+      originalFinancialMovementId: targetPayment.financialMovementId || '',
+      reversalMovementId,
+      reversalDate: todayStr,
+      reversedAt: nowIso,
+      authorUid: userId,
+      reason: cleanReason,
+      idempotencyKey: `manual_payrev_${targetPayment.id}`,
+      createdAt: nowIso,
+    };
+    reversals.push(reversalRecord);
+    saveDemoPaymentReversals(reversals);
+
+    const newPaidAmount = Math.max(0, (tx.paidAmountCents || 0) - targetPayment.amountCents);
+    const newRemaining = Math.max(0, tx.amountCents - newPaidAmount);
+    const nextStatus: PersonalTransactionStatus =
+      newPaidAmount > 0 ? 'partially_paid' : tx.dueDate && tx.dueDate < todayStr ? 'overdue' : 'pending';
+
+    const noteLine = `Estorno (${todayStr}): ${cleanReason}`;
+    const updatedTx: PersonalTransaction = {
+      ...tx,
+      paidAmountCents: newPaidAmount,
+      remainingAmountCents: newRemaining,
+      status: nextStatus,
+      paymentDate: newPaidAmount === 0 ? undefined : tx.paymentDate,
+      notes: tx.notes ? `${tx.notes} | ${noteLine}` : noteLine,
+      updatedAt: nowIso,
+    };
+
+    txs[txIdx] = updatedTx;
+    saveDemoTransactions(txs);
+
+    return {
+      transaction: updatedTx,
+      reversal: reversalRecord,
+      isIdempotentReplay: false,
+    };
+  });
+}
+
 export interface PersonalTransactionFilters {
   type?: PersonalTransactionType;
   status?: PersonalTransactionStatus;

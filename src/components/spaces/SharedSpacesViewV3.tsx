@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AuthorDataDestinationDecision,
   Space,
@@ -26,6 +26,8 @@ import {
   acceptSpaceInvite,
   createSpaceInvite,
   DEFAULT_INVITE_EXPIRATION_DAYS,
+  evaluateInviteAvailability,
+  extractInviteToken,
   getInviteByRawToken,
   getSpaceInvites,
   revokeSpaceInvite,
@@ -50,6 +52,11 @@ import {
   executeSpaceCreationSubmission,
   mergeSpaceListItem,
 } from '../../utils/spaceCreationFlow';
+import {
+  ColorPalettePicker,
+  IconGridPicker,
+  SPACE_ICON_OPTIONS,
+} from '../ui/VisualPickers';
 
 interface SharedSpacesViewV3Props {
   userId: string;
@@ -140,6 +147,19 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
   const [isAcceptModalOpen, setIsAcceptModalOpen] = useState(false);
   const [acceptTokenInput, setAcceptTokenInput] = useState('');
   const [invitePreview, setInvitePreview] = useState<SpaceInvite | null>(null);
+  const [acceptModalError, setAcceptModalError] = useState<string | null>(null);
+  const [isCheckingInvite, setIsCheckingInvite] = useState(false);
+  const [isAcceptingInvite, setIsAcceptingInvite] = useState(false);
+
+  const inviteEvaluation = useMemo(() => {
+    if (!invitePreview) return null;
+    const matchedSpace = spaces.find((s) => s.id === invitePreview.spaceId);
+    return evaluateInviteAvailability(invitePreview, {
+      currentUserUid: userId,
+      currentUserEmail: userEmail,
+      activeMemberUids: matchedSpace?.memberUids,
+    });
+  }, [invitePreview, spaces, userId, userEmail]);
 
   // Modal Decisão do Autor na Dissolução
   const [isDecisionModalOpen, setIsDecisionModalOpen] = useState(false);
@@ -458,25 +478,53 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
   };
 
   const handleCheckTokenPreview = async () => {
-    if (!acceptTokenInput.trim()) return;
+    const cleanToken = extractInviteToken(acceptTokenInput);
+    setAcceptModalError(null);
+    if (!cleanToken) {
+      setAcceptModalError('Cole ou digite o token do convite para verificar.');
+      setInvitePreview(null);
+      return;
+    }
+    setIsCheckingInvite(true);
     try {
-      const inv = await getInviteByRawToken(acceptTokenInput.trim(), isDemo);
+      const inv = await getInviteByRawToken(cleanToken, isDemo);
       if (!inv) {
-        setFeedbackMessage({ type: 'error', text: 'Token inválido ou convite não localizado.' });
         setInvitePreview(null);
+        setAcceptModalError(
+          'Nenhum convite foi localizado para este token. Verifique se copiou todos os caracteres corretamente.'
+        );
       } else {
         setInvitePreview(inv);
+        const matchedSpace = spaces.find((s) => s.id === inv.spaceId);
+        const evalRes = evaluateInviteAvailability(inv, {
+          currentUserUid: userId,
+          currentUserEmail: userEmail,
+          activeMemberUids: matchedSpace?.memberUids,
+        });
+        if (!evalRes.canAccept) {
+          setAcceptModalError(`${evalRes.title}: ${evalRes.message}`);
+        }
       }
     } catch (err: any) {
-      setFeedbackMessage({ type: 'error', text: err.message });
+      const msg = err?.message || 'Erro ao verificar token de convite.';
+      setAcceptModalError(msg);
+      setFeedbackMessage({ type: 'error', text: msg });
+    } finally {
+      setIsCheckingInvite(false);
     }
   };
 
   const handleAcceptInviteSubmit = async () => {
-    if (!acceptTokenInput.trim()) return;
+    const cleanToken = extractInviteToken(acceptTokenInput);
+    setAcceptModalError(null);
+    if (!cleanToken) {
+      setAcceptModalError('Informe um token de convite válido.');
+      return;
+    }
+    setIsAcceptingInvite(true);
     try {
       const res = await acceptSpaceInvite(
-        acceptTokenInput.trim(),
+        cleanToken,
         { uid: userId, displayName: userName, email: userEmail },
         isDemo
       );
@@ -484,10 +532,16 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
       setIsAcceptModalOpen(false);
       setAcceptTokenInput('');
       setInvitePreview(null);
+      setAcceptModalError(null);
       await loadSpaces();
+      onSpacesChanged?.(res.space);
       setSelectedSpace(res.space);
     } catch (err: any) {
-      setFeedbackMessage({ type: 'error', text: err.message });
+      const msg = err?.message || 'Não foi possível concluir o ingresso no espaço.';
+      setAcceptModalError(msg);
+      setFeedbackMessage({ type: 'error', text: msg });
+    } finally {
+      setIsAcceptingInvite(false);
     }
   };
 
@@ -686,7 +740,7 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
                   onChange={(e) => setIncludeArchived(e.target.checked)}
                   className="sr-only peer"
                 />
-                <div className="w-9 h-5 bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-500 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-indigo-600" />
+                <div className="w-9 h-5 bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-slate-100 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-slate-100 after:border-slate-500 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-indigo-600" />
               </label>
               <span className="text-xs text-slate-300">
                 {includeArchived ? 'Exibindo' : 'Ocultos'}
@@ -1595,32 +1649,22 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-bold text-slate-200 mb-1">Cor</label>
-                  <input
-                    type="color"
-                    disabled={isCreatingSpace}
-                    value={newSpaceColor}
-                    onChange={(e) => setNewSpaceColor(e.target.value)}
-                    className="w-full h-9 rounded-xl bg-slate-800 border border-slate-700 cursor-pointer p-1 disabled:opacity-60"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-bold text-slate-200 mb-1">Ícone</label>
-                  <select
-                    disabled={isCreatingSpace}
-                    value={newSpaceIcon}
-                    onChange={(e) => setNewSpaceIcon(e.target.value)}
-                    className="w-full h-9 text-xs px-2 bg-slate-800 border border-slate-700 text-white rounded-xl focus:ring-2 focus:ring-indigo-500 focus:outline-none disabled:opacity-60"
-                  >
-                    <option value="ph-users-three">Grupo / Pessoas</option>
-                    <option value="ph-house-line">República / Moradia</option>
-                    <option value="ph-airplane-tilt">Viagem</option>
-                    <option value="ph-heart">Casal / Parceria</option>
-                    <option value="ph-briefcase">Projeto</option>
-                  </select>
-                </div>
+              <div className="space-y-3">
+                <IconGridPicker
+                  label="Ícone do Espaço"
+                  value={newSpaceIcon}
+                  onChange={setNewSpaceIcon}
+                  options={SPACE_ICON_OPTIONS}
+                  disabled={isCreatingSpace}
+                  compact
+                />
+                <ColorPalettePicker
+                  label="Cor do Espaço"
+                  mode="hex"
+                  value={newSpaceColor}
+                  onChange={setNewSpaceColor}
+                  disabled={isCreatingSpace}
+                />
               </div>
 
               <div>
@@ -1794,7 +1838,12 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-base font-bold text-white">Aceitar Convite de Espaço</h3>
               <button
-                onClick={() => setIsAcceptModalOpen(false)}
+                type="button"
+                onClick={() => {
+                  if (isAcceptingInvite) return;
+                  setIsAcceptModalOpen(false);
+                  setAcceptModalError(null);
+                }}
                 className="text-slate-400 hover:text-white cursor-pointer"
               >
                 <i className="ph ph-x text-lg" />
@@ -1810,31 +1859,73 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
                   <input
                     type="text"
                     value={acceptTokenInput}
-                    onChange={(e) => setAcceptTokenInput(e.target.value)}
-                    placeholder="tok_..."
-                    className="w-full text-xs font-mono px-3 py-2 bg-slate-800 border border-slate-700 text-white placeholder-slate-500 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                    disabled={isAcceptingInvite}
+                    onChange={(e) => {
+                      setAcceptTokenInput(e.target.value);
+                      setAcceptModalError(null);
+                      if (invitePreview) setInvitePreview(null);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        void handleCheckTokenPreview();
+                      }
+                    }}
+                    placeholder="Cole o token ou link de convite..."
+                    className="w-full text-xs font-mono px-3 py-2 bg-slate-800 border border-slate-700 text-white placeholder-slate-500 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:outline-none disabled:opacity-60"
                   />
                   <button
                     type="button"
+                    disabled={isCheckingInvite || isAcceptingInvite || !acceptTokenInput.trim()}
                     onClick={handleCheckTokenPreview}
-                    className="px-3 py-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 rounded-xl text-xs font-bold flex-shrink-0 cursor-pointer"
+                    className="px-3 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 border border-slate-700 text-slate-200 rounded-xl text-xs font-bold flex-shrink-0 cursor-pointer"
                   >
-                    Verificar
+                    {isCheckingInvite ? 'Verificando...' : 'Verificar'}
                   </button>
                 </div>
               </div>
 
+              {acceptModalError && (
+                <div className="p-3 rounded-xl bg-rose-500/15 border border-rose-500/35 text-xs text-rose-200 flex items-start gap-2">
+                  <i className="ph-fill ph-warning-circle text-rose-400 text-base shrink-0 mt-0.5" />
+                  <span>{acceptModalError}</span>
+                </div>
+              )}
+
               {invitePreview && (
-                <div className="p-3 bg-indigo-950/40 border border-indigo-500/40 rounded-xl text-xs space-y-1">
-                  <p className="font-bold text-white">Espaço: {invitePreview.spaceName}</p>
+                <div
+                  className={`p-3.5 rounded-xl border text-xs space-y-1.5 ${
+                    inviteEvaluation?.canAccept
+                      ? 'bg-indigo-950/40 border-indigo-500/40'
+                      : 'bg-amber-950/35 border-amber-500/40'
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="font-bold text-white">Espaço: {invitePreview.spaceName}</p>
+                    <span
+                      className={`px-2 py-0.5 rounded-md text-[10px] font-bold uppercase ${
+                        inviteEvaluation?.canAccept
+                          ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                          : 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                      }`}
+                    >
+                      {inviteEvaluation?.canAccept
+                        ? 'Convite Válido'
+                        : inviteEvaluation?.title || 'Indisponível'}
+                    </span>
+                  </div>
                   <p className="text-indigo-200">
-                    Convidado por: <span className="font-semibold text-white">{invitePreview.invitedByName}</span>
+                    Convidado por:{' '}
+                    <span className="font-semibold text-white">{invitePreview.invitedByName}</span>
                   </p>
                   <p className="text-indigo-200">
-                    Papel atribuído: <span className="font-semibold text-white capitalize">{invitePreview.invitedRole}</span>
+                    Papel atribuído:{' '}
+                    <span className="font-semibold text-white capitalize">
+                      {invitePreview.invitedRole}
+                    </span>
                   </p>
                   <p className="text-indigo-300 text-[11px]">
-                    Válido até: {new Date(invitePreview.expiresAt).toLocaleDateString()}
+                    Válido até: {new Date(invitePreview.expiresAt).toLocaleDateString('pt-BR')}
                   </p>
                 </div>
               )}
@@ -1842,18 +1933,28 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
               <div className="flex justify-end gap-2 pt-2 border-t border-slate-700/80">
                 <button
                   type="button"
-                  onClick={() => setIsAcceptModalOpen(false)}
-                  className="px-4 py-2 border border-slate-700 rounded-xl text-xs font-semibold text-slate-300 hover:bg-slate-700 hover:text-white bg-slate-800 cursor-pointer"
+                  disabled={isAcceptingInvite}
+                  onClick={() => {
+                    setIsAcceptModalOpen(false);
+                    setAcceptModalError(null);
+                  }}
+                  className="px-4 py-2 border border-slate-700 rounded-xl text-xs font-semibold text-slate-300 hover:bg-slate-700 hover:text-white bg-slate-800 cursor-pointer disabled:opacity-50"
                 >
                   Cancelar
                 </button>
                 <button
                   type="button"
                   onClick={handleAcceptInviteSubmit}
-                  disabled={!acceptTokenInput.trim()}
-                  className="px-4 py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold hover:bg-indigo-500 disabled:opacity-50 cursor-pointer"
+                  disabled={
+                    !extractInviteToken(acceptTokenInput) ||
+                    isCheckingInvite ||
+                    isAcceptingInvite ||
+                    Boolean(invitePreview && inviteEvaluation && !inviteEvaluation.canAccept)
+                  }
+                  className="px-4 py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold hover:bg-indigo-500 disabled:opacity-50 cursor-pointer flex items-center gap-1.5"
                 >
-                  Ingressar no Espaço
+                  {isAcceptingInvite && <i className="ph ph-spinner animate-spin" />}
+                  <span>{isAcceptingInvite ? 'Ingressando...' : 'Ingressar no Espaço'}</span>
                 </button>
               </div>
             </div>

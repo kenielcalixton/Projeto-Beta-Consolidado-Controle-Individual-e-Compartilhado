@@ -24,6 +24,7 @@
 
 import crypto from 'node:crypto';
 import { getApps, initializeApp } from 'firebase-admin/app';
+import { getAuth } from 'firebase-admin/auth';
 import { getFirestore } from 'firebase-admin/firestore';
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 
@@ -2291,6 +2292,388 @@ export async function executeServerSideCancelPersonalTransaction(db, callerUid, 
 }
 
 /**
+ * 7.1. Edição segura de transação pessoal (Server-Side Admin SDK)
+ * Permite atualizar descrição, categoria, datas e observações; e só permite alterar
+ * amountCents quando ainda não há pagamentos ou amortizações registradas (paidAmountCents === 0).
+ */
+export async function executeServerSideUpdatePersonalTransaction(db, callerUid, payload) {
+  if (!callerUid || typeof callerUid !== 'string' || !callerUid.trim()) {
+    throw new HttpsError('unauthenticated', 'Autenticação obrigatória para editar lançamento.');
+  }
+  const cleanUid = callerUid.trim();
+  const { userId, txId, transactionId, patch } = payload || {};
+  if (userId && String(userId).trim() !== cleanUid) {
+    throw new HttpsError('permission-denied', 'Acesso negado: userId divergente do usuário autenticado.');
+  }
+  const targetTxId = String(txId || transactionId || '').trim();
+  if (!targetTxId) {
+    throw new HttpsError('invalid-argument', 'txId é obrigatório para atualização.');
+  }
+  if (!patch || typeof patch !== 'object') {
+    throw new HttpsError('invalid-argument', 'Dados de atualização inválidos.');
+  }
+
+  const txRef = db
+    .collection('users')
+    .doc(cleanUid)
+    .collection('personal_transactions')
+    .doc(targetTxId);
+
+  return await db.runTransaction(async (tx) => {
+    const txSnap = await tx.get(txRef);
+    if (!txSnap.exists) {
+      throw new HttpsError('not-found', `Transação "${targetTxId}" não encontrada.`);
+    }
+    const txData = txSnap.data();
+    if (txData.userId !== cleanUid) {
+      throw new HttpsError('permission-denied', 'Acesso negado a esta transação.');
+    }
+    if (txData.status === 'cancelled') {
+      throw new HttpsError('failed-precondition', 'Não é permitido editar uma transação cancelada.');
+    }
+
+    const nowIso = new Date().toISOString();
+    const updatePatch = { updatedAt: nowIso };
+
+    if (patch.description !== undefined) {
+      const cleanDesc = String(patch.description || '').trim();
+      if (!cleanDesc) {
+        throw new HttpsError('invalid-argument', 'A descrição do lançamento não pode ficar vazia.');
+      }
+      updatePatch.description = cleanDesc;
+    }
+
+    if (patch.categoryId !== undefined) {
+      updatePatch.categoryId = String(patch.categoryId || 'uncategorized').trim() || 'uncategorized';
+    }
+    if (patch.categoryName !== undefined) {
+      updatePatch.categoryName = String(patch.categoryName || 'Geral').trim() || 'Geral';
+    }
+    if (patch.competenceDate !== undefined) {
+      const compDate = String(patch.competenceDate || '').trim();
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(compDate)) {
+        throw new HttpsError('invalid-argument', 'Data de competência inválida (YYYY-MM-DD).');
+      }
+      updatePatch.competenceDate = compDate;
+    }
+    if (patch.dueDate !== undefined) {
+      const dueDate = String(patch.dueDate || '').trim();
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(dueDate)) {
+        throw new HttpsError('invalid-argument', 'Data de vencimento inválida (YYYY-MM-DD).');
+      }
+      updatePatch.dueDate = dueDate;
+    }
+    if (patch.notes !== undefined) {
+      updatePatch.notes = String(patch.notes || '').trim();
+    }
+
+    if (patch.amountCents !== undefined && Number(patch.amountCents) !== txData.amountCents) {
+      const nextAmount = Number(patch.amountCents);
+      if (!validatePositiveCentsServer(nextAmount)) {
+        throw new HttpsError('invalid-argument', 'O valor deve ser estritamente positivo em centavos.');
+      }
+      if ((txData.paidAmountCents || 0) > 0 || txData.status === 'paid' || txData.status === 'partially_paid') {
+        throw new HttpsError(
+          'failed-precondition',
+          'Não é permitido alterar o valor de um lançamento que já possui pagamentos/amortizações. Estorne o pagamento antes de alterar o valor.'
+        );
+      }
+      updatePatch.amountCents = nextAmount;
+      updatePatch.remainingAmountCents = nextAmount;
+    }
+
+    const updatedTx = stripUndefined({
+      ...txData,
+      ...updatePatch,
+    });
+
+    tx.update(txRef, stripUndefined(updatePatch));
+    return {
+      transaction: updatedTx,
+    };
+  });
+}
+
+/**
+ * 7.2. Estorno compensatório de pagamento / amortização individual (Server-Side Admin SDK)
+ * Nunca apaga pagamentos ou movimentações originais: cria evento compensatório em payment_reversals
+ * e FinancialMovement oposto (ou abate cobrança da fatura de cartão), restaurando o saldo a pagar.
+ */
+export async function executeServerSideReversePersonalTransactionPayment(db, callerUid, payload) {
+  if (!callerUid || typeof callerUid !== 'string' || !callerUid.trim()) {
+    throw new HttpsError('unauthenticated', 'Autenticação obrigatória para estornar pagamento.');
+  }
+  const cleanUid = callerUid.trim();
+  const { userId, txId, transactionId, paymentId, reason } = payload || {};
+  if (userId && String(userId).trim() !== cleanUid) {
+    throw new HttpsError('permission-denied', 'Acesso negado: userId divergente do usuário autenticado.');
+  }
+  const targetTxId = String(txId || transactionId || '').trim();
+  if (!targetTxId) {
+    throw new HttpsError('invalid-argument', 'txId é obrigatório para estorno.');
+  }
+  const cleanReason = String(reason || '').trim();
+  if (!cleanReason) {
+    throw new HttpsError('invalid-argument', 'Justificativa obrigatória para o estorno do pagamento.');
+  }
+
+  const txRef = db
+    .collection('users')
+    .doc(cleanUid)
+    .collection('personal_transactions')
+    .doc(targetTxId);
+
+  return await db.runTransaction(async (tx) => {
+    const [txSnap, paymentsSnap, reversalsSnap] = await Promise.all([
+      tx.get(txRef),
+      tx.get(txRef.collection('payments')),
+      tx.get(txRef.collection('payment_reversals')),
+    ]);
+
+    if (!txSnap.exists) {
+      throw new HttpsError('not-found', `Transação "${targetTxId}" não encontrada.`);
+    }
+    const txData = txSnap.data();
+    if (txData.userId !== cleanUid) {
+      throw new HttpsError('permission-denied', 'Acesso negado a esta transação.');
+    }
+    if (txData.status === 'cancelled') {
+      throw new HttpsError('failed-precondition', 'Transação cancelada não pode ter pagamentos estornados.');
+    }
+
+    const existingReversedPaymentIds = new Set();
+    reversalsSnap.forEach((d) => {
+      const r = d.data();
+      if (r.paymentId) existingReversedPaymentIds.add(r.paymentId);
+    });
+
+    const activePayments = [];
+    paymentsSnap.forEach((d) => {
+      const p = { ...d.data(), id: d.data().id || d.id };
+      if (!existingReversedPaymentIds.has(p.id)) {
+        activePayments.push(p);
+      }
+    });
+    activePayments.sort((a, b) =>
+      String(b.createdAt || b.paymentDate || '').localeCompare(String(a.createdAt || a.paymentDate || ''))
+    );
+
+    let targetPayment = null;
+    if (paymentId) {
+      const explicitFound = activePayments.find((p) => p.id === String(paymentId).trim());
+      if (!explicitFound) {
+        if (existingReversedPaymentIds.has(String(paymentId).trim())) {
+          return {
+            transaction: txData,
+            isIdempotentReplay: true,
+          };
+        }
+        throw new HttpsError('not-found', `Pagamento "${paymentId}" não encontrado ou já estornado.`);
+      }
+      targetPayment = explicitFound;
+    } else if (activePayments.length > 0) {
+      targetPayment = activePayments[0];
+    } else if ((txData.paidAmountCents || 0) > 0 && txData.accountId) {
+      // Fallback para lançamentos legados quitados sem documento em payments
+      targetPayment = {
+        id: `legacy_pay_${targetTxId}`,
+        transactionId: targetTxId,
+        userId: cleanUid,
+        amountCents: txData.paidAmountCents,
+        paymentDate: txData.paymentDate || txData.competenceDate || new Date().toISOString().slice(0, 10),
+        accountId: txData.accountId,
+        financialMovementId: txData.financialMovementId || '',
+        authorUid: cleanUid,
+      };
+    }
+
+    if (!targetPayment) {
+      throw new HttpsError(
+        'failed-precondition',
+        'Nenhum pagamento ativo disponível para estorno nesta transação.'
+      );
+    }
+
+    const payRevDocId = serverGeneratePaymentReversalDocId(targetPayment.id);
+    const payRevRef = txRef.collection('payment_reversals').doc(payRevDocId);
+    const payRevSnap = await tx.get(payRevRef);
+    if (payRevSnap.exists) {
+      return {
+        transaction: txData,
+        reversal: payRevSnap.data(),
+        isIdempotentReplay: true,
+      };
+    }
+
+    const targetAccountId = targetPayment.accountId || txData.accountId;
+    let accRef = null;
+    let accSnap = null;
+    if (targetAccountId) {
+      accRef = db.collection('accounts').doc(targetAccountId);
+      accSnap = await tx.get(accRef);
+    }
+
+    const origMovId =
+      targetPayment.financialMovementId &&
+      !String(targetPayment.financialMovementId).startsWith('txpay_')
+        ? targetPayment.financialMovementId
+        : '';
+
+    let origMovRef = null;
+    let origMovSnap = null;
+    let compMovRef = null;
+    let compMovSnap = null;
+
+    if (accRef && origMovId) {
+      origMovRef = accRef.collection('movements').doc(origMovId);
+      const revMovId = serverGenerateReversalDocId(origMovId);
+      compMovRef = accRef.collection('movements').doc(revMovId);
+      [origMovSnap, compMovSnap] = await Promise.all([
+        tx.get(origMovRef),
+        tx.get(compMovRef),
+      ]);
+    }
+
+    // Caso tenha sido cobrança em fatura de cartão de crédito
+    let cardInvRef = null;
+    let cardInvSnap = null;
+    let cardChargeRef = null;
+    let cardChargeSnap = null;
+    const isCardCharge =
+      txData.type === 'expense' &&
+      accSnap &&
+      accSnap.exists &&
+      isCreditAccountServer(accSnap.data()) &&
+      !origMovId;
+
+    if (isCardCharge) {
+      const cardData = accSnap.data();
+      const invMonth =
+        txData.invoiceMonth ||
+        calculateInvoiceMonthForPurchaseServer(
+          targetPayment.paymentDate || txData.competenceDate,
+          cardData.closingDay || 20
+        );
+      cardInvRef = accRef.collection('invoices').doc(invMonth);
+      const chargeId =
+        targetPayment.id.startsWith('legacy_pay_') ? txData.id : targetPayment.id;
+      cardChargeRef = cardInvRef.collection('charges').doc(chargeId);
+      [cardInvSnap, cardChargeSnap] = await Promise.all([
+        tx.get(cardInvRef),
+        tx.get(cardChargeRef),
+      ]);
+    }
+
+    const nowIso = new Date().toISOString();
+    let reversalMovId = '';
+
+    if (origMovSnap && origMovSnap.exists && compMovRef && !compMovSnap.exists) {
+      const origMov = origMovSnap.data();
+      const compMov = serverBuildCompensatoryMovement({
+        originalMovement: origMov,
+        authorUid: cleanUid,
+        reason: `Estorno de pagamento: ${cleanReason}`,
+      });
+      tx.set(compMovRef, compMov);
+      reversalMovId = compMov.id;
+
+      if (accSnap && accSnap.exists) {
+        const delta = compMov.direction === 'inflow' ? compMov.amountCents : -compMov.amountCents;
+        tx.update(accRef, {
+          projectedBalanceCents: (accSnap.data().projectedBalanceCents || 0) + delta,
+          updatedAt: nowIso,
+        });
+      }
+    }
+
+    if (cardInvRef && cardInvSnap && cardInvSnap.exists) {
+      const invData = cardInvSnap.data();
+      const revChargeAmount =
+        cardChargeSnap && cardChargeSnap.exists
+          ? cardChargeSnap.data().amountCents
+          : targetPayment.amountCents;
+      const isAlreadyCancelled =
+        cardChargeSnap && cardChargeSnap.exists && cardChargeSnap.data().status === 'cancelled';
+
+      if (!isAlreadyCancelled) {
+        if (cardChargeRef && cardChargeSnap && cardChargeSnap.exists) {
+          tx.update(cardChargeRef, {
+            status: 'cancelled',
+            updatedAt: nowIso,
+          });
+        }
+        const newPurchases = Math.max(0, (invData.totalPurchasesAmountCents || 0) - revChargeAmount);
+        const newTotalDue =
+          newPurchases + (invData.carriedOverBalanceCents || 0) + (invData.interestAndFeesCents || 0);
+        const newRemainingInv = Math.max(0, newTotalDue - (invData.totalPaidAmountCents || 0));
+        const updatedInv = {
+          ...invData,
+          totalPurchasesAmountCents: newPurchases,
+          totalDueAmountCents: newTotalDue,
+          remainingBalanceCents: newRemainingInv,
+          updatedAt: nowIso,
+        };
+        updatedInv.invoiceStatus = computeInvoiceStatusServer(updatedInv);
+        tx.set(cardInvRef, updatedInv, { merge: true });
+      }
+    }
+
+    const reversalRecord = stripUndefined({
+      id: payRevDocId,
+      transactionId: targetTxId,
+      paymentId: targetPayment.id,
+      userId: cleanUid,
+      amountCents: targetPayment.amountCents,
+      originalFinancialMovementId: targetPayment.financialMovementId || '',
+      reversalMovementId: reversalMovId,
+      reversalDate: nowIso.split('T')[0],
+      reversedAt: nowIso,
+      authorUid: cleanUid,
+      reason: cleanReason,
+      idempotencyKey: `manual_payrev_${targetPayment.id}`,
+      createdAt: nowIso,
+    });
+    tx.set(payRevRef, reversalRecord);
+
+    const newPaidAmount = Math.max(
+      0,
+      (txData.paidAmountCents || 0) - (targetPayment.amountCents || 0)
+    );
+    const newRemainingAmount = Math.max(0, txData.amountCents - newPaidAmount);
+    const todayStr = nowIso.split('T')[0];
+    const nextStatus =
+      newPaidAmount > 0
+        ? 'partially_paid'
+        : txData.dueDate && txData.dueDate < todayStr
+        ? 'overdue'
+        : 'pending';
+
+    const noteLine = `Estorno (${nowIso.split('T')[0]}): ${cleanReason}`;
+    const updatedNotes = txData.notes ? `${txData.notes} | ${noteLine}` : noteLine;
+
+    const updatedTx = stripUndefined({
+      ...txData,
+      paidAmountCents: newPaidAmount,
+      remainingAmountCents: newRemainingAmount,
+      status: nextStatus,
+      notes: updatedNotes,
+      updatedAt: nowIso,
+    });
+    if (newPaidAmount === 0) {
+      delete updatedTx.paymentDate;
+    }
+
+    tx.set(txRef, updatedTx);
+
+    return {
+      transaction: updatedTx,
+      reversal: reversalRecord,
+      isIdempotentReplay: false,
+    };
+  });
+}
+
+/**
  * 8. Alocação / Inicialização atômica de compra em fatura de cartão (Server-Side Admin SDK)
  */
 export async function executeServerSideAttachPurchaseToInvoice(db, callerUid, payload) {
@@ -3134,6 +3517,28 @@ export const recordRefundReceiptOfficial = onCall(
   { region: 'us-central1' },
   async (request) => {
     return await executeServerSideRecordRefundReceipt(
+      getAdminDb(),
+      request.auth?.uid,
+      request.data
+    );
+  }
+);
+
+export const updatePersonalTransactionOfficial = onCall(
+  { region: 'us-central1' },
+  async (request) => {
+    return await executeServerSideUpdatePersonalTransaction(
+      getAdminDb(),
+      request.auth?.uid,
+      request.data
+    );
+  }
+);
+
+export const reversePersonalTransactionPaymentOfficial = onCall(
+  { region: 'us-central1' },
+  async (request) => {
+    return await executeServerSideReversePersonalTransactionPayment(
       getAdminDb(),
       request.auth?.uid,
       request.data
@@ -7856,6 +8261,739 @@ export const createSpaceOfficial = onCall(
     );
   }
 );
+
+// ==============================================================================
+// BACKEND REAL — RATEIO AVULSO PONDERADO END-TO-END (RC1 / v3.1)
+// ==============================================================================
+
+async function resolveRegisteredUidByEmail(db, authInstance, rawEmail) {
+  const email = String(rawEmail || '').trim().toLowerCase();
+  if (!email) return null;
+
+  if (authInstance && typeof authInstance.getUserByEmail === 'function') {
+    try {
+      const userRec = await authInstance.getUserByEmail(email);
+      if (userRec?.uid) {
+        return {
+          uid: userRec.uid,
+          email,
+          displayName: userRec.displayName || email.split('@')[0],
+        };
+      }
+    } catch {
+      // Usuário pode não existir no Auth ou authInstance mockado; tenta fallback no Firestore /users
+    }
+  }
+
+  try {
+    const snap = await db.collection('users').where('email', '==', email).limit(1).get();
+    if (!snap.empty) {
+      const docSnap = snap.docs[0];
+      const data = docSnap.data() || {};
+      return {
+        uid: data.uid || docSnap.id,
+        email,
+        displayName: data.displayName || data.name || email.split('@')[0],
+      };
+    }
+  } catch {
+    // ignore fallback error
+  }
+
+  return null;
+}
+
+function buildAdhocNegotiationSummary(summaries) {
+  const debtors = (summaries || []).filter((s) => !s.isOwner);
+  if (debtors.length === 0) return 'accepted';
+  if (debtors.some((d) => d.status === 'disputed')) return 'disputed';
+  if (debtors.some((d) => d.status === 'rejected')) return 'rejected';
+  if (debtors.some((d) => d.status === 'pending')) return 'pending';
+  return 'accepted';
+}
+
+export async function executeServerSideCreateAdhocExpense(
+  db,
+  callerUid,
+  payload,
+  authInstance = null
+) {
+  if (!callerUid || typeof callerUid !== 'string' || !callerUid.trim()) {
+    throw new HttpsError('unauthenticated', 'Autenticação obrigatória para criar rateio avulso.');
+  }
+  const cleanOwnerUid = callerUid.trim();
+  const params = payload || {};
+
+  const cleanTitle = String(params.title || '').trim();
+  if (!cleanTitle) {
+    throw new HttpsError('invalid-argument', 'Título/descrição da despesa avulsa é obrigatório.');
+  }
+  if (!validatePositiveCentsServer(params.totalAmountCents)) {
+    throw new HttpsError(
+      'invalid-argument',
+      'O valor total do rateio avulso deve ser estritamente positivo em centavos.'
+    );
+  }
+
+  const totalAmountCents = Number(params.totalAmountCents);
+  const participants = Array.isArray(params.participants) ? params.participants : [];
+  if (participants.length === 0) {
+    throw new HttpsError(
+      'invalid-argument',
+      'Inclua ao menos um participante no rateio avulso.'
+    );
+  }
+
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(String(params.date || ''))
+    ? String(params.date)
+    : new Date().toISOString().slice(0, 10);
+  const dueDate = /^\d{4}-\d{2}-\d{2}$/.test(String(params.dueDate || ''))
+    ? String(params.dueDate)
+    : date;
+
+  const idemKey = String(params.idempotencyKey || '').trim() || `adhoc_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+  const expenseId = `adhoc_${sha256HexServer(`${cleanOwnerUid}:${idemKey}`).slice(0, 24)}`;
+
+  const ownerEmail = String(params.ownerEmail || '').trim().toLowerCase();
+  const ownerName = String(params.ownerName || 'Titular').trim() || 'Titular';
+
+  // Resolve participantes fora da transaction do Firestore (Admin Auth / users lookup)
+  const effectiveAuth = authInstance || getAuth();
+  const resolvedParticipants = [];
+  for (const part of participants) {
+    const email = String(part.email || '').trim().toLowerCase();
+    const name = String(part.name || email.split('@')[0] || 'Participante').trim();
+    const assignedAmountCents = Math.max(0, Math.round(Number(part.assignedAmountCents || 0)));
+    const isOwnerPart =
+      Boolean(part.isOwner) ||
+      (part.uid && String(part.uid).trim() === cleanOwnerUid) ||
+      (ownerEmail && email === ownerEmail);
+
+    if (isOwnerPart) {
+      resolvedParticipants.push({
+        uid: cleanOwnerUid,
+        email: ownerEmail || email,
+        name: ownerName || name,
+        assignedAmountCents,
+        isOwner: true,
+        status: 'accepted',
+      });
+      continue;
+    }
+
+    const registered = email
+      ? await resolveRegisteredUidByEmail(db, effectiveAuth, email)
+      : null;
+
+    resolvedParticipants.push({
+      uid: registered?.uid || null,
+      email,
+      name: registered?.displayName || name,
+      assignedAmountCents,
+      isOwner: false,
+      status: 'pending',
+    });
+  }
+
+  const ownerEntry = resolvedParticipants.find((p) => p.isOwner);
+  const debtorEntries = resolvedParticipants.filter((p) => !p.isOwner);
+  if (debtorEntries.length === 0) {
+    throw new HttpsError(
+      'invalid-argument',
+      'Inclua pelo menos um convidado diferente do titular para o rateio avulso.'
+    );
+  }
+
+  const totalToReimburseCents = debtorEntries.reduce((s, d) => s + d.assignedAmountCents, 0);
+  const ownerShareAmountCents =
+    ownerEntry !== undefined
+      ? ownerEntry.assignedAmountCents
+      : Math.max(0, totalAmountCents - totalToReimburseCents);
+
+  if (ownerShareAmountCents + totalToReimburseCents !== totalAmountCents) {
+    throw new HttpsError(
+      'invalid-argument',
+      `A soma das cotas (${ownerShareAmountCents + totalToReimburseCents} centavos) deve igualar o valor total (${totalAmountCents} centavos).`
+    );
+  }
+
+  const registeredDebtorUids = Array.from(
+    new Set(debtorEntries.map((d) => d.uid).filter((u) => Boolean(u)))
+  );
+  const externalDebtors = debtorEntries.filter((d) => !d.uid);
+
+  const expRef = db.collection('adhoc_expenses').doc(expenseId);
+  const generatedInvites = [];
+  const generatedObligations = [];
+
+  return await db.runTransaction(async (tx) => {
+    const expSnap = await tx.get(expRef);
+    if (expSnap.exists) {
+      return {
+        expense: expSnap.data(),
+        obligations: [],
+        invites: [],
+        isIdempotentReplay: true,
+      };
+    }
+
+    const nowIso = new Date().toISOString();
+    const expiresAt = new Date(Date.now() + 15 * 24 * 60 * 60 * 1000).toISOString();
+
+    const participantSummaries = [];
+    if (ownerEntry || ownerShareAmountCents > 0) {
+      participantSummaries.push({
+        uid: cleanOwnerUid,
+        email: ownerEmail,
+        name: ownerName,
+        assignedAmountCents: ownerShareAmountCents,
+        isOwner: true,
+        status: 'accepted',
+        updatedAt: nowIso,
+      });
+    }
+
+    for (let idx = 0; idx < debtorEntries.length; idx++) {
+      const d = debtorEntries[idx];
+      if (d.uid) {
+        const obId = `adhoc_ob_${expenseId}_${d.uid}`;
+        const obRef = db
+          .collection('users')
+          .doc(d.uid)
+          .collection('adhoc_obligations')
+          .doc(obId);
+
+        const obligationDoc = stripUndefined({
+          id: obId,
+          adhocExpenseId: expenseId,
+          title: cleanTitle,
+          description: params.description ? String(params.description).trim() : undefined,
+          guestUid: d.uid,
+          guestEmail: d.email,
+          guestName: d.name,
+          creditorUid: cleanOwnerUid,
+          creditorName: ownerName,
+          creditorEmail: ownerEmail,
+          totalAmountCents,
+          assignedAmountCents: d.assignedAmountCents,
+          paidAmountCents: 0,
+          remainingBalanceCents: d.assignedAmountCents,
+          obligationStatus: 'pending_invite',
+          date,
+          dueDate,
+          categoryId: params.categoryId || 'uncategorized',
+          categoryName: params.categoryName || 'Geral',
+          createdAt: nowIso,
+          updatedAt: nowIso,
+        });
+        tx.set(obRef, obligationDoc);
+        generatedObligations.push(obligationDoc);
+
+        const notifId = `notif_adhoc_${expenseId}_${d.uid}`;
+        const notifRef = db
+          .collection('users')
+          .doc(d.uid)
+          .collection('notifications')
+          .doc(notifId);
+        tx.set(notifRef, {
+          id: notifId,
+          userId: d.uid,
+          type: 'adhoc_split_invited',
+          title: 'Novo Rateio Avulso para Aceite',
+          message: `${ownerName} incluiu você no rateio "${cleanTitle}" com cota de R$ ${(
+            d.assignedAmountCents / 100
+          ).toFixed(2)}.`,
+          read: false,
+          senderUid: cleanOwnerUid,
+          adhocExpenseId: expenseId,
+          obligationId: obId,
+          createdAt: nowIso,
+        });
+
+        participantSummaries.push({
+          uid: d.uid,
+          email: d.email,
+          name: d.name,
+          assignedAmountCents: d.assignedAmountCents,
+          isOwner: false,
+          obligationId: obId,
+          status: 'pending',
+          updatedAt: nowIso,
+        });
+      } else {
+        const extId = `ext_${expenseId}_${idx}_${sha256HexServer(`${d.email}:${d.name}`).slice(0, 8)}`;
+        const extRef = expRef.collection('external_debtors').doc(extId);
+        let inviteTokenId = undefined;
+
+        if (d.email) {
+          const rawToken = `adhoc_tok_${crypto.randomBytes(18).toString('hex')}`;
+          const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+          inviteTokenId = tokenHash;
+
+          const inviteRef = db.collection('adhoc_invites').doc(tokenHash);
+          tx.set(inviteRef, {
+            id: tokenHash,
+            adhocExpenseId: expenseId,
+            debtorRecordId: extId,
+            invitedEmail: d.email,
+            assignedAmountCents: d.assignedAmountCents,
+            creatorUid: cleanOwnerUid,
+            expiresAt,
+            tokenStatus: 'pending',
+            createdAt: nowIso,
+          });
+          generatedInvites.push({
+            email: d.email,
+            name: d.name,
+            rawToken,
+            tokenHash,
+          });
+        }
+
+        const extDoc = stripUndefined({
+          id: extId,
+          adhocExpenseId: expenseId,
+          name: d.name,
+          identificationType: d.email ? 'email_invited' : 'name_only',
+          email: d.email || undefined,
+          assignedAmountCents: d.assignedAmountCents,
+          totalReimbursedCents: 0,
+          remainingBalanceCents: d.assignedAmountCents,
+          debtorStatus: 'pending',
+          inviteTokenId,
+          createdAt: nowIso,
+        });
+        tx.set(extRef, extDoc);
+
+        participantSummaries.push({
+          email: d.email,
+          name: d.name,
+          assignedAmountCents: d.assignedAmountCents,
+          isOwner: false,
+          externalDebtorId: extId,
+          status: 'pending',
+          updatedAt: nowIso,
+        });
+      }
+    }
+
+    const fundingSource =
+      params.fundingSource === 'credit_card' || params.fundingSource === 'wallet'
+        ? params.fundingSource
+        : 'personal_checking';
+
+    const expenseDoc = stripUndefined({
+      id: expenseId,
+      ownerUid: cleanOwnerUid,
+      ownerName,
+      ownerEmail,
+      title: cleanTitle,
+      description: params.description ? String(params.description).trim() : undefined,
+      totalAmountCents,
+      ownerShareAmountCents,
+      totalToReimburseCents,
+      totalReimbursedCents: 0,
+      remainingToReimburseCents: totalToReimburseCents,
+      fundingSource,
+      sourceAccountId: String(params.sourceAccountId || ''),
+      accountName: params.accountName ? String(params.accountName) : undefined,
+      date,
+      dueDate,
+      categoryId: params.categoryId || 'uncategorized',
+      categoryName: params.categoryName || 'Geral',
+      status: 'active',
+      negotiationStatus: buildAdhocNegotiationSummary(participantSummaries),
+      registeredDebtorUids,
+      hasExternalDebtors: externalDebtors.length > 0,
+      participantSummaries,
+      idempotencyKey: idemKey,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    });
+
+    tx.set(expRef, expenseDoc);
+
+    return {
+      expense: expenseDoc,
+      obligations: generatedObligations,
+      invites: generatedInvites,
+      isIdempotentReplay: false,
+    };
+  });
+}
+
+export async function executeServerSideRespondAdhocObligation(db, callerUid, payload) {
+  if (!callerUid || typeof callerUid !== 'string' || !callerUid.trim()) {
+    throw new HttpsError('unauthenticated', 'Autenticação obrigatória para responder ao rateio.');
+  }
+  const cleanUid = callerUid.trim();
+  const { adhocExpenseId, obligationId, action, reason, proposedAmountCents } = payload || {};
+
+  const expId = String(adhocExpenseId || '').trim();
+  if (!expId) {
+    throw new HttpsError('invalid-argument', 'adhocExpenseId é obrigatório.');
+  }
+  if (!['accept', 'reject', 'counter_propose'].includes(String(action))) {
+    throw new HttpsError('invalid-argument', 'Ação inválida (use accept, reject ou counter_propose).');
+  }
+
+  const targetObId = String(obligationId || `adhoc_ob_${expId}_${cleanUid}`).trim();
+  const obRef = db.collection('users').doc(cleanUid).collection('adhoc_obligations').doc(targetObId);
+  const expRef = db.collection('adhoc_expenses').doc(expId);
+
+  return await db.runTransaction(async (tx) => {
+    const [obSnap, expSnap] = await Promise.all([tx.get(obRef), tx.get(expRef)]);
+    if (!obSnap.exists) {
+      throw new HttpsError('not-found', 'Obrigação de rateio avulso não encontrada para este usuário.');
+    }
+    if (!expSnap.exists) {
+      throw new HttpsError('not-found', 'Despesa avulsa associada não encontrada.');
+    }
+
+    const ob = obSnap.data();
+    const exp = expSnap.data();
+
+    if (ob.guestUid !== cleanUid) {
+      throw new HttpsError('permission-denied', 'Acesso negado a esta obrigação.');
+    }
+    if (exp.status === 'cancelled') {
+      throw new HttpsError('failed-precondition', 'Esta despesa avulsa foi cancelada.');
+    }
+
+    const nowIso = new Date().toISOString();
+    const cleanReason = String(reason || '').trim();
+    const summaries = Array.isArray(exp.participantSummaries) ? [...exp.participantSummaries] : [];
+    const matchIndex = summaries.findIndex(
+      (s) =>
+        s.uid === cleanUid ||
+        s.obligationId === targetObId ||
+        (ob.guestEmail && s.email?.toLowerCase() === String(ob.guestEmail).toLowerCase())
+    );
+
+    const obPatch = { updatedAt: nowIso };
+    let notifTitle = '';
+    let notifMsg = '';
+    let notifType = 'adhoc_split_updated';
+
+    if (action === 'accept') {
+      // Aceite confirma a responsabilidade sobre a cota, mas NÃO quita nem marca como paga.
+      obPatch.obligationStatus = 'accepted';
+      obPatch.guestRejectionReason = '';
+      if (matchIndex >= 0) {
+        summaries[matchIndex] = {
+          ...summaries[matchIndex],
+          status: 'accepted',
+          note: '',
+          updatedAt: nowIso,
+        };
+      }
+      notifType = 'adhoc_split_accepted';
+      notifTitle = 'Cota de Rateio Avulso Aceita';
+      notifMsg = `${ob.guestName || 'Participante'} aceitou a cota de R$ ${(
+        (ob.assignedAmountCents || 0) / 100
+      ).toFixed(2)} em "${exp.title}". O título segue aguardando liquidação no vencimento.`;
+    } else if (action === 'reject') {
+      const rejectNote = cleanReason || 'Rateio avulso recusado pelo participante.';
+      obPatch.obligationStatus = 'rejected';
+      obPatch.guestRejectionReason = rejectNote;
+      if (matchIndex >= 0) {
+        summaries[matchIndex] = {
+          ...summaries[matchIndex],
+          status: 'rejected',
+          note: rejectNote,
+          updatedAt: nowIso,
+        };
+      }
+      notifType = 'adhoc_split_rejected';
+      notifTitle = 'Rateio Avulso Recusado';
+      notifMsg = `${ob.guestName || 'Participante'} recusou a cota em "${exp.title}": ${rejectNote}`;
+    } else {
+      const nextProposed = Number(proposedAmountCents);
+      if (!Number.isSafeInteger(nextProposed) || nextProposed < 0 || nextProposed > exp.totalAmountCents) {
+        throw new HttpsError(
+          'invalid-argument',
+          'O valor proposto deve estar entre 0 e o valor total da despesa em centavos.'
+        );
+      }
+      const disputeNote =
+        cleanReason ||
+        `Contraproposta de R$ ${(nextProposed / 100).toFixed(2)} enviada para revisão.`;
+      obPatch.proposedAmountCents = nextProposed;
+      obPatch.guestRejectionReason = disputeNote;
+      obPatch.obligationStatus = 'pending_invite';
+      if (matchIndex >= 0) {
+        summaries[matchIndex] = {
+          ...summaries[matchIndex],
+          status: 'disputed',
+          proposedAmountCents: nextProposed,
+          note: disputeNote,
+          updatedAt: nowIso,
+        };
+      }
+      notifType = 'adhoc_split_counterproposed';
+      notifTitle = 'Contraproposta em Rateio Avulso';
+      notifMsg = `${ob.guestName || 'Participante'} propôs R$ ${(nextProposed / 100).toFixed(
+        2
+      )} em "${exp.title}": ${disputeNote}`;
+    }
+
+    const negotiationStatus = buildAdhocNegotiationSummary(summaries);
+    const updatedOb = { ...ob, ...obPatch };
+    const updatedExp = {
+      ...exp,
+      participantSummaries: summaries,
+      negotiationStatus,
+      updatedAt: nowIso,
+    };
+
+    tx.update(obRef, obPatch);
+    tx.update(expRef, {
+      participantSummaries: summaries,
+      negotiationStatus,
+      updatedAt: nowIso,
+    });
+
+    if (exp.ownerUid && exp.ownerUid !== cleanUid) {
+      const notifId = `notif_adhoc_resp_${expId}_${cleanUid}_${Date.now()}`;
+      tx.set(
+        db.collection('users').doc(exp.ownerUid).collection('notifications').doc(notifId),
+        {
+          id: notifId,
+          userId: exp.ownerUid,
+          type: notifType,
+          title: notifTitle,
+          message: notifMsg,
+          read: false,
+          senderUid: cleanUid,
+          adhocExpenseId: expId,
+          obligationId: targetObId,
+          createdAt: nowIso,
+        }
+      );
+    }
+
+    return {
+      obligation: updatedOb,
+      expense: updatedExp,
+    };
+  });
+}
+
+export async function executeServerSideResolveAdhocCounterProposal(db, callerUid, payload) {
+  if (!callerUid || typeof callerUid !== 'string' || !callerUid.trim()) {
+    throw new HttpsError('unauthenticated', 'Autenticação obrigatória.');
+  }
+  const cleanOwnerUid = callerUid.trim();
+  const { adhocExpenseId, guestUid, acceptCounterProposal } = payload || {};
+  const expId = String(adhocExpenseId || '').trim();
+  const targetGuestUid = String(guestUid || '').trim();
+  if (!expId || !targetGuestUid) {
+    throw new HttpsError('invalid-argument', 'adhocExpenseId e guestUid são obrigatórios.');
+  }
+
+  const expRef = db.collection('adhoc_expenses').doc(expId);
+  const obId = `adhoc_ob_${expId}_${targetGuestUid}`;
+  const obRef = db
+    .collection('users')
+    .doc(targetGuestUid)
+    .collection('adhoc_obligations')
+    .doc(obId);
+
+  return await db.runTransaction(async (tx) => {
+    const [expSnap, obSnap] = await Promise.all([tx.get(expRef), tx.get(obRef)]);
+    if (!expSnap.exists) {
+      throw new HttpsError('not-found', 'Despesa avulsa não encontrada.');
+    }
+    const exp = expSnap.data();
+    if (exp.ownerUid !== cleanOwnerUid) {
+      throw new HttpsError('permission-denied', 'Apenas o criador da despesa pode resolver contrapropostas.');
+    }
+    if (!obSnap.exists) {
+      throw new HttpsError('not-found', 'Obrigação do participante não encontrada.');
+    }
+
+    const ob = obSnap.data();
+    const nowIso = new Date().toISOString();
+    const summaries = Array.isArray(exp.participantSummaries) ? [...exp.participantSummaries] : [];
+    const guestIdx = summaries.findIndex((s) => s.uid === targetGuestUid);
+    const ownerIdx = summaries.findIndex((s) => s.isOwner || s.uid === cleanOwnerUid);
+
+    if (acceptCounterProposal) {
+      const agreedCents =
+        Number.isSafeInteger(ob.proposedAmountCents) ? ob.proposedAmountCents : ob.assignedAmountCents;
+      const newRemaining = Math.max(0, agreedCents - (ob.paidAmountCents || 0));
+
+      if (guestIdx >= 0) {
+        summaries[guestIdx] = {
+          ...summaries[guestIdx],
+          assignedAmountCents: agreedCents,
+          status: 'accepted',
+          updatedAt: nowIso,
+        };
+      }
+      const newToReimburse = summaries
+        .filter((s) => !s.isOwner && s.uid !== cleanOwnerUid)
+        .reduce((sum, s) => sum + (s.assignedAmountCents || 0), 0);
+      const newOwnerShare = Math.max(0, exp.totalAmountCents - newToReimburse);
+      if (ownerIdx >= 0) {
+        summaries[ownerIdx] = {
+          ...summaries[ownerIdx],
+          assignedAmountCents: newOwnerShare,
+          updatedAt: nowIso,
+        };
+      }
+
+      const negotiationStatus = buildAdhocNegotiationSummary(summaries);
+      tx.update(obRef, {
+        assignedAmountCents: agreedCents,
+        remainingBalanceCents: newRemaining,
+        obligationStatus: 'accepted',
+        updatedAt: nowIso,
+      });
+      tx.update(expRef, {
+        ownerShareAmountCents: newOwnerShare,
+        totalToReimburseCents: newToReimburse,
+        remainingToReimburseCents: Math.max(0, newToReimburse - (exp.totalReimbursedCents || 0)),
+        participantSummaries: summaries,
+        negotiationStatus,
+        updatedAt: nowIso,
+      });
+    } else {
+      if (guestIdx >= 0) {
+        summaries[guestIdx] = {
+          ...summaries[guestIdx],
+          status: 'rejected',
+          note: 'Contraproposta não aceita pelo titular.',
+          updatedAt: nowIso,
+        };
+      }
+      const negotiationStatus = buildAdhocNegotiationSummary(summaries);
+      tx.update(obRef, {
+        obligationStatus: 'rejected',
+        guestRejectionReason: 'Contraproposta recusada pelo criador do rateio.',
+        updatedAt: nowIso,
+      });
+      tx.update(expRef, {
+        participantSummaries: summaries,
+        negotiationStatus,
+        updatedAt: nowIso,
+      });
+    }
+
+    return { ok: true };
+  });
+}
+
+export async function executeServerSideCancelAdhocExpense(db, callerUid, payload) {
+  if (!callerUid || typeof callerUid !== 'string' || !callerUid.trim()) {
+    throw new HttpsError('unauthenticated', 'Autenticação obrigatória.');
+  }
+  const cleanOwnerUid = callerUid.trim();
+  const { adhocExpenseId, reason } = payload || {};
+  const expId = String(adhocExpenseId || '').trim();
+  const cleanReason = String(reason || '').trim();
+  if (!expId) {
+    throw new HttpsError('invalid-argument', 'adhocExpenseId é obrigatório.');
+  }
+  if (!cleanReason) {
+    throw new HttpsError('invalid-argument', 'Motivo do cancelamento é obrigatório.');
+  }
+
+  const expRef = db.collection('adhoc_expenses').doc(expId);
+  return await db.runTransaction(async (tx) => {
+    const expSnap = await tx.get(expRef);
+    if (!expSnap.exists) {
+      throw new HttpsError('not-found', 'Despesa avulsa não encontrada.');
+    }
+    const exp = expSnap.data();
+    if (exp.ownerUid !== cleanOwnerUid) {
+      throw new HttpsError('permission-denied', 'Apenas o titular pode cancelar este rateio.');
+    }
+    if (exp.status === 'cancelled') {
+      return { expense: exp, isIdempotentReplay: true };
+    }
+
+    const nowIso = new Date().toISOString();
+    const debtorUids = Array.isArray(exp.registeredDebtorUids) ? exp.registeredDebtorUids : [];
+    const obSnaps = await Promise.all(
+      debtorUids.map((gUid) =>
+        tx.get(
+          db.collection('users').doc(gUid).collection('adhoc_obligations').doc(`adhoc_ob_${expId}_${gUid}`)
+        )
+      )
+    );
+
+    const updatedNotes = `${exp.description ? `${exp.description} | ` : ''}Cancelado: ${cleanReason}`;
+    tx.update(expRef, {
+      status: 'cancelled',
+      description: updatedNotes,
+      updatedAt: nowIso,
+    });
+
+    for (let idx = 0; idx < debtorUids.length; idx++) {
+      const obSnap = obSnaps[idx];
+      if (obSnap.exists) {
+        tx.update(obSnap.ref, {
+          obligationStatus: 'rejected',
+          guestRejectionReason: `Rateio cancelado pelo titular: ${cleanReason}`,
+          remainingBalanceCents: 0,
+          updatedAt: nowIso,
+        });
+      }
+    }
+
+    return {
+      expense: { ...exp, status: 'cancelled', description: updatedNotes, updatedAt: nowIso },
+      isIdempotentReplay: false,
+    };
+  });
+}
+
+export const createAdhocExpenseOfficial = onCall(
+  { region: 'us-central1' },
+  async (request) => {
+    return await executeServerSideCreateAdhocExpense(
+      getAdminDb(),
+      request.auth?.uid,
+      request.data,
+      getAuth()
+    );
+  }
+);
+
+export const respondAdhocObligationOfficial = onCall(
+  { region: 'us-central1' },
+  async (request) => {
+    return await executeServerSideRespondAdhocObligation(
+      getAdminDb(),
+      request.auth?.uid,
+      request.data
+    );
+  }
+);
+
+export const resolveAdhocCounterProposalOfficial = onCall(
+  { region: 'us-central1' },
+  async (request) => {
+    return await executeServerSideResolveAdhocCounterProposal(
+      getAdminDb(),
+      request.auth?.uid,
+      request.data
+    );
+  }
+);
+
+export const cancelAdhocExpenseOfficial = onCall(
+  { region: 'us-central1' },
+  async (request) => {
+    return await executeServerSideCancelAdhocExpense(
+      getAdminDb(),
+      request.auth?.uid,
+      request.data
+    );
+  }
+);
+
 
 
 

@@ -11,12 +11,14 @@ import {
   collection,
   doc,
   getDocs,
+  onSnapshot,
   setDoc,
   updateDoc,
   deleteDoc,
   query,
   where,
   orderBy,
+  Unsubscribe,
 } from 'firebase/firestore';
 import {
   ref,
@@ -39,6 +41,27 @@ import {
   UserProfile,
   Workspace,
 } from '../types/acquisitions';
+
+/**
+ * Remove profundamente chaves com valor `undefined` (Firestore rejeita `undefined` em setDoc/updateDoc).
+ */
+export function stripUndefinedDeep<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value
+      .filter((entry) => entry !== undefined)
+      .map((entry) => stripUndefinedDeep(entry)) as unknown as T;
+  }
+  if (value !== null && typeof value === 'object') {
+    const result: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      if (v !== undefined) {
+        result[k] = stripUndefinedDeep(v);
+      }
+    }
+    return result as T;
+  }
+  return value;
+}
 
 export { app, auth, db, storage, firebaseConfig };
 
@@ -121,7 +144,7 @@ export async function upsertUserDocument(user: UserProfile): Promise<void> {
     const userRef = doc(db, 'users', user.uid);
     await setDoc(
       userRef,
-      {
+      stripUndefinedDeep({
         uid: user.uid,
         email: user.email.toLowerCase(),
         displayName: user.displayName,
@@ -129,7 +152,7 @@ export async function upsertUserDocument(user: UserProfile): Promise<void> {
         avatarUrl: user.avatarUrl || null,
         isAdmin: isAcquisitionAdminUid(user.uid) || Boolean(user.isAdmin),
         updatedAt: new Date().toISOString(),
-      },
+      }),
       { merge: true }
     );
   } catch (err) {
@@ -220,7 +243,7 @@ export async function fetchAcceptedWorkspacesFromFirestore(
 export async function saveWorkspaceToFirestore(workspace: Workspace): Promise<void> {
   try {
     const wsRef = doc(db, 'workspaces', workspace.id);
-    await setDoc(wsRef, workspace, { merge: true });
+    await setDoc(wsRef, stripUndefinedDeep(workspace), { merge: true });
   } catch (err) {
     console.warn('[Firestore / Offline fallback] saveWorkspaceToFirestore:', err);
   }
@@ -298,6 +321,83 @@ export async function fetchItemsForListFromFirestore(
   }
 }
 
+export function subscribeToIndividualLists(
+  ownerUid: string,
+  onLists: (lists: AcquisitionList[]) => void,
+  onError?: (err: unknown) => void
+): Unsubscribe {
+  if (!ownerUid) return () => {};
+  const listsRef = collection(db, 'acquisition_lists');
+  const q = query(
+    listsRef,
+    where('scopeType', '==', 'individual'),
+    where('ownerUid', '==', ownerUid)
+  );
+  return onSnapshot(
+    q,
+    (snapshot) => {
+      const data = snapshot.docs
+        .filter((d) => !d.data().isArchived)
+        .map((d) => ({ id: d.id, ...(d.data() as Omit<AcquisitionList, 'id'>) }));
+      onLists(data);
+    },
+    (err) => {
+      console.warn('[Firestore] subscribeToIndividualLists:', err);
+      onError?.(err);
+    }
+  );
+}
+
+export function subscribeToSharedLists(
+  spaceId: string,
+  onLists: (lists: AcquisitionList[]) => void,
+  onError?: (err: unknown) => void
+): Unsubscribe {
+  if (!spaceId) return () => {};
+  const listsRef = collection(db, 'acquisition_lists');
+  const q = query(
+    listsRef,
+    where('scopeType', '==', 'shared'),
+    where('spaceId', '==', spaceId)
+  );
+  return onSnapshot(
+    q,
+    (snapshot) => {
+      const data = snapshot.docs
+        .filter((d) => !d.data().isArchived)
+        .map((d) => ({ id: d.id, ...(d.data() as Omit<AcquisitionList, 'id'>) }));
+      onLists(data);
+    },
+    (err) => {
+      console.warn('[Firestore] subscribeToSharedLists:', err);
+      onError?.(err);
+    }
+  );
+}
+
+export function subscribeToListItems(
+  listId: string,
+  onItems: (items: AcquisitionItem[]) => void,
+  onError?: (err: unknown) => void
+): Unsubscribe {
+  if (!listId) return () => {};
+  const itemsRef = collection(db, 'acquisition_lists', listId, 'items');
+  return onSnapshot(
+    itemsRef,
+    (snapshot) => {
+      const data = snapshot.docs.map((d) => ({
+        id: d.id,
+        ...(d.data() as Omit<AcquisitionItem, 'id'>),
+      }));
+      onItems(data);
+    },
+    (err) => {
+      console.warn(`[Firestore] subscribeToListItems(${listId}):`, err);
+      onError?.(err);
+    }
+  );
+}
+
 export async function fetchListsForWorkspaceFromFirestore(
   workspaceId: string,
   userEmail: string
@@ -314,30 +414,22 @@ export async function fetchListsForWorkspaceFromFirestore(
 }
 
 export async function saveListToFirestore(list: AcquisitionList): Promise<void> {
-  try {
-    const listRef = doc(db, 'acquisition_lists', list.id);
-    const currentUser = auth.currentUser;
-    const isShared = list.scopeType === 'shared' && Boolean(list.spaceId);
-    const docData: Record<string, any> = {
-      ...list,
-      scopeType: isShared ? 'shared' : 'individual',
-      spaceId: isShared ? list.spaceId : null,
-      ownerUid: list.ownerUid || currentUser?.uid || '',
-      updatedAt: new Date().toISOString(),
-    };
-    await setDoc(listRef, docData, { merge: true });
-  } catch (err) {
-    console.warn('[Firestore / Offline fallback] saveListToFirestore:', err);
-  }
+  const listRef = doc(db, 'acquisition_lists', list.id);
+  const currentUser = auth.currentUser;
+  const isShared = list.scopeType === 'shared' && Boolean(list.spaceId);
+  const docData = stripUndefinedDeep({
+    ...list,
+    scopeType: isShared ? 'shared' : 'individual',
+    spaceId: isShared ? list.spaceId : null,
+    ownerUid: list.ownerUid || currentUser?.uid || '',
+    updatedAt: new Date().toISOString(),
+  });
+  await setDoc(listRef, docData, { merge: true });
 }
 
 export async function deleteListFromFirestore(listId: string): Promise<void> {
-  try {
-    const listRef = doc(db, 'acquisition_lists', listId);
-    await updateDoc(listRef, { isArchived: true, deletedAt: new Date().toISOString() });
-  } catch (err) {
-    console.warn('[Firestore / Offline fallback] deleteListFromFirestore:', err);
-  }
+  const listRef = doc(db, 'acquisition_lists', listId);
+  await updateDoc(listRef, { isArchived: true, deletedAt: new Date().toISOString() });
 }
 
 // ============================================================================
@@ -352,59 +444,43 @@ export async function fetchItemsForWorkspaceFromFirestore(
 }
 
 export async function saveItemToFirestore(item: AcquisitionItem): Promise<void> {
-  try {
-    if (!item.listId) {
-      console.warn('[saveItemToFirestore] Item does not have listId:', item);
-      return;
-    }
-    const itemRef = doc(db, 'acquisition_lists', item.listId, 'items', item.id);
-    const currentUser = auth.currentUser;
-    const docData: Record<string, any> = {
-      ...item,
-      createdByUid: item.createdByUid || currentUser?.uid || '',
-      updatedAt: new Date().toISOString(),
-    };
-    await setDoc(itemRef, docData, { merge: true });
-  } catch (err) {
-    console.warn('[Firestore / Offline fallback] saveItemToFirestore:', err);
+  if (!item.listId) {
+    throw new Error('Item sem listId associado não pode ser salvo.');
   }
+  const itemRef = doc(db, 'acquisition_lists', item.listId, 'items', item.id);
+  const currentUser = auth.currentUser;
+  const rawPayload: Record<string, unknown> = {
+    ...item,
+    createdByUid: item.createdByUid || currentUser?.uid || '',
+    updatedAt: new Date().toISOString(),
+  };
+  if (item.cartDraft === undefined) {
+    rawPayload.cartDraft = null;
+  }
+  const docData = stripUndefinedDeep(rawPayload);
+  await setDoc(itemRef, docData, { merge: true });
 }
 
 export async function recordProductInSubcollection(
   item: AcquisitionItem,
   _product: ProductPurchase
 ): Promise<void> {
-  try {
-    if (item.listId) {
-      // As compras oficiais na subcoleção `purchases` são gravadas via Cloud Function (Admin SDK).
-      // Aqui sincronizamos apenas o documento do item com o cache visual e estágio atual.
-      const itemRef = doc(db, 'acquisition_lists', item.listId, 'items', item.id);
-      await setDoc(
-        itemRef,
-        {
-          stage: item.stage,
-          currentStock: item.currentStock ?? 0,
-          cartDraft: item.cartDraft ?? null,
-          productsHistory: item.productsHistory,
-          updatedAt: item.updatedAt,
-        },
-        { merge: true }
-      );
-    }
-  } catch (err) {
-    console.warn('[Firestore / Offline fallback] recordProductInSubcollection:', err);
-  }
+  if (!item.listId) return;
+  const itemRef = doc(db, 'acquisition_lists', item.listId, 'items', item.id);
+  const payload = stripUndefinedDeep({
+    stage: item.stage,
+    currentStock: item.currentStock ?? 0,
+    cartDraft: item.cartDraft ?? null,
+    productsHistory: item.productsHistory || [],
+    updatedAt: item.updatedAt || new Date().toISOString(),
+  });
+  await setDoc(itemRef, payload, { merge: true });
 }
 
 export async function deleteItemFromFirestore(itemId: string, listId?: string): Promise<void> {
-  try {
-    if (listId) {
-      const itemRef = doc(db, 'acquisition_lists', listId, 'items', itemId);
-      await deleteDoc(itemRef);
-    }
-  } catch (err) {
-    console.warn('[Firestore / Offline fallback] deleteItemFromFirestore:', err);
-  }
+  if (!listId) return;
+  const itemRef = doc(db, 'acquisition_lists', listId, 'items', itemId);
+  await deleteDoc(itemRef);
 }
 
 // ============================================================================

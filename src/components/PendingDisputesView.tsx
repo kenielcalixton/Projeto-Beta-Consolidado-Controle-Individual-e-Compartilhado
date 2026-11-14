@@ -6,6 +6,7 @@ interface PendingDisputesViewProps {
   spaces: Space[];
   transactions: Transaction[];
   userEmail: string;
+  userUid?: string;
   dismissedSpaceNotifIds: string[];
   onDismissSpaceNotif: (txId: string) => void;
   onClearAllSpaceNotifs: (txIds: string[]) => void;
@@ -18,12 +19,18 @@ interface PendingDisputesViewProps {
     proposedAmount: number,
     reason: string
   ) => Promise<void>;
+  onResolveAdhocCounterProposal?: (
+    tx: Transaction,
+    guestEmail: string,
+    accept: boolean
+  ) => Promise<void>;
 }
 
 export const PendingDisputesView: React.FC<PendingDisputesViewProps> = ({
   spaces,
   transactions,
   userEmail,
+  userUid,
   dismissedSpaceNotifIds,
   onDismissSpaceNotif,
   onClearAllSpaceNotifs,
@@ -32,6 +39,7 @@ export const PendingDisputesView: React.FC<PendingDisputesViewProps> = ({
   onAcceptSplit,
   onRejectSplit,
   onProposeNewValue,
+  onResolveAdhocCounterProposal,
 }) => {
   const [negotiatingTx, setNegotiatingTx] = useState<Transaction | null>(null);
   const [negotiationMode, setNegotiationMode] = useState<'propose' | 'reject'>(
@@ -39,6 +47,7 @@ export const PendingDisputesView: React.FC<PendingDisputesViewProps> = ({
   );
   const [proposedVal, setProposedVal] = useState('');
   const [disputeNote, setDisputeNote] = useState('');
+  const [processingTxId, setProcessingTxId] = useState<string | null>(null);
 
   // 1. Convites para Novos Espaços / Grupos onde o usuário atual está com status 'invited' (Pendente)
   const pendingSpaceInvites = spaces.filter((sp) =>
@@ -54,7 +63,17 @@ export const PendingDisputesView: React.FC<PendingDisputesViewProps> = ({
     const isSpaceTx = Boolean(tx.spaceId && tx.spaceId.trim().length > 0);
     if (isSpaceTx) return false; // Despesas de grupo não exigem aceite no Inbox
 
-    if (tx.status === 'validating') return true;
+    const isCreator =
+      (userUid && tx.userId === userUid) ||
+      tx.ownerEmail?.toLowerCase() === userEmail.toLowerCase();
+
+    if (isCreator) {
+      return (
+        tx.status === 'validating' &&
+        (tx.splits || []).some((s) => s.status === 'disputed')
+      );
+    }
+
     if (tx.splits && tx.splits.length > 0) {
       const myShare = tx.splits.find(
         (s) => s.email.toLowerCase() === userEmail.toLowerCase()
@@ -66,7 +85,7 @@ export const PendingDisputesView: React.FC<PendingDisputesViewProps> = ({
         return true;
       }
     }
-    return false;
+    return tx.status === 'validating' && !isCreator;
   });
 
   // 3. Avisos Informativos de Lançamentos criados em Espaços Compartilhados (podem ser apagados, sem exigir aceite)
@@ -107,21 +126,26 @@ export const PendingDisputesView: React.FC<PendingDisputesViewProps> = ({
     e.preventDefault();
     if (!negotiatingTx) return;
 
-    if (negotiationMode === 'reject') {
-      await onRejectSplit(
-        negotiatingTx,
-        disputeNote.trim() || 'Rateio avulso recusado pelo participante.'
-      );
-    } else {
-      await onProposeNewValue(
-        negotiatingTx,
-        Math.max(0, Number(proposedVal) || 0),
-        disputeNote.trim() || 'Contraproposta de valor enviada para revisão.'
-      );
-    }
+    setProcessingTxId(negotiatingTx.id);
+    try {
+      if (negotiationMode === 'reject') {
+        await onRejectSplit(
+          negotiatingTx,
+          disputeNote.trim() || 'Rateio avulso recusado pelo participante.'
+        );
+      } else {
+        await onProposeNewValue(
+          negotiatingTx,
+          Math.max(0, Number(proposedVal) || 0),
+          disputeNote.trim() || 'Contraproposta de valor enviada para revisão.'
+        );
+      }
 
-    setNegotiatingTx(null);
-    setDisputeNote('');
+      setNegotiatingTx(null);
+      setDisputeNote('');
+    } finally {
+      setProcessingTxId(null);
+    }
   };
 
   return (
@@ -253,6 +277,15 @@ export const PendingDisputesView: React.FC<PendingDisputesViewProps> = ({
               const myShare = tx.splits.find(
                 (s) => s.email.toLowerCase() === userEmail.toLowerCase()
               );
+              const isCreator =
+                (userUid && tx.userId === userUid) ||
+                tx.ownerEmail?.toLowerCase() === userEmail.toLowerCase();
+              const disputedGuestShare = tx.splits.find(
+                (s) =>
+                  s.status === 'disputed' &&
+                  s.email.toLowerCase() !== userEmail.toLowerCase()
+              );
+              const isBusy = processingTxId === tx.id;
 
               return (
                 <div
@@ -263,7 +296,9 @@ export const PendingDisputesView: React.FC<PendingDisputesViewProps> = ({
                     <div className="flex items-start justify-between gap-3 mb-4">
                       <div>
                         <span className="px-2 py-0.5 rounded-md bg-amber-500/15 border border-amber-500/30 text-[10px] font-bold uppercase tracking-wider text-amber-300">
-                          Rateio Avulso (Sem Grupo)
+                          {isCreator && disputedGuestShare
+                            ? 'Contraproposta Recebida · Rateio Avulso'
+                            : 'Rateio Avulso (Sem Grupo)'}
                         </span>
                         <h4 className="text-base sm:text-lg font-bold text-white mt-1">
                           {tx.description}
@@ -287,67 +322,157 @@ export const PendingDisputesView: React.FC<PendingDisputesViewProps> = ({
                       </div>
                     </div>
 
-                    {/* Destaque da Cota atribuída ao usuário */}
-                    <div className="p-4 rounded-2xl bg-slate-900/80 border border-slate-700/70 mb-4 flex items-center justify-between">
-                      <div>
-                        <span className="text-xs text-slate-400 block">
-                          Sua Cota-Parte Solicitada
-                        </span>
-                        <span className="text-xl font-bold text-amber-400 font-mono tabular-nums">
-                          {formatCurrency(myShare?.responsibility || 0)}
-                        </span>
-                      </div>
-
-                      {tx.proposedAmount > 0 && (
-                        <div className="text-right">
-                          <span className="text-xs text-indigo-300 block">
-                            Cotação / Valor Proposto
+                    {isCreator && disputedGuestShare ? (
+                      <div className="p-4 rounded-2xl bg-slate-900/80 border border-indigo-500/40 mb-4 space-y-2">
+                        <div className="flex items-center justify-between text-xs">
+                          <span className="text-slate-400">
+                            Participante:{' '}
+                            <strong className="text-white">
+                              {disputedGuestShare.name || disputedGuestShare.email}
+                            </strong>
                           </span>
-                          <span className="text-base font-bold text-indigo-400 font-mono tabular-nums">
-                            {formatCurrency(tx.proposedAmount)}
+                          <span className="text-slate-400 font-mono">
+                            Cota original: {formatCurrency(disputedGuestShare.responsibility)}
                           </span>
                         </div>
-                      )}
-                    </div>
-
-                    {(tx.disputeReason || myShare?.note) && (
-                      <div className="p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-200 mb-5">
-                        <strong className="block mb-0.5">
-                          Observação / Detalhe da Cotação:
-                        </strong>
-                        <span>{tx.disputeReason || myShare?.note}</span>
+                        <div className="flex items-center justify-between pt-1 border-t border-slate-800">
+                          <span className="text-xs text-indigo-300 font-semibold">
+                            Valor Proposto pelo Participante:
+                          </span>
+                          <span className="text-lg font-bold text-indigo-400 font-mono tabular-nums">
+                            {formatCurrency(
+                              disputedGuestShare.proposedAmount ?? tx.proposedAmount ?? 0
+                            )}
+                          </span>
+                        </div>
+                        {(disputedGuestShare.note || tx.disputeReason) && (
+                          <p className="text-xs text-amber-200 bg-amber-500/10 border border-amber-500/20 rounded-xl p-2.5">
+                            {disputedGuestShare.note || tx.disputeReason}
+                          </p>
+                        )}
                       </div>
+                    ) : (
+                      <>
+                        {/* Destaque da Cota atribuída ao usuário */}
+                        <div className="p-4 rounded-2xl bg-slate-900/80 border border-slate-700/70 mb-4 flex items-center justify-between">
+                          <div>
+                            <span className="text-xs text-slate-400 block">
+                              Sua Cota-Parte Solicitada
+                            </span>
+                            <span className="text-xl font-bold text-amber-400 font-mono tabular-nums">
+                              {formatCurrency(myShare?.responsibility || 0)}
+                            </span>
+                          </div>
+
+                          {(myShare?.proposedAmount || tx.proposedAmount) ? (
+                            <div className="text-right">
+                              <span className="text-xs text-indigo-300 block">
+                                Cotação / Valor Proposto
+                              </span>
+                              <span className="text-base font-bold text-indigo-400 font-mono tabular-nums">
+                                {formatCurrency(myShare?.proposedAmount || tx.proposedAmount || 0)}
+                              </span>
+                            </div>
+                          ) : null}
+                        </div>
+
+                        {(tx.disputeReason || myShare?.note) && (
+                          <div className="p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-200 mb-5">
+                            <strong className="block mb-0.5">
+                              Observação / Detalhe da Cotação:
+                            </strong>
+                            <span>{tx.disputeReason || myShare?.note}</span>
+                          </div>
+                        )}
+                      </>
                     )}
                   </div>
 
-                  {/* Ações de Negociação: Aceitar, Propor Novo Valor / Cotação, Recusar */}
+                  {/* Ações de Negociação */}
                   <div className="pt-4 border-t border-slate-700/60 flex flex-wrap items-center justify-between gap-2">
-                    <button
-                      type="button"
-                      onClick={() => onAcceptSplit(tx)}
-                      className="flex-1 py-2.5 px-3.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
-                    >
-                      <i className="ph-bold ph-check-circle"></i>
-                      <span>Aceitar Cota</span>
-                    </button>
+                    {isCreator && disputedGuestShare && onResolveAdhocCounterProposal ? (
+                      <>
+                        <button
+                          type="button"
+                          disabled={isBusy}
+                          onClick={async () => {
+                            setProcessingTxId(tx.id);
+                            try {
+                              await onResolveAdhocCounterProposal(
+                                tx,
+                                disputedGuestShare.email,
+                                true
+                              );
+                            } finally {
+                              setProcessingTxId(null);
+                            }
+                          }}
+                          className="flex-1 py-2.5 px-3.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
+                        >
+                          <i className="ph-bold ph-check-circle"></i>
+                          <span>Aceitar Contraproposta</span>
+                        </button>
+                        <button
+                          type="button"
+                          disabled={isBusy}
+                          onClick={async () => {
+                            setProcessingTxId(tx.id);
+                            try {
+                              await onResolveAdhocCounterProposal(
+                                tx,
+                                disputedGuestShare.email,
+                                false
+                              );
+                            } finally {
+                              setProcessingTxId(null);
+                            }
+                          }}
+                          className="flex-1 py-2.5 px-3.5 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 disabled:opacity-50 border border-rose-500/30 text-rose-300 text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
+                        >
+                          <i className="ph-bold ph-x-circle"></i>
+                          <span>Recusar Contraproposta</span>
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          disabled={isBusy}
+                          onClick={async () => {
+                            setProcessingTxId(tx.id);
+                            try {
+                              await onAcceptSplit(tx);
+                            } finally {
+                              setProcessingTxId(null);
+                            }
+                          }}
+                          className="flex-1 py-2.5 px-3.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
+                        >
+                          <i className="ph-bold ph-check-circle"></i>
+                          <span>Aceitar Cota</span>
+                        </button>
 
-                    <button
-                      type="button"
-                      onClick={() => openNegotiationModal(tx, 'propose')}
-                      className="flex-1 py-2.5 px-3.5 rounded-xl bg-indigo-600/25 hover:bg-indigo-600/40 border border-indigo-500/40 text-indigo-200 text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
-                    >
-                      <i className="ph-bold ph-scales"></i>
-                      <span>Contestar / Propor Valor</span>
-                    </button>
+                        <button
+                          type="button"
+                          disabled={isBusy}
+                          onClick={() => openNegotiationModal(tx, 'propose')}
+                          className="flex-1 py-2.5 px-3.5 rounded-xl bg-indigo-600/25 hover:bg-indigo-600/40 disabled:opacity-50 border border-indigo-500/40 text-indigo-200 text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
+                        >
+                          <i className="ph-bold ph-scales"></i>
+                          <span>Contestar / Propor Valor</span>
+                        </button>
 
-                    <button
-                      type="button"
-                      onClick={() => openNegotiationModal(tx, 'reject')}
-                      className="py-2.5 px-3.5 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/30 text-rose-300 text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
-                    >
-                      <i className="ph-bold ph-x-circle"></i>
-                      <span>Recusar</span>
-                    </button>
+                        <button
+                          type="button"
+                          disabled={isBusy}
+                          onClick={() => openNegotiationModal(tx, 'reject')}
+                          className="py-2.5 px-3.5 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 disabled:opacity-50 border border-rose-500/30 text-rose-300 text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
+                        >
+                          <i className="ph-bold ph-x-circle"></i>
+                          <span>Recusar</span>
+                        </button>
+                      </>
+                    )}
                   </div>
                 </div>
               );
@@ -481,6 +606,18 @@ export const PendingDisputesView: React.FC<PendingDisputesViewProps> = ({
                 const myShare = tx.splits.find(
                   (s) => s.email.toLowerCase() === userEmail.toLowerCase()
                 );
+                const hasDispute = tx.splits.some((s) => s.status === 'disputed');
+                const statusBadge =
+                  tx.status === 'paid'
+                    ? { label: 'Liquidado', cls: 'text-emerald-400' }
+                    : tx.status === 'rejected'
+                    ? { label: 'Recusado', cls: 'text-rose-400' }
+                    : hasDispute
+                    ? { label: 'Contraproposta Pendente', cls: 'text-indigo-300' }
+                    : myShare?.status === 'accepted'
+                    ? { label: 'Cota Aceita · A Pagar no Vencimento', cls: 'text-amber-300' }
+                    : { label: 'Aguardando Confirmação', cls: 'text-slate-300' };
+
                 return (
                   <div
                     key={tx.id}
@@ -504,16 +641,8 @@ export const PendingDisputesView: React.FC<PendingDisputesViewProps> = ({
                           {formatCurrency(myShare?.responsibility || 0)}
                         </span>
                       </div>
-                      <span
-                        className={`font-semibold ${
-                          tx.status === 'rejected'
-                            ? 'text-rose-400'
-                            : 'text-emerald-400'
-                        }`}
-                      >
-                        {tx.status === 'rejected'
-                          ? 'Recusado'
-                          : 'Cota Aceita'}
+                      <span className={`font-semibold ${statusBadge.cls}`}>
+                        {statusBadge.label}
                       </span>
                     </div>
                   </div>

@@ -74,7 +74,17 @@ import {
   createCategory as createCategoryV3,
   ensureDefaultCategories,
 } from './services/categoryService';
-import { createPersonalTransaction } from './services/personalTransactionService';
+import {
+  createPersonalTransaction,
+  updatePersonalTransaction,
+} from './services/personalTransactionService';
+import {
+  AdhocRealtimePayload,
+  createAdhocExpense,
+  resolveAdhocCounterProposal,
+  respondAdhocObligation,
+  subscribeToUserAdhocData,
+} from './services/adhocService';
 import {
   createInstallmentContract,
   createRecurrenceRule,
@@ -260,6 +270,12 @@ function AppInner() {
   const [editingTx, setEditingTx] = useState<Transaction | null>(null);
   const [universalPreset, setUniversalPreset] = useState<UniversalTransactionPreset>({});
   const [v3RefreshToken, setV3RefreshToken] = useState(0);
+  const [adhocDemoTick, setAdhocDemoTick] = useState(0);
+  const [adhocRealtime, setAdhocRealtime] = useState<AdhocRealtimePayload>({
+    expenses: [],
+    obligations: [],
+    transactions: [],
+  });
   const cloudAccountsRef = useRef<Account[]>([]);
 
   const openUniversalModal = async (
@@ -798,6 +814,26 @@ function AppInner() {
     };
   }, [currentUser?.uid, currentUser?.email, currentUser?.isDemo]);
 
+  // Listener reativo em tempo real de rateios avulsos (despesas criadas e obrigações recebidas)
+  useEffect(() => {
+    if (!currentUser?.uid) {
+      setAdhocRealtime({ expenses: [], obligations: [], transactions: [] });
+      return;
+    }
+    return subscribeToUserAdhocData(
+      currentUser.uid,
+      currentUser.email || '',
+      setAdhocRealtime,
+      !!currentUser.isDemo
+    );
+  }, [
+    currentUser?.uid,
+    currentUser?.email,
+    currentUser?.isDemo,
+    adhocDemoTick,
+    v3RefreshToken,
+  ]);
+
   // Handlers de Mutação (funcionam tanto com Firestore real-time quanto na sessão demonstrativa)
   const handleCreateAccount = async (
     accData: Omit<Account, 'id' | 'userId'>
@@ -1123,6 +1159,33 @@ function AppInner() {
         cascadeMode
       );
       const updatedSample = series[0];
+      const cleanBase = updatedSample.description
+        .replace(/\s*\(\d+\/\d+\)$/, '')
+        .trim();
+
+      if (
+        !currentUser.isDemo &&
+        !editingTransaction.spaceId &&
+        (!editingTransaction.splits || editingTransaction.splits.length <= 1)
+      ) {
+        await updatePersonalTransaction(
+          currentUser.uid,
+          editingTransaction.id,
+          {
+            description: cleanBase,
+            categoryId: updatedSample.categoryId,
+            categoryName: updatedSample.categoryName,
+            competenceDate: updatedSample.competenceDate,
+            dueDate: updatedSample.dueDate,
+            notes: extra?.notes,
+            amountCents: Math.round(updatedSample.amount * 100),
+          },
+          false
+        );
+        setV3RefreshToken((n) => n + 1);
+        showToast(`Lançamento "${cleanBase}" atualizado com sucesso!`);
+        return;
+      }
 
       syncTransactionsState((prev) =>
         prev.map((tx) => {
@@ -1131,10 +1194,6 @@ function AppInner() {
             tx.recurrenceType === 'installment'
               ? ` (${tx.installmentIndex}/${tx.installmentTotal})`
               : '';
-          const cleanBase = updatedSample.description.replace(
-            /\s*\(\d+\/\d+\)$/,
-            ''
-          );
           return {
             ...tx,
             description: `${cleanBase}${suffix}`,
@@ -1158,21 +1217,41 @@ function AppInner() {
         })
       );
 
-      setV3RefreshToken((n) => n + 1);
-      if (currentUser.isDemo) {
-        showToast(
-          `Alteração aplicada em ${targets.length} lançamento(s) (${
-            cascadeMode === 'only_this'
-              ? 'Somente este'
-              : cascadeMode === 'this_and_following'
-              ? 'Este e seguintes'
-              : 'Toda a série'
-          }).`
-        );
-        return;
+      if (
+        currentUser.isDemo &&
+        !editingTransaction.spaceId &&
+        (!editingTransaction.splits || editingTransaction.splits.length <= 1)
+      ) {
+        try {
+          await updatePersonalTransaction(
+            currentUser.uid,
+            editingTransaction.id,
+            {
+              description: cleanBase,
+              categoryId: updatedSample.categoryId,
+              categoryName: updatedSample.categoryName,
+              competenceDate: updatedSample.competenceDate,
+              dueDate: updatedSample.dueDate,
+              notes: extra?.notes,
+              amountCents: Math.round(updatedSample.amount * 100),
+            },
+            true
+          );
+        } catch {
+          // Mantém atualização de série demo se ID vier apenas do seed legado
+        }
       }
 
-      showToast('Edição de lançamento individual deve ser feita na aba Finanças / Lançamentos v3.1.');
+      setV3RefreshToken((n) => n + 1);
+      showToast(
+        `Alteração aplicada em ${targets.length} lançamento(s) (${
+          cascadeMode === 'only_this'
+            ? 'Somente este'
+            : cascadeMode === 'this_and_following'
+            ? 'Este e seguintes'
+            : 'Toda a série'
+        }).`
+      );
       return;
     }
 
@@ -1186,6 +1265,52 @@ function AppInner() {
     const startMonth = compDate.slice(0, 7);
     const dueDay = Math.min(Math.max(1, parseInt(dueDate.split('-')[2] || '10', 10)), 31);
     const nonce = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+
+    // Persistência canônica v3.1 para Rateio Avulso (fora de espaço)
+    if (!first.spaceId && first.type === 'expense' && first.splits && first.splits.length > 1) {
+      const fundingSource =
+        first.accountType === 'credit'
+          ? 'credit_card'
+          : (first.accountType as string) === 'wallet'
+          ? 'wallet'
+          : 'personal_checking';
+
+      const res = await createAdhocExpense(
+        currentUser.uid,
+        {
+          ownerEmail: currentUser.email,
+          ownerName: currentUser.name,
+          title: cleanDesc,
+          description: extra?.notes || undefined,
+          totalAmountCents: amountCents,
+          fundingSource,
+          sourceAccountId: first.accountId || '',
+          accountName: first.accountName || '',
+          date: compDate,
+          dueDate,
+          categoryId: first.categoryId,
+          categoryName: first.categoryName,
+          participants: first.splits.map((s) => ({
+            email: s.email,
+            name: s.name,
+            assignedAmountCents: Math.round((Number(s.responsibility) || 0) * 100),
+            isOwner: s.email.toLowerCase() === currentUser.email.toLowerCase(),
+          })),
+          idempotencyKey: `utm_adhoc_${nonce}`,
+        },
+        !!currentUser.isDemo
+      );
+
+      setAdhocDemoTick((n) => n + 1);
+      setV3RefreshToken((n) => n + 1);
+      const inviteCount = res.invites?.length || 0;
+      showToast(
+        inviteCount > 0
+          ? `Rateio avulso "${cleanDesc}" criado e ${inviteCount} convite(s) enviado(s)!`
+          : `Rateio avulso "${cleanDesc}" registrado e sincronizado!`
+      );
+      return;
+    }
 
     // Persistência canônica v3.1 para despesas compartilhadas em espaço
     if (first.spaceId && first.type === 'expense') {
@@ -2069,6 +2194,32 @@ function AppInner() {
   // A despesa continua regida pela sua data de vencimento (No Prazo ou Vencida) até que quem paga dê baixa.
   const handleAcceptSplit = async (tx: Transaction) => {
     if (!currentUser) return;
+    const matchedOb = adhocRealtime.obligations.find(
+      (o) => o.adhocExpenseId === tx.id
+    );
+    const inAdhocService =
+      Boolean(matchedOb) ||
+      adhocRealtime.expenses.some((e) => e.id === tx.id) ||
+      adhocRealtime.transactions.some((t) => t.id === tx.id);
+
+    if (inAdhocService) {
+      await respondAdhocObligation(
+        currentUser.uid,
+        {
+          adhocExpenseId: tx.id,
+          obligationId: matchedOb?.id,
+          action: 'accept',
+        },
+        !!currentUser.isDemo
+      );
+      setAdhocDemoTick((n) => n + 1);
+      setV3RefreshToken((n) => n + 1);
+      showToast(
+        `Cota aceita em "${tx.description}"! A despesa segue controlada pelo vencimento (${tx.dueDate}) sem baixa automática.`
+      );
+      return;
+    }
+
     const updatedSplits = tx.splits.map((s) =>
       s.email.toLowerCase() === currentUser.email.toLowerCase()
         ? { ...s, status: 'accepted' as const }
@@ -2097,29 +2248,38 @@ function AppInner() {
       )
     );
 
-    if (currentUser.isDemo) {
-      showToast(
-        `Cota aceita em "${tx.description}"! A despesa segue no prazo de vencimento (${tx.dueDate}) aguardando baixa do pagamento.`
-      );
-      return;
-    }
-
-    try {
-      await updateDoc(doc(db, 'transactions', tx.id), {
-        status: nextStatus,
-        splits: updatedSplits,
-        disputeReason: '',
-        proposedAmount: 0,
-        updatedAt: serverTimestamp(),
-      });
-      showToast(`Cota aceita em "${tx.description}"!`);
-    } catch (e) {
-      handleFirestoreError(e, OperationType.UPDATE, `transactions/${tx.id}`);
-    }
+    showToast(
+      `Cota aceita em "${tx.description}"! A despesa segue no prazo de vencimento (${tx.dueDate}) aguardando baixa do pagamento.`
+    );
   };
 
   const handleRejectSplit = async (tx: Transaction, reason: string) => {
     if (!currentUser) return;
+    const matchedOb = adhocRealtime.obligations.find(
+      (o) => o.adhocExpenseId === tx.id
+    );
+    const inAdhocService =
+      Boolean(matchedOb) ||
+      adhocRealtime.expenses.some((e) => e.id === tx.id) ||
+      adhocRealtime.transactions.some((t) => t.id === tx.id);
+
+    if (inAdhocService) {
+      await respondAdhocObligation(
+        currentUser.uid,
+        {
+          adhocExpenseId: tx.id,
+          obligationId: matchedOb?.id,
+          action: 'reject',
+          reason,
+        },
+        !!currentUser.isDemo
+      );
+      setAdhocDemoTick((n) => n + 1);
+      setV3RefreshToken((n) => n + 1);
+      showToast(`Rateio "${tx.description}" marcado como recusado.`);
+      return;
+    }
+
     const updatedSplits = tx.splits.map((s) =>
       s.email.toLowerCase() === currentUser.email.toLowerCase()
         ? { ...s, status: 'rejected' as const, note: reason }
@@ -2140,23 +2300,7 @@ function AppInner() {
       )
     );
 
-    if (currentUser.isDemo) {
-      showToast(`Rateio "${tx.description}" marcado como recusado.`);
-      return;
-    }
-
-    try {
-      await updateDoc(doc(db, 'transactions', tx.id), {
-        status: 'rejected',
-        paymentDate: '',
-        splits: updatedSplits,
-        disputeReason: reason.slice(0, 300),
-        updatedAt: serverTimestamp(),
-      });
-      showToast(`Rateio "${tx.description}" recusado.`);
-    } catch (e) {
-      handleFirestoreError(e, OperationType.UPDATE, `transactions/${tx.id}`);
-    }
+    showToast(`Rateio "${tx.description}" marcado como recusado.`);
   };
 
   const handleProposeNewValue = async (
@@ -2165,6 +2309,34 @@ function AppInner() {
     reason: string
   ) => {
     if (!currentUser) return;
+    const matchedOb = adhocRealtime.obligations.find(
+      (o) => o.adhocExpenseId === tx.id
+    );
+    const inAdhocService =
+      Boolean(matchedOb) ||
+      adhocRealtime.expenses.some((e) => e.id === tx.id) ||
+      adhocRealtime.transactions.some((t) => t.id === tx.id);
+
+    if (inAdhocService) {
+      await respondAdhocObligation(
+        currentUser.uid,
+        {
+          adhocExpenseId: tx.id,
+          obligationId: matchedOb?.id,
+          action: 'counter_propose',
+          proposedAmountCents: Math.round(proposedAmount * 100),
+          reason,
+        },
+        !!currentUser.isDemo
+      );
+      setAdhocDemoTick((n) => n + 1);
+      setV3RefreshToken((n) => n + 1);
+      showToast(
+        `Contraproposta de ${formatCurrency(proposedAmount)} enviada para "${tx.description}"!`
+      );
+      return;
+    }
+
     const oldMyShare =
       tx.splits.find(
         (s) => s.email.toLowerCase() === currentUser.email.toLowerCase()
@@ -2214,25 +2386,44 @@ function AppInner() {
       )
     );
 
-    if (currentUser.isDemo) {
-      showToast(
-        `Contraproposta de ${formatCurrency(proposedAmount)} aplicada em "${tx.description}"! A despesa segue aguardando pagamento no vencimento.`
-      );
+    showToast(
+      `Contraproposta de ${formatCurrency(proposedAmount)} aplicada em "${tx.description}"! A despesa segue aguardando pagamento no vencimento.`
+    );
+  };
+
+  const handleResolveAdhocCounterProposal = async (
+    tx: Transaction,
+    guestEmail: string,
+    accept: boolean
+  ) => {
+    if (!currentUser) return;
+    const exp = adhocRealtime.expenses.find((e) => e.id === tx.id);
+    const summary = exp?.participantSummaries?.find(
+      (s) =>
+        !s.isOwner &&
+        (s.email?.toLowerCase() === guestEmail.toLowerCase() || s.status === 'disputed')
+    );
+    const guestUid = summary?.uid || '';
+    if (!guestUid) {
+      showToast('Não foi possível localizar o participante desta contraproposta.');
       return;
     }
 
-    try {
-      await updateDoc(doc(db, 'transactions', tx.id), {
-        status: nextStatus,
-        splits: updatedSplits,
-        proposedAmount,
-        disputeReason: `Valor renegociado: ${reason}`.slice(0, 300),
-        updatedAt: serverTimestamp(),
-      });
-      showToast('Contraproposta registrada com sucesso!');
-    } catch (e) {
-      handleFirestoreError(e, OperationType.UPDATE, `transactions/${tx.id}`);
-    }
+    await resolveAdhocCounterProposal(
+      {
+        adhocExpenseId: tx.id,
+        guestUid,
+        acceptCounterProposal: accept,
+      },
+      !!currentUser.isDemo
+    );
+    setAdhocDemoTick((n) => n + 1);
+    setV3RefreshToken((n) => n + 1);
+    showToast(
+      accept
+        ? `Contraproposta aceita em "${tx.description}". A obrigação continua em aberto até o pagamento.`
+        : `Contraproposta recusada em "${tx.description}".`
+    );
   };
 
   const handleLogout = async () => {
@@ -2241,6 +2432,7 @@ function AppInner() {
     setCategories([]);
     setSpaces([]);
     setTransactions([]);
+    setAdhocRealtime({ expenses: [], obligations: [], transactions: [] });
     await logout();
   };
 
@@ -2266,16 +2458,33 @@ function AppInner() {
         p.status === 'invited'
     )
   ).length;
-  const pendingAdhocSplitsCount = transactions.filter(
-    (tx) =>
-      !tx.spaceId &&
-      (tx.status === 'validating' ||
-        tx.splits?.some(
-          (s) =>
-            s.email.toLowerCase() === currentUser.email.toLowerCase() &&
-            (s.status === 'pending' || s.status === 'disputed')
-        ))
-  ).length;
+  const inboxTransactions = (() => {
+    const byId = new Map<string, Transaction>();
+    transactions.forEach((t) => byId.set(t.id, t));
+    adhocRealtime.transactions.forEach((t) => byId.set(t.id, t));
+    return Array.from(byId.values());
+  })();
+
+  const pendingAdhocSplitsCount = inboxTransactions.filter((tx) => {
+    if (tx.spaceId && tx.spaceId.trim().length > 0) return false;
+    const isCreator =
+      tx.userId === currentUser.uid ||
+      tx.ownerEmail?.toLowerCase() === currentUser.email.toLowerCase();
+    if (isCreator) {
+      return (
+        tx.status === 'validating' &&
+        (tx.splits || []).some((s) => s.status === 'disputed')
+      );
+    }
+    return (
+      tx.status === 'validating' ||
+      tx.splits?.some(
+        (s) =>
+          s.email.toLowerCase() === currentUser.email.toLowerCase() &&
+          (s.status === 'pending' || s.status === 'disputed')
+      )
+    );
+  }).length;
   const pendingDisputesCount =
     pendingSpaceInvitesCount + pendingAdhocSplitsCount;
 
@@ -2729,6 +2938,8 @@ function AppInner() {
               onChangeMonth={setSelectedMonth}
               refreshTrigger={v3RefreshToken}
               onOpenNewTransaction={(preset) => openUniversalModal(preset)}
+              adhocTransactions={adhocRealtime.transactions}
+              userEmail={currentUser?.email || ''}
             />
           )}
 
@@ -2741,10 +2952,16 @@ function AppInner() {
               openCreateTrigger={openNewSpaceTrigger}
               refreshTrigger={v3RefreshToken}
               onConsumeCreateTrigger={() => setOpenNewSpaceTrigger(0)}
-              onSpacesChanged={(createdSpace) => {
+              onSpacesChanged={async (createdSpace) => {
                 if (!currentUser) return;
                 if (createdSpace) {
                   const emailLower = (currentUser.email || '').toLowerCase();
+                  const memberUids = Array.from(
+                    new Set([
+                      ...(createdSpace.memberUids || []),
+                      currentUser.uid,
+                    ])
+                  );
                   const mapped: Space = {
                     id: createdSpace.id,
                     name: createdSpace.name,
@@ -2754,14 +2971,16 @@ function AppInner() {
                     icon: createdSpace.icon || 'ph-users-three',
                     color: createdSpace.color || 'indigo',
                     participantEmails: emailLower ? [emailLower] : [],
-                    participants: [
-                      {
-                        uid: currentUser.uid,
-                        email: emailLower,
-                        name: currentUser.name,
-                        status: 'active',
-                      },
-                    ],
+                    participants: memberUids.map((uid) => ({
+                      uid,
+                      email:
+                        uid === currentUser.uid
+                          ? emailLower
+                          : `${uid}@membro.local`,
+                      name:
+                        uid === currentUser.uid ? currentUser.name : 'Participante',
+                      status: 'active',
+                    })),
                     enabledModules: createdSpace.enabledModules || ['finance', 'acquisitions'],
                     monthlyBudget: createdSpace.monthlyBudgetCents
                       ? createdSpace.monthlyBudgetCents / 100
@@ -2774,6 +2993,7 @@ function AppInner() {
                     return Array.from(byId.values());
                   }, currentUser.uid);
                 }
+                setV3RefreshToken((n) => n + 1);
               }}
               onOpenNewTransaction={(preset) => openUniversalModal(preset)}
               onOpenSpaceAcquisitions={(spaceId) => {
@@ -2812,13 +3032,15 @@ function AppInner() {
 
           {activeTab === 'disputes' && (
             <PendingDisputesView
-              transactions={transactions}
+              transactions={inboxTransactions}
               spaces={spaces}
               userEmail={currentUser.email}
+              userUid={currentUser.uid}
               dismissedSpaceNotifIds={dismissedSpaceNotifIds}
               onAcceptSplit={handleAcceptSplit}
               onRejectSplit={handleRejectSplit}
               onProposeNewValue={handleProposeNewValue}
+              onResolveAdhocCounterProposal={handleResolveAdhocCounterProposal}
               onAcceptSpaceInvite={handleAcceptSpaceInvite}
               onDeclineSpaceInvite={handleDeclineSpaceInvite}
               onDismissSpaceNotif={handleDismissSpaceNotification}

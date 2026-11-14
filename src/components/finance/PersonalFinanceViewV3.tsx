@@ -32,6 +32,9 @@ import {
   Play,
   ChevronDown,
   ChevronUp,
+  Eye,
+  Pencil,
+  Undo2,
 } from 'lucide-react';
 import {
   Account,
@@ -44,6 +47,7 @@ import {
   PersonalCategory,
   PersonalRefund,
   PersonalTransaction,
+  PersonalTransactionPaymentView,
   PersonalTransactionStatus,
   RecurrenceRule,
   InstallmentContract,
@@ -51,18 +55,22 @@ import {
   SharedExpense,
   Space,
 } from '../../types/financeV3';
-import { UniversalTransactionPreset } from '../../types/finance';
+import { Transaction, UniversalTransactionPreset } from '../../types/finance';
 import { resolveAutomatedV3Status, getTodayDateString } from '../../utils/financeEngine';
 import { getUserAccounts } from '../../services/accountService';
 import {
   getUserCategories,
   createCategory,
+  updateCategory,
   archiveCategory,
   ensureDefaultCategories,
 } from '../../services/categoryService';
 import {
   recordPartialPayment,
   cancelPersonalTransaction,
+  updatePersonalTransaction,
+  reversePersonalTransactionPayment,
+  getPersonalTransactionPayments,
   getUserPersonalTransactions,
 } from '../../services/personalTransactionService';
 import {
@@ -99,6 +107,12 @@ import {
   parseBRLToCents,
   validatePositiveCents,
 } from '../../utils/movementLedger';
+import {
+  IconGridPicker,
+  ColorPalettePicker,
+  resolveHexColor,
+  resolvePhosphorCategoryIcon,
+} from '../ui/VisualPickers';
 
 interface PersonalFinanceViewV3Props {
   userId: string;
@@ -107,6 +121,8 @@ interface PersonalFinanceViewV3Props {
   onChangeMonth?: (month: CompetenceMonthString) => void;
   refreshTrigger?: number;
   onOpenNewTransaction?: (preset?: UniversalTransactionPreset) => void;
+  adhocTransactions?: Transaction[];
+  userEmail?: string;
 }
 
 interface SharedExtratoEntry {
@@ -132,7 +148,7 @@ interface SharedExtratoEntry {
 interface UnifiedExtratoEntry {
   key: string;
   id: string;
-  scopeType: 'personal' | 'shared';
+  scopeType: 'personal' | 'shared' | 'adhoc';
   spaceId?: string;
   scopeLabel: string;
   originLabel: string;
@@ -147,12 +163,16 @@ interface UnifiedExtratoEntry {
   remainingAmountCents?: number;
   competenceDate: string;
   dueDate?: string;
+  paymentDate?: string;
   invoiceMonth?: string;
+  notes?: string;
   statusKey: string;
   statusLabel: string;
   statusBadgeClass: string;
   createdAt: string;
   personalTx?: PersonalTransaction;
+  sharedEntry?: SharedExtratoEntry;
+  adhocTx?: Transaction;
 }
 
 type MainTab =
@@ -172,6 +192,8 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
   onChangeMonth,
   refreshTrigger = 0,
   onOpenNewTransaction,
+  adhocTransactions = [],
+  userEmail = '',
 }) => {
   const [activeTab, setActiveTab] = useState<MainTab>('transactions');
   const [internalMonth, setInternalMonth] = useState<CompetenceMonthString>(() => {
@@ -201,10 +223,35 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
   const [refunds, setRefunds] = useState<PersonalRefund[]>([]);
 
   // Filtros de Transações (Extrato Unificado)
-  const [filterScope, setFilterScope] = useState<'all' | 'personal' | string>('all');
+  const [filterScope, setFilterScope] = useState<'all' | 'personal' | 'adhoc' | string>('all');
   const [filterType, setFilterType] = useState<'all' | 'income' | 'expense'>('all');
   const [filterStatus, setFilterStatus] = useState<'all' | PersonalTransactionStatus>('all');
   const [filterCategory, setFilterCategory] = useState<string>('all');
+
+  // Modal Detalhes do Lançamento
+  const [detailsEntry, setDetailsEntry] = useState<UnifiedExtratoEntry | null>(null);
+  const [detailsPayments, setDetailsPayments] = useState<PersonalTransactionPaymentView[]>([]);
+  const [detailsPaymentsLoading, setDetailsPaymentsLoading] = useState(false);
+
+  // Modal Editar Lançamento
+  const [editTxModal, setEditTxModal] = useState<PersonalTransaction | null>(null);
+  const [editTxDesc, setEditTxDesc] = useState('');
+  const [editTxAmount, setEditTxAmount] = useState('');
+  const [editTxCategoryId, setEditTxCategoryId] = useState('');
+  const [editTxCompDate, setEditTxCompDate] = useState('');
+  const [editTxDueDate, setEditTxDueDate] = useState('');
+  const [editTxNotes, setEditTxNotes] = useState('');
+  const [editTxSubmitting, setEditTxSubmitting] = useState(false);
+
+  // Modal Estornar Pagamento
+  const [reverseTxModal, setReverseTxModal] = useState<PersonalTransaction | null>(null);
+  const [reverseTxReason, setReverseTxReason] = useState('');
+  const [reverseTxSubmitting, setReverseTxSubmitting] = useState(false);
+
+  // Modal Cancelar Lançamento
+  const [cancelTxModal, setCancelTxModal] = useState<PersonalTransaction | null>(null);
+  const [cancelTxReason, setCancelTxReason] = useState('');
+  const [cancelTxSubmitting, setCancelTxSubmitting] = useState(false);
 
   // Modal Pagamento Parcial
   const [partialTx, setPartialTx] = useState<PersonalTransaction | null>(null);
@@ -257,11 +304,13 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
   const [receiveIdempotencyKey, setReceiveIdempotencyKey] = useState('');
   const [receiveSubmitting, setReceiveSubmitting] = useState(false);
 
-  // Modal Nova Categoria
+  // Modal Nova / Editar Categoria
   const [isCategoryModalOpen, setIsCategoryModalOpen] = useState(false);
+  const [editingCategory, setEditingCategory] = useState<PersonalCategory | null>(null);
   const [newCatName, setNewCatName] = useState('');
   const [newCatType, setNewCatType] = useState<'income' | 'expense'>('expense');
   const [newCatColor, setNewCatColor] = useState('#2563EB');
+  const [newCatIcon, setNewCatIcon] = useState('ph-tag');
   const [newCatSubmitting, setNewCatSubmitting] = useState(false);
 
   // Recorrências e Parcelamentos (Fase 9)
@@ -483,7 +532,9 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
         remainingAmountCents: tx.remainingAmountCents,
         competenceDate: tx.competenceDate,
         dueDate: tx.dueDate,
+        paymentDate: tx.paymentDate,
         invoiceMonth: tx.invoiceMonth,
+        notes: tx.notes,
         statusKey: statusInfo.key,
         statusLabel: statusInfo.label,
         statusBadgeClass: statusInfo.badgeClass,
@@ -556,10 +607,78 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
         amountCents: sh.amountCents,
         competenceDate: sh.competenceDate,
         dueDate: sh.dueDate,
+        notes: sh.description,
         statusKey,
         statusLabel,
         statusBadgeClass,
         createdAt: sh.createdAt,
+        sharedEntry: sh,
+      });
+    }
+
+    for (const adhoc of adhocTransactions) {
+      const adhocMonth = (adhoc.competenceDate || adhoc.dueDate || '').slice(0, 7);
+      if (adhocMonth && adhocMonth !== selectedMonth) continue;
+      const key = `adhoc_${adhoc.id}`;
+      if (byKey.has(key)) continue;
+
+      const myShare = adhoc.splits?.find(
+        (s) => userEmail && s.email?.toLowerCase() === userEmail.toLowerCase()
+      );
+      const isCancelled = adhoc.status === 'rejected';
+      const isPaid = adhoc.status === 'paid';
+      const isValidating = adhoc.status === 'validating';
+      const isOverdue = !isCancelled && !isPaid && Boolean(adhoc.dueDate && adhoc.dueDate < today);
+
+      const statusKey = isCancelled
+        ? 'cancelled'
+        : isPaid
+        ? 'paid'
+        : isOverdue
+        ? 'overdue'
+        : 'pending';
+      const statusLabel = isCancelled
+        ? 'Recusada / Cancelada'
+        : isPaid
+        ? 'Liquidada'
+        : isValidating
+        ? 'Aguardando Aceite'
+        : isOverdue
+        ? 'Vencida'
+        : myShare?.status === 'accepted'
+        ? 'Cota Aceita (A Pagar)'
+        : 'Pendente';
+      const statusBadgeClass = isCancelled
+        ? 'bg-slate-800 text-slate-400 border border-slate-700'
+        : isPaid
+        ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
+        : isValidating
+        ? 'bg-indigo-500/15 text-indigo-300 border border-indigo-500/30'
+        : isOverdue
+        ? 'bg-rose-500/15 text-rose-300 border border-rose-500/30'
+        : 'bg-amber-500/15 text-amber-300 border border-amber-500/30';
+
+      byKey.set(key, {
+        key,
+        id: adhoc.id,
+        scopeType: 'adhoc',
+        scopeLabel: 'Rateio Avulso',
+        originLabel: 'Rateio Avulso',
+        authorLabel: `Lançado por ${adhoc.ownerName || adhoc.ownerEmail}`,
+        accountLabel: adhoc.accountName || 'Rateio Avulso',
+        description: adhoc.description,
+        categoryId: adhoc.categoryId || 'uncategorized',
+        categoryName: adhoc.categoryName || 'Rateio Avulso',
+        type: 'expense',
+        amountCents: Math.round((adhoc.amount || 0) * 100),
+        competenceDate: adhoc.competenceDate,
+        dueDate: adhoc.dueDate,
+        notes: adhoc.disputeReason || undefined,
+        statusKey,
+        statusLabel,
+        statusBadgeClass,
+        createdAt: typeof adhoc.createdAt === 'string' ? adhoc.createdAt : adhoc.competenceDate,
+        adhocTx: adhoc,
       });
     }
 
@@ -568,14 +687,16 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
       if (cmp !== 0) return cmp;
       return (b.createdAt || '').localeCompare(a.createdAt || '');
     });
-  }, [transactions, sharedExtratoItems, accountNameById]);
+  }, [transactions, sharedExtratoItems, adhocTransactions, selectedMonth, userEmail, accountNameById]);
 
   const filteredTransactions = useMemo(() => {
     return extratoEntries.filter((entry) => {
       if (filterScope === 'personal' && entry.scopeType !== 'personal') return false;
+      if (filterScope === 'adhoc' && entry.scopeType !== 'adhoc') return false;
       if (
         filterScope !== 'all' &&
         filterScope !== 'personal' &&
+        filterScope !== 'adhoc' &&
         entry.spaceId !== filterScope
       ) {
         return false;
@@ -587,7 +708,142 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
     });
   }, [extratoEntries, filterScope, filterType, filterStatus, filterCategory]);
 
-  // 2. Amortização / Pagamento Parcial
+  // 2. Detalhes, Edição, Estorno e Amortização / Pagamento Parcial
+  const handleOpenDetails = async (entry: UnifiedExtratoEntry) => {
+    setDetailsEntry(entry);
+    setDetailsPayments([]);
+    if (entry.personalTx) {
+      setDetailsPaymentsLoading(true);
+      try {
+        const payList = await getPersonalTransactionPayments(entry.personalTx.id, userId, isDemo);
+        setDetailsPayments(payList);
+      } catch (err) {
+        console.warn('Falha ao carregar histórico de pagamentos:', err);
+      } finally {
+        setDetailsPaymentsLoading(false);
+      }
+    }
+  };
+
+  const handleOpenEditTx = (tx: PersonalTransaction) => {
+    setModalError(null);
+    setEditTxModal(tx);
+    setEditTxDesc(tx.description);
+    setEditTxAmount((tx.amountCents / 100).toFixed(2).replace('.', ','));
+    setEditTxCategoryId(tx.categoryId || '');
+    setEditTxCompDate(tx.competenceDate || '');
+    setEditTxDueDate(tx.dueDate || tx.competenceDate || '');
+    setEditTxNotes(tx.notes || '');
+  };
+
+  const handleConfirmEditTx = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editTxModal) return;
+
+    const cleanDesc = editTxDesc.trim();
+    if (!cleanDesc) {
+      setModalError('A descrição do lançamento é obrigatória.');
+      return;
+    }
+
+    const canEditAmount =
+      (editTxModal.paidAmountCents || 0) === 0 &&
+      editTxModal.status !== 'paid' &&
+      editTxModal.status !== 'partially_paid';
+
+    let nextAmountCents: number | undefined;
+    if (canEditAmount) {
+      try {
+        const parsed = parseBRLToCents(editTxAmount);
+        validatePositiveCents(parsed);
+        if (parsed !== editTxModal.amountCents) {
+          nextAmountCents = parsed;
+        }
+      } catch (err: unknown) {
+        setModalError(err instanceof Error ? err.message : 'Valor inválido');
+        return;
+      }
+    }
+
+    const selectedCat = categories.find((c) => c.id === editTxCategoryId);
+    setEditTxSubmitting(true);
+    setModalError(null);
+    try {
+      await updatePersonalTransaction(
+        userId,
+        editTxModal.id,
+        {
+          description: cleanDesc,
+          categoryId: editTxCategoryId || editTxModal.categoryId,
+          categoryName: selectedCat ? selectedCat.name : editTxModal.categoryName,
+          competenceDate: editTxCompDate || editTxModal.competenceDate,
+          dueDate: editTxDueDate || editTxModal.dueDate,
+          notes: editTxNotes.trim(),
+          ...(nextAmountCents !== undefined ? { amountCents: nextAmountCents } : {}),
+        },
+        isDemo
+      );
+      showToast('Lançamento atualizado com sucesso!');
+      setEditTxModal(null);
+      await loadAllData();
+    } catch (err: unknown) {
+      setModalError(err instanceof Error ? err.message : 'Falha ao atualizar lançamento');
+    } finally {
+      setEditTxSubmitting(false);
+    }
+  };
+
+  const handleConfirmReverseTx = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!reverseTxModal) return;
+    if (!reverseTxReason.trim()) {
+      setModalError('Informe a justificativa obrigatória para o estorno.');
+      return;
+    }
+
+    setReverseTxSubmitting(true);
+    setModalError(null);
+    try {
+      await reversePersonalTransactionPayment(
+        reverseTxModal.id,
+        userId,
+        { reason: reverseTxReason.trim() },
+        isDemo
+      );
+      showToast('Pagamento estornado compensatoriamente e saldo restaurado!');
+      setReverseTxModal(null);
+      setReverseTxReason('');
+      await loadAllData();
+    } catch (err: unknown) {
+      setModalError(err instanceof Error ? err.message : 'Falha ao estornar pagamento');
+    } finally {
+      setReverseTxSubmitting(false);
+    }
+  };
+
+  const handleConfirmCancelTx = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!cancelTxModal) return;
+    if (!cancelTxReason.trim()) {
+      setModalError('Informe a justificativa obrigatória para o cancelamento.');
+      return;
+    }
+
+    setCancelTxSubmitting(true);
+    setModalError(null);
+    try {
+      await cancelPersonalTransaction(cancelTxModal.id, userId, cancelTxReason.trim(), isDemo);
+      showToast('Lançamento cancelado com preservação contábil.');
+      setCancelTxModal(null);
+      setCancelTxReason('');
+      await loadAllData();
+    } catch (err: unknown) {
+      setModalError(err instanceof Error ? err.message : 'Falha ao cancelar transação');
+    } finally {
+      setCancelTxSubmitting(false);
+    }
+  };
+
   const handleExecutePartialPayment = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!partialTx) return;
@@ -640,23 +896,6 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
       setModalError(msg);
     } finally {
       setPartialSubmitting(false);
-    }
-  };
-
-  // 3. Cancelamento de Transação
-  const handleCancelTx = async (tx: PersonalTransaction) => {
-    const reason = window.prompt(
-      `Confirma o cancelamento da transação "${tx.description}"?\nInforme o motivo obrigatório:`
-    );
-    if (!reason || !reason.trim()) return;
-
-    try {
-      await cancelPersonalTransaction(tx.id, userId, reason.trim(), isDemo);
-      showToast('Transação cancelada com sucesso.');
-      await loadAllData();
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Falha ao cancelar transação';
-      setError(msg);
     }
   };
 
@@ -928,8 +1167,26 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
     }
   };
 
-  // 9. Criar Categoria
-  const handleCreateCategory = async (e: React.FormEvent) => {
+  // 9. Criar / Editar Categoria
+  const handleOpenCategoryModal = (cat?: PersonalCategory) => {
+    setModalError(null);
+    if (cat) {
+      setEditingCategory(cat);
+      setNewCatName(cat.name);
+      setNewCatType(cat.type === 'income' ? 'income' : 'expense');
+      setNewCatColor(resolveHexColor(cat.color));
+      setNewCatIcon(resolvePhosphorCategoryIcon(cat.icon));
+    } else {
+      setEditingCategory(null);
+      setNewCatName('');
+      setNewCatType('expense');
+      setNewCatColor('#4F46E5');
+      setNewCatIcon('ph-tag');
+    }
+    setIsCategoryModalOpen(true);
+  };
+
+  const handleSaveCategory = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newCatName.trim()) {
       setModalError('Nome da categoria é obrigatório.');
@@ -939,22 +1196,40 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
     setNewCatSubmitting(true);
     setModalError(null);
     try {
-      await createCategory(
-        userId,
-        {
-          name: newCatName.trim(),
-          type: newCatType,
-          color: newCatColor,
-        },
-        isDemo
-      );
+      const normalizedColor = resolveHexColor(newCatColor);
+      if (editingCategory) {
+        await updateCategory(
+          editingCategory.id,
+          userId,
+          {
+            name: newCatName.trim(),
+            type: newCatType,
+            color: normalizedColor,
+            icon: newCatIcon,
+          },
+          isDemo
+        );
+        showToast('Categoria atualizada com sucesso!');
+      } else {
+        await createCategory(
+          userId,
+          {
+            name: newCatName.trim(),
+            type: newCatType,
+            color: normalizedColor,
+            icon: newCatIcon,
+          },
+          isDemo
+        );
+        showToast('Categoria criada com sucesso!');
+      }
 
-      showToast('Categoria criada com sucesso!');
       setIsCategoryModalOpen(false);
+      setEditingCategory(null);
       setNewCatName('');
       await loadAllData();
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Falha ao criar categoria';
+      const msg = err instanceof Error ? err.message : 'Falha ao salvar categoria';
       setModalError(msg);
     } finally {
       setNewCatSubmitting(false);
@@ -1116,19 +1391,12 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
           </div>
 
           <button
-            onClick={() => onOpenNewTransaction?.({ presetType: 'expense' })}
-            className="flex items-center gap-1.5 px-3.5 py-2 bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold rounded-xl shadow-xs transition-all cursor-pointer"
+            type="button"
+            onClick={() => onOpenNewTransaction?.()}
+            className="flex items-center gap-1.5 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-xl shadow-xs transition-all cursor-pointer"
           >
-            <ArrowUpRight className="w-4 h-4" />
-            Nova Despesa
-          </button>
-
-          <button
-            onClick={() => onOpenNewTransaction?.({ presetType: 'income' })}
-            className="flex items-center gap-1.5 px-3.5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold rounded-xl shadow-xs transition-all cursor-pointer"
-          >
-            <ArrowDownLeft className="w-4 h-4" />
-            Nova Receita
+            <Plus className="w-4 h-4" />
+            Novo lançamento
           </button>
         </div>
       </div>
@@ -1336,6 +1604,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
               >
                 <option value="all">Todos os Escopos</option>
                 <option value="personal">Somente Individual</option>
+                <option value="adhoc">Somente Rateio Avulso</option>
                 {authorizedSpaces.map((sp) => (
                   <option key={sp.id} value={sp.id}>
                     Espaço: {sp.name}
@@ -1399,7 +1668,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                 Nenhum lançamento encontrado
               </p>
               <p className="text-xs text-slate-400 mt-0.5">
-                Utilize os botões "Nova Receita" ou "Nova Despesa" acima para registrar transações.
+                Utilize o botão "Novo lançamento" acima para registrar despesas ou receitas.
               </p>
             </div>
           ) : (
@@ -1448,6 +1717,8 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                             className={`px-2 py-0.5 text-[10px] font-bold rounded-md border ${
                               entry.scopeType === 'shared'
                                 ? 'bg-indigo-500/15 text-indigo-300 border-indigo-500/30'
+                                : entry.scopeType === 'adhoc'
+                                ? 'bg-amber-500/15 text-amber-300 border-amber-500/30'
                                 : 'bg-slate-800 text-slate-300 border-slate-700'
                             }`}
                           >
@@ -1488,8 +1759,8 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                       </div>
                     </div>
 
-                    <div className="flex items-center justify-between sm:justify-end gap-3 shrink-0 pt-2 sm:pt-0 border-t sm:border-t-0 border-slate-700/60">
-                      <div className="text-right">
+                    <div className="flex flex-wrap items-center justify-between sm:justify-end gap-2 shrink-0 pt-2 sm:pt-0 border-t sm:border-t-0 border-slate-700/60">
+                      <div className="text-right mr-1">
                         <span
                           className={`text-base font-black font-mono ${
                             isIncome ? 'text-emerald-400' : 'text-rose-400'
@@ -1500,36 +1771,77 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                         </span>
                       </div>
 
-                      {/* Botões de Ação (apenas lançamentos individuais editáveis aqui) */}
-                      {tx && (
-                        <div className="flex items-center gap-1.5">
-                          {!isPaid && !isCancelled && (
-                            <button
-                              onClick={() => {
-                                setModalError(null);
-                                setPartialTx(tx);
-                                setPartialAmount('');
-                                setPartialNotes('');
-                                setPartialAccount(tx.accountId || '');
-                              }}
-                              className="px-2.5 py-1 text-xs font-semibold bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 hover:bg-indigo-500/25 rounded-lg transition-all cursor-pointer"
-                              title="Registrar pagamento ou recebimento parcial"
-                            >
-                              Amortizar
-                            </button>
-                          )}
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => handleOpenDetails(entry)}
+                          className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold bg-slate-800 text-slate-200 border border-slate-700 hover:bg-slate-700 rounded-lg transition-all cursor-pointer"
+                          title="Ver detalhes e histórico contábil"
+                        >
+                          <Eye className="w-3.5 h-3.5" />
+                          Detalhes
+                        </button>
 
-                          {!isCancelled && (
-                            <button
-                              onClick={() => handleCancelTx(tx)}
-                              className="px-2.5 py-1 text-xs font-semibold text-rose-300 bg-rose-500/15 border border-rose-500/30 hover:bg-rose-500/25 rounded-lg transition-all cursor-pointer"
-                              title="Cancelar lançamento"
-                            >
-                              Cancelar
-                            </button>
-                          )}
-                        </div>
-                      )}
+                        {tx && !isCancelled && (
+                          <button
+                            type="button"
+                            onClick={() => handleOpenEditTx(tx)}
+                            className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold bg-slate-800 text-sky-300 border border-slate-700 hover:border-sky-500/40 hover:bg-sky-500/10 rounded-lg transition-all cursor-pointer"
+                            title="Editar descrição, categoria ou datas"
+                          >
+                            <Pencil className="w-3.5 h-3.5" />
+                            Editar
+                          </button>
+                        )}
+
+                        {tx && !isPaid && !isCancelled && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setModalError(null);
+                              setPartialTx(tx);
+                              setPartialAmount('');
+                              setPartialNotes('');
+                              setPartialAccount(tx.accountId || '');
+                            }}
+                            className="px-2.5 py-1 text-xs font-semibold bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 hover:bg-indigo-500/25 rounded-lg transition-all cursor-pointer"
+                            title="Registrar pagamento ou recebimento parcial"
+                          >
+                            Amortizar
+                          </button>
+                        )}
+
+                        {tx && !isCancelled && ((tx.paidAmountCents || 0) > 0 || isPaid || isPartiallyPaid) && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setModalError(null);
+                              setReverseTxModal(tx);
+                              setReverseTxReason('');
+                            }}
+                            className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold text-amber-300 bg-amber-500/15 border border-amber-500/30 hover:bg-amber-500/25 rounded-lg transition-all cursor-pointer"
+                            title="Estornar pagamento compensatoriamente sem apagar histórico"
+                          >
+                            <Undo2 className="w-3.5 h-3.5" />
+                            Estornar
+                          </button>
+                        )}
+
+                        {tx && !isCancelled && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setModalError(null);
+                              setCancelTxModal(tx);
+                              setCancelTxReason('');
+                            }}
+                            className="px-2.5 py-1 text-xs font-semibold text-rose-300 bg-rose-500/15 border border-rose-500/30 hover:bg-rose-500/25 rounded-lg transition-all cursor-pointer"
+                            title="Cancelar lançamento"
+                          >
+                            Cancelar
+                          </button>
+                        )}
+                      </div>
                     </div>
                   </div>
                 );
@@ -2009,10 +2321,8 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
             </div>
 
             <button
-              onClick={() => {
-                setModalError(null);
-                setIsCategoryModalOpen(true);
-              }}
+              type="button"
+              onClick={() => handleOpenCategoryModal()}
               className="flex items-center gap-1.5 px-3.5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-xl shadow-xs transition-all cursor-pointer"
             >
               <Plus className="w-4 h-4" />
@@ -2021,41 +2331,62 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
-            {categories.map((cat) => (
-              <div
-                key={cat.id}
-                className={`p-3.5 rounded-xl border bg-slate-800/90 border-slate-700/80 flex items-center justify-between gap-2 shadow-xs ${
-                  cat.isArchived ? 'opacity-50 bg-slate-800' : 'border-slate-700'
-                }`}
-              >
-                <div className="flex items-center gap-2.5">
-                  <div
-                    className="w-4 h-4 rounded-full shrink-0"
-                    style={{ backgroundColor: cat.color || '#2563EB' }}
-                  />
-                  <div>
-                    <div className="text-xs font-bold text-white leading-tight">
-                      {cat.name}
+            {categories.map((cat) => {
+              const catColor = resolveHexColor(cat.color);
+              const catIcon = resolvePhosphorCategoryIcon(cat.icon);
+              return (
+                <div
+                  key={cat.id}
+                  className={`p-3.5 rounded-xl border bg-slate-800/90 border-slate-700/80 flex items-center justify-between gap-2 shadow-xs ${
+                    cat.isArchived ? 'opacity-50 bg-slate-800' : 'border-slate-700'
+                  }`}
+                >
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <div
+                      className="w-8 h-8 rounded-xl shrink-0 flex items-center justify-center border"
+                      style={{
+                        backgroundColor: `${catColor}22`,
+                        borderColor: `${catColor}55`,
+                        color: catColor,
+                      }}
+                    >
+                      <i className={`ph-fill ${catIcon} text-base`} aria-hidden="true" />
                     </div>
-                    <span className="text-[10px] text-slate-400 capitalize">
-                      {cat.type === 'income' ? 'Receita' : 'Despesa'}
-                    </span>
+                    <div className="min-w-0">
+                      <div className="text-xs font-bold text-white leading-tight truncate">
+                        {cat.name}
+                      </div>
+                      <span className="text-[10px] text-slate-400 capitalize">
+                        {cat.type === 'income' ? 'Receita' : 'Despesa'}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => handleOpenCategoryModal(cat)}
+                      className="text-[11px] text-sky-300 hover:text-white px-2 py-1 rounded bg-slate-900 hover:bg-slate-700 border border-slate-700 cursor-pointer"
+                      title="Editar categoria"
+                    >
+                      Editar
+                    </button>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        const nextState = !cat.isArchived;
+                        await archiveCategory(cat.id, userId, nextState, isDemo);
+                        showToast(`Categoria ${nextState ? 'arquivada' : 'ativada'}.`);
+                        await loadAllData();
+                      }}
+                      className="text-[11px] text-slate-300 hover:text-white px-2 py-1 rounded bg-slate-900 hover:bg-slate-700 border border-slate-700 cursor-pointer"
+                    >
+                      {cat.isArchived ? 'Desarquivar' : 'Arquivar'}
+                    </button>
                   </div>
                 </div>
-
-                <button
-                  onClick={async () => {
-                    const nextState = !cat.isArchived;
-                    await archiveCategory(cat.id, userId, nextState, isDemo);
-                    showToast(`Categoria ${nextState ? 'arquivada' : 'ativada'}.`);
-                    await loadAllData();
-                  }}
-                  className="text-[11px] text-slate-300 hover:text-white px-2 py-1 rounded bg-slate-900 hover:bg-slate-700 border border-slate-700 cursor-pointer"
-                >
-                  {cat.isArchived ? 'Desarquivar' : 'Arquivar'}
-                </button>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
@@ -3087,17 +3418,31 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
         </div>
       )}
 
-      {/* MODAL: NOVA CATEGORIA */}
+      {/* MODAL: NOVA / EDITAR CATEGORIA */}
       {isCategoryModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-xs">
-          <div className="bg-slate-900 rounded-2xl max-w-md w-full max-h-[90dvh] overflow-y-auto p-6 shadow-2xl border border-slate-700">
+          <div className="bg-slate-900 rounded-2xl max-w-lg w-full max-h-[90dvh] overflow-y-auto p-6 shadow-2xl border border-slate-700">
             <div className="flex items-center justify-between pb-3 border-b border-slate-800">
-              <h3 className="text-base font-bold text-white">
-                Nova Categoria Individual
-              </h3>
+              <div className="flex items-center gap-2.5">
+                <div
+                  className="w-8 h-8 rounded-xl flex items-center justify-center border"
+                  style={{
+                    backgroundColor: `${resolveHexColor(newCatColor)}22`,
+                    borderColor: `${resolveHexColor(newCatColor)}55`,
+                    color: resolveHexColor(newCatColor),
+                  }}
+                >
+                  <i className={`ph-fill ${resolvePhosphorCategoryIcon(newCatIcon)} text-base`} />
+                </div>
+                <h3 className="text-base font-bold text-white">
+                  {editingCategory ? 'Editar Categoria' : 'Nova Categoria Individual'}
+                </h3>
+              </div>
               <button
+                type="button"
                 onClick={() => {
                   setModalError(null);
+                  setEditingCategory(null);
                   setIsCategoryModalOpen(false);
                 }}
                 className="p-1 text-slate-400 hover:text-slate-200 rounded-lg cursor-pointer"
@@ -3113,7 +3458,7 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
               </div>
             )}
 
-            <form onSubmit={handleCreateCategory} className="space-y-3 mt-3">
+            <form onSubmit={handleSaveCategory} className="space-y-4 mt-3">
               <div>
                 <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
                   Nome da Categoria *
@@ -3142,26 +3487,26 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                 </select>
               </div>
 
-              <div>
-                <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
-                  Cor
-                </label>
-                <div className="flex items-center gap-3">
-                  <input
-                    type="color"
-                    value={newCatColor}
-                    onChange={(e) => setNewCatColor(e.target.value)}
-                    className="w-9 h-9 rounded-xl cursor-pointer border border-slate-700 p-0.5 bg-slate-800"
-                  />
-                  <span className="text-xs font-mono text-slate-400">{newCatColor}</span>
-                </div>
-              </div>
+              <IconGridPicker
+                label="Ícone"
+                value={newCatIcon}
+                onChange={setNewCatIcon}
+                compact
+              />
+
+              <ColorPalettePicker
+                label="Cor"
+                value={newCatColor}
+                onChange={setNewCatColor}
+                mode="hex"
+              />
 
               <div className="pt-3 border-t border-slate-800 flex items-center justify-end gap-2">
                 <button
                   type="button"
                   onClick={() => {
                     setModalError(null);
+                    setEditingCategory(null);
                     setIsCategoryModalOpen(false);
                   }}
                   className="px-3 py-2 text-xs font-semibold text-slate-400 hover:text-slate-200 cursor-pointer"
@@ -3173,7 +3518,474 @@ export const PersonalFinanceViewV3: React.FC<PersonalFinanceViewV3Props> = ({
                   disabled={newCatSubmitting}
                   className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-xl shadow-xs disabled:opacity-50 cursor-pointer"
                 >
-                  {newCatSubmitting ? 'Salvando...' : 'Salvar Categoria'}
+                  {newCatSubmitting ? 'Salvando...' : editingCategory ? 'Atualizar Categoria' : 'Salvar Categoria'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: DETALHES DO LANÇAMENTO (EXTRATO) */}
+      {detailsEntry && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-xs">
+          <div className="bg-slate-900 rounded-2xl max-w-lg w-full max-h-[90dvh] overflow-y-auto p-6 shadow-2xl border border-slate-700 space-y-4">
+            <div className="flex items-start justify-between pb-3 border-b border-slate-800 gap-3">
+              <div>
+                <div className="flex flex-wrap items-center gap-2 mb-1">
+                  <span className="px-2 py-0.5 text-[10px] font-bold rounded-md bg-slate-800 border border-slate-700 text-slate-200">
+                    {detailsEntry.scopeLabel}
+                  </span>
+                  <span className={`px-2 py-0.5 text-[10px] font-bold rounded-md ${detailsEntry.statusBadgeClass}`}>
+                    {detailsEntry.statusLabel}
+                  </span>
+                </div>
+                <h3 className="text-base font-bold text-white">{detailsEntry.description}</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setDetailsEntry(null)}
+                className="p-1 text-slate-400 hover:text-slate-200 rounded-lg cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 p-3.5 rounded-xl bg-slate-800/80 border border-slate-700/80 text-xs">
+              <div>
+                <span className="text-slate-400 block text-[10px] uppercase">Valor Total</span>
+                <strong className={`text-base font-mono ${detailsEntry.type === 'income' ? 'text-emerald-400' : 'text-rose-400'}`}>
+                  {detailsEntry.type === 'income' ? '+ ' : '- '}
+                  {formatCentsToBRL(detailsEntry.amountCents)}
+                </strong>
+              </div>
+              <div>
+                <span className="text-slate-400 block text-[10px] uppercase">Categoria</span>
+                <strong className="text-white">{detailsEntry.categoryName}</strong>
+              </div>
+              <div>
+                <span className="text-slate-400 block text-[10px] uppercase">Competência</span>
+                <strong className="text-white">{detailsEntry.competenceDate}</strong>
+              </div>
+              <div>
+                <span className="text-slate-400 block text-[10px] uppercase">Vencimento</span>
+                <strong className="text-white">{detailsEntry.dueDate || detailsEntry.competenceDate}</strong>
+              </div>
+              <div>
+                <span className="text-slate-400 block text-[10px] uppercase">Conta / Vínculo</span>
+                <strong className="text-white">{detailsEntry.accountLabel}</strong>
+              </div>
+              <div>
+                <span className="text-slate-400 block text-[10px] uppercase">Origem / Autoria</span>
+                <strong className="text-white">{detailsEntry.authorLabel}</strong>
+              </div>
+              {detailsEntry.invoiceMonth && (
+                <div>
+                  <span className="text-slate-400 block text-[10px] uppercase">Fatura</span>
+                  <strong className="text-purple-300">{detailsEntry.invoiceMonth}</strong>
+                </div>
+              )}
+              {detailsEntry.paymentDate && (
+                <div>
+                  <span className="text-slate-400 block text-[10px] uppercase">Data de Pagamento</span>
+                  <strong className="text-emerald-300">{detailsEntry.paymentDate}</strong>
+                </div>
+              )}
+            </div>
+
+            {detailsEntry.notes && (
+              <div className="p-3 rounded-xl bg-slate-800/60 border border-slate-700/70 text-xs text-slate-300">
+                <span className="block text-[10px] font-semibold uppercase text-slate-400 mb-1">
+                  Observações / Histórico
+                </span>
+                {detailsEntry.notes}
+              </div>
+            )}
+
+            {detailsEntry.adhocTx && detailsEntry.adhocTx.splits?.length > 0 && (
+              <div className="space-y-2">
+                <span className="block text-[11px] font-semibold uppercase text-slate-300">
+                  Participantes do Rateio Avulso
+                </span>
+                <div className="divide-y divide-slate-800 rounded-xl border border-slate-700/80 bg-slate-900/70">
+                  {detailsEntry.adhocTx.splits.map((s, idx) => (
+                    <div key={`${s.email}_${idx}`} className="p-2.5 flex items-center justify-between text-xs">
+                      <div>
+                        <div className="font-semibold text-white">{s.name || s.email}</div>
+                        <div className="text-[11px] text-slate-400">{s.email}</div>
+                      </div>
+                      <div className="text-right">
+                        <div className="font-mono font-bold text-slate-200">
+                          {formatCentsToBRL(Math.round((s.responsibility || 0) * 100))}
+                        </div>
+                        <span className="text-[10px] text-slate-400 uppercase">{s.status}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {detailsEntry.personalTx && (
+              <div className="space-y-2">
+                <span className="block text-[11px] font-semibold uppercase text-slate-300">
+                  Histórico de Pagamentos & Estornos
+                </span>
+                {detailsPaymentsLoading ? (
+                  <div className="text-xs text-slate-400 py-2">Carregando histórico contábil...</div>
+                ) : detailsPayments.length === 0 ? (
+                  <div className="text-xs text-slate-400 p-3 rounded-xl bg-slate-800/50 border border-slate-700/60">
+                    Nenhum pagamento individual registrado até o momento.
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {detailsPayments.map((pay) => (
+                      <div
+                        key={pay.id}
+                        className={`p-3 rounded-xl border text-xs ${
+                          pay.isReversed
+                            ? 'bg-amber-950/30 border-amber-800/60 text-amber-200'
+                            : 'bg-slate-800/70 border-slate-700 text-slate-200'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="font-bold font-mono">{formatCentsToBRL(pay.amountCents)}</span>
+                          <span className="text-[11px] text-slate-400">{pay.paymentDate}</span>
+                        </div>
+                        <div className="text-[11px] text-slate-400 mt-0.5">
+                          Conta: {accountNameById.get(pay.accountId) || pay.accountId}
+                        </div>
+                        {pay.isReversed && (
+                          <div className="mt-1 text-[11px] text-amber-300 font-semibold">
+                            Estornado em {pay.reversalDate}: {pay.reversalReason}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className="pt-3 border-t border-slate-800 flex flex-wrap items-center justify-end gap-2">
+              {detailsEntry.personalTx && detailsEntry.statusKey !== 'cancelled' && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const target = detailsEntry.personalTx!;
+                    setDetailsEntry(null);
+                    handleOpenEditTx(target);
+                  }}
+                  className="px-3 py-2 text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-sky-300 border border-slate-700 rounded-xl cursor-pointer"
+                >
+                  Editar Lançamento
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setDetailsEntry(null)}
+                className="px-4 py-2 text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl cursor-pointer"
+              >
+                Fechar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: EDITAR LANÇAMENTO */}
+      {editTxModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-xs">
+          <div className="bg-slate-900 rounded-2xl max-w-md w-full max-h-[90dvh] overflow-y-auto p-6 shadow-2xl border border-slate-700">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <h3 className="text-base font-bold text-white">Editar Lançamento</h3>
+              <button
+                type="button"
+                onClick={() => {
+                  setModalError(null);
+                  setEditTxModal(null);
+                }}
+                className="p-1 text-slate-400 hover:text-slate-200 rounded-lg cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {modalError && (
+              <div className="mt-3 p-3 rounded-xl bg-rose-500/15 border border-rose-500/30 text-rose-200 text-xs flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                <span>{modalError}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleConfirmEditTx} className="space-y-3 mt-3">
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
+                  Descrição *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={editTxDesc}
+                  onChange={(e) => setEditTxDesc(e.target.value)}
+                  className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
+                  Valor (R$) *
+                </label>
+                <input
+                  type="text"
+                  value={editTxAmount}
+                  onChange={(e) => setEditTxAmount(e.target.value)}
+                  disabled={
+                    (editTxModal.paidAmountCents || 0) > 0 ||
+                    editTxModal.status === 'paid' ||
+                    editTxModal.status === 'partially_paid'
+                  }
+                  className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white font-bold disabled:opacity-50"
+                />
+                {((editTxModal.paidAmountCents || 0) > 0 ||
+                  editTxModal.status === 'paid' ||
+                  editTxModal.status === 'partially_paid') && (
+                  <p className="text-[11px] text-amber-300 mt-1">
+                    Valor bloqueado porque já existem pagamentos registrados. Estorne o pagamento antes se precisar alterar o valor.
+                  </p>
+                )}
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
+                  Categoria
+                </label>
+                <select
+                  value={editTxCategoryId}
+                  onChange={(e) => setEditTxCategoryId(e.target.value)}
+                  className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                >
+                  {categories
+                    .filter((c) => !c.isArchived || c.id === editTxCategoryId)
+                    .map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name}
+                      </option>
+                    ))}
+                </select>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
+                    Data Competência *
+                  </label>
+                  <input
+                    type="date"
+                    required
+                    value={editTxCompDate}
+                    onChange={(e) => setEditTxCompDate(e.target.value)}
+                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
+                    Data Vencimento *
+                  </label>
+                  <input
+                    type="date"
+                    required
+                    value={editTxDueDate}
+                    onChange={(e) => setEditTxDueDate(e.target.value)}
+                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
+                  Observações
+                </label>
+                <textarea
+                  rows={2}
+                  value={editTxNotes}
+                  onChange={(e) => setEditTxNotes(e.target.value)}
+                  className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white"
+                />
+              </div>
+
+              <div className="pt-3 border-t border-slate-800 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setModalError(null);
+                    setEditTxModal(null);
+                  }}
+                  className="px-3 py-2 text-xs font-semibold text-slate-400 hover:text-slate-200 cursor-pointer"
+                >
+                  Voltar
+                </button>
+                <button
+                  type="submit"
+                  disabled={editTxSubmitting}
+                  className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-xl disabled:opacity-50 cursor-pointer"
+                >
+                  {editTxSubmitting ? 'Salvando...' : 'Salvar Alterações'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: ESTORNAR PAGAMENTO (COMPENSATÓRIO) */}
+      {reverseTxModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-xs">
+          <div className="bg-slate-900 rounded-2xl max-w-md w-full max-h-[90dvh] overflow-y-auto p-6 shadow-2xl border border-amber-700/60">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <h3 className="text-base font-bold text-white">Estornar Pagamento</h3>
+              <button
+                type="button"
+                onClick={() => {
+                  setModalError(null);
+                  setReverseTxModal(null);
+                }}
+                className="p-1 text-slate-400 hover:text-slate-200 rounded-lg cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {modalError && (
+              <div className="mt-3 p-3 rounded-xl bg-rose-500/15 border border-rose-500/30 text-rose-200 text-xs flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                <span>{modalError}</span>
+              </div>
+            )}
+
+            <div className="my-3 p-3 bg-amber-950/40 border border-amber-800/50 rounded-xl text-xs space-y-1 text-amber-200">
+              <div>
+                Lançamento: <strong className="text-white">{reverseTxModal.description}</strong>
+              </div>
+              <div>
+                Total Pago:{' '}
+                <strong className="text-white">
+                  {formatCentsToBRL(reverseTxModal.paidAmountCents || reverseTxModal.amountCents)}
+                </strong>
+              </div>
+              <p className="text-[11px] text-amber-300 mt-1">
+                O estorno cria um movimento compensatório no livro-razão e preserva integralmente o histórico original, reabrindo o saldo em aberto do lançamento.
+              </p>
+            </div>
+
+            <form onSubmit={handleConfirmReverseTx} className="space-y-3">
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
+                  Justificativa Obrigatória *
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="Ex: Pagamento lançado na conta errada, estorno bancário..."
+                  value={reverseTxReason}
+                  onChange={(e) => setReverseTxReason(e.target.value)}
+                  className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500"
+                />
+              </div>
+
+              <div className="pt-3 border-t border-slate-800 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setModalError(null);
+                    setReverseTxModal(null);
+                  }}
+                  className="px-3 py-2 text-xs font-semibold text-slate-400 hover:text-slate-200 cursor-pointer"
+                >
+                  Voltar
+                </button>
+                <button
+                  type="submit"
+                  disabled={reverseTxSubmitting}
+                  className="px-4 py-2 bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold rounded-xl disabled:opacity-50 cursor-pointer"
+                >
+                  {reverseTxSubmitting ? 'Estornando...' : 'Confirmar Estorno'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: CANCELAR LANÇAMENTO */}
+      {cancelTxModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-xs">
+          <div className="bg-slate-900 rounded-2xl max-w-md w-full max-h-[90dvh] overflow-y-auto p-6 shadow-2xl border border-rose-800/60">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <h3 className="text-base font-bold text-white">Cancelar Lançamento</h3>
+              <button
+                type="button"
+                onClick={() => {
+                  setModalError(null);
+                  setCancelTxModal(null);
+                }}
+                className="p-1 text-slate-400 hover:text-slate-200 rounded-lg cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {modalError && (
+              <div className="mt-3 p-3 rounded-xl bg-rose-500/15 border border-rose-500/30 text-rose-200 text-xs flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                <span>{modalError}</span>
+              </div>
+            )}
+
+            <div className="my-3 p-3 bg-rose-950/40 border border-rose-800/50 rounded-xl text-xs space-y-1 text-rose-200">
+              <div>
+                Lançamento: <strong className="text-white">{cancelTxModal.description}</strong>
+              </div>
+              <div>
+                Valor: <strong className="text-white">{formatCentsToBRL(cancelTxModal.amountCents)}</strong>
+              </div>
+              <p className="text-[11px] text-rose-300 mt-1">
+                O cancelamento mantém o registro histórico auditável e gera estorno compensatório para qualquer movimentação já consolidada.
+              </p>
+            </div>
+
+            <form onSubmit={handleConfirmCancelTx} className="space-y-3">
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-200 uppercase mb-1">
+                  Motivo do Cancelamento *
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="Ex: Compra duplicada, serviço cancelado..."
+                  value={cancelTxReason}
+                  onChange={(e) => setCancelTxReason(e.target.value)}
+                  className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500"
+                />
+              </div>
+
+              <div className="pt-3 border-t border-slate-800 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setModalError(null);
+                    setCancelTxModal(null);
+                  }}
+                  className="px-3 py-2 text-xs font-semibold text-slate-400 hover:text-slate-200 cursor-pointer"
+                >
+                  Voltar
+                </button>
+                <button
+                  type="submit"
+                  disabled={cancelTxSubmitting}
+                  className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold rounded-xl disabled:opacity-50 cursor-pointer"
+                >
+                  {cancelTxSubmitting ? 'Cancelando...' : 'Confirmar Cancelamento'}
                 </button>
               </div>
             </form>

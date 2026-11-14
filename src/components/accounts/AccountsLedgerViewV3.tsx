@@ -47,6 +47,11 @@ import {
   formatCentsToBRL,
   parseBRLToCents,
 } from '../../utils/movementLedger';
+import { IconGridPicker, ColorPalettePicker } from '../ui/VisualPickers';
+import {
+  resolveHexColor,
+  resolvePhosphorCategoryIcon,
+} from '../../utils/visualPickerUtils';
 
 interface AccountsLedgerViewV3Props {
   userId: string;
@@ -114,6 +119,7 @@ export const AccountsLedgerViewV3: React.FC<AccountsLedgerViewV3Props> = ({
   const [accName, setAccName] = useState('');
   const [accType, setAccType] = useState<AccountType>('checking');
   const [accColor, setAccColor] = useState('#2563EB');
+  const [accIcon, setAccIcon] = useState('ph-wallet');
   const [accCreditLimitInput, setAccCreditLimitInput] = useState('');
   const [accClosingDay, setAccClosingDay] = useState('20');
   const [accDueDay, setAccDueDay] = useState('27');
@@ -273,6 +279,7 @@ export const AccountsLedgerViewV3: React.FC<AccountsLedgerViewV3Props> = ({
     setAccName('');
     setAccType('checking');
     setAccColor('#2563EB');
+    setAccIcon('ph-wallet');
     setAccCreditLimitInput('');
     setAccClosingDay('20');
     setAccDueDay('27');
@@ -332,6 +339,7 @@ export const AccountsLedgerViewV3: React.FC<AccountsLedgerViewV3Props> = ({
             name: accName.trim(),
             type: accType,
             color: accColor,
+            icon: accIcon,
             ...(accType === 'credit' ? { creditLimitCents, closingDay, dueDay } : {}),
           },
           isDemo
@@ -342,6 +350,7 @@ export const AccountsLedgerViewV3: React.FC<AccountsLedgerViewV3Props> = ({
           name: accName.trim(),
           type: accType,
           color: accColor,
+          icon: accIcon,
           ...(accType === 'credit' ? { creditLimitCents, closingDay, dueDay } : {}),
         };
         await createAccount(userId, payload, isDemo);
@@ -365,7 +374,16 @@ export const AccountsLedgerViewV3: React.FC<AccountsLedgerViewV3Props> = ({
     setEditingAccount(acc);
     setAccName(acc.name);
     setAccType(acc.type);
-    setAccColor(acc.color || '#2563EB');
+    setAccColor(resolveHexColor(acc.color, '#2563EB'));
+    setAccIcon(
+      acc.icon
+        ? resolvePhosphorCategoryIcon(acc.icon)
+        : acc.type === 'credit'
+        ? 'ph-credit-card'
+        : acc.type === 'savings'
+        ? 'ph-coins'
+        : 'ph-wallet'
+    );
     setAccCreditLimitInput(
       typeof acc.creditLimitCents === 'number' && acc.creditLimitCents > 0
         ? (acc.creditLimitCents / 100).toFixed(2).replace('.', ',')
@@ -949,9 +967,19 @@ export const AccountsLedgerViewV3: React.FC<AccountsLedgerViewV3Props> = ({
                 <div className="flex items-center gap-4 min-w-0">
                   <div
                     className="w-12 h-12 rounded-2xl flex items-center justify-center text-white shrink-0 shadow-inner"
-                    style={{ backgroundColor: selectedAccount.color || '#2563EB' }}
+                    style={{
+                      backgroundColor: resolveHexColor(selectedAccount.color, '#2563EB'),
+                    }}
                   >
-                    {getAccountTypeIcon(selectedAccount.type)}
+                    {selectedAccount.icon ? (
+                      <i
+                        className={`ph-fill ${resolvePhosphorCategoryIcon(
+                          selectedAccount.icon
+                        )} text-xl`}
+                      />
+                    ) : (
+                      getAccountTypeIcon(selectedAccount.type)
+                    )}
                   </div>
                   <div className="min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
@@ -1322,20 +1350,19 @@ export const AccountsLedgerViewV3: React.FC<AccountsLedgerViewV3Props> = ({
                 </div>
               )}
 
-              <div>
-                <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">
-                  Cor de Identificação
-                </label>
-                <div className="flex items-center gap-3">
-                  <input
-                    type="color"
-                    value={accColor}
-                    onChange={(e) => setAccColor(e.target.value)}
-                    className="w-10 h-10 rounded-xl cursor-pointer border border-slate-700 p-0.5 bg-slate-800"
-                  />
-                  <span className="text-xs font-mono text-slate-400">{accColor}</span>
-                </div>
-              </div>
+              <IconGridPicker
+                label="Ícone da Conta"
+                value={accIcon}
+                onChange={setAccIcon}
+                compact
+              />
+
+              <ColorPalettePicker
+                label="Cor de Identificação"
+                mode="hex"
+                value={accColor}
+                onChange={setAccColor}
+              />
 
               <div className="pt-4 border-t border-slate-800 flex items-center justify-end gap-3">
                 <button

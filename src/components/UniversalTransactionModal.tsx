@@ -20,6 +20,7 @@ import {
 } from '../utils/financeEngine';
 import { sendTransactionalEmail } from '../services/emailService';
 import { calculateExpenseSplit } from '../utils/splitEngine';
+import { IconGridPicker, ColorPalettePicker } from './ui/VisualPickers';
 
 interface UniversalTransactionModalProps {
   isOpen: boolean;
@@ -49,28 +50,6 @@ interface UniversalTransactionModalProps {
   onCreateCategory: (cat: Omit<Category, 'id' | 'userId'>) => Promise<Category>;
   onNotifyToast: (msg: string) => void;
 }
-
-const AVAILABLE_ICONS = [
-  'ph-tag',
-  'ph-shopping-cart',
-  'ph-house-line',
-  'ph-fork-knife',
-  'ph-airplane-tilt',
-  'ph-laptop',
-  'ph-car',
-  'ph-heartbeat',
-  'ph-graduation-cap',
-  'ph-briefcase',
-];
-
-const AVAILABLE_COLORS = [
-  { id: 'indigo', label: 'Índigo' },
-  { id: 'emerald', label: 'Esmeralda' },
-  { id: 'rose', label: 'Rosa' },
-  { id: 'amber', label: 'Âmbar' },
-  { id: 'purple', label: 'Roxo' },
-  { id: 'sky', label: 'Azul' },
-];
 
 const AUTOMATED_STATUS_META: Record<
   TransactionStatus,
@@ -521,6 +500,27 @@ export const UniversalTransactionModal: React.FC<UniversalTransactionModalProps>
     setAdhocName('');
   };
 
+  const handleRemoveAdhocParticipant = (targetEmail: string) => {
+    const remaining = customSplits.filter(
+      (p) => p.email.toLowerCase() !== targetEmail.toLowerCase()
+    );
+    if (remaining.length <= 1) {
+      setCustomSplits([]);
+      return;
+    }
+    const numericAmount = Number(amount) || 0;
+    const count = remaining.length;
+    const shareVal = Number((numericAmount / count).toFixed(2));
+    const rebalanced = remaining.map((p, idx) => ({
+      ...p,
+      responsibility:
+        idx === 0
+          ? Number((numericAmount - shareVal * (count - 1)).toFixed(2))
+          : shareVal,
+    }));
+    setCustomSplits(rebalanced);
+  };
+
   const handleCreateQuickCategory = async () => {
     if (!newCatName.trim()) return;
     const created = await onCreateCategory({
@@ -641,6 +641,35 @@ export const UniversalTransactionModal: React.FC<UniversalTransactionModalProps>
         });
       } catch (splitErr: any) {
         setErrorMsg(splitErr?.message || 'Erro na validação matemática do rateio.');
+        return;
+      }
+    }
+
+    if (splitMode === 'adhoc' && type === 'expense') {
+      if (customSplits.length < 2) {
+        setErrorMsg(
+          'Inclua pelo menos 1 participante convidado além de você no rateio avulso.'
+        );
+        return;
+      }
+      const totalCents = Math.round(numericAmount * 100);
+      let sumCents = 0;
+      for (const sp of customSplits) {
+        if (!sp.email || !sp.email.includes('@')) {
+          setErrorMsg('Todos os participantes do rateio avulso precisam de um e-mail válido.');
+          return;
+        }
+        const shareCents = Math.round((Number(sp.responsibility) || 0) * 100);
+        if (shareCents < 0) {
+          setErrorMsg('A cota de um participante não pode ser negativa.');
+          return;
+        }
+        sumCents += shareCents;
+      }
+      if (Math.abs(sumCents - totalCents) > 1) {
+        setErrorMsg(
+          `A soma das cotas (${formatCurrency(sumCents / 100)}) deve corresponder ao valor total da despesa (${formatCurrency(numericAmount)}).`
+        );
         return;
       }
     }
@@ -970,38 +999,26 @@ export const UniversalTransactionModal: React.FC<UniversalTransactionModalProps>
               <div className="text-xs font-semibold text-slate-200">
                 Nova Categoria Customizada (Ícone & Cor)
               </div>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+              <div className="space-y-3">
                 <input
                   type="text"
                   value={newCatName}
                   onChange={(e) => setNewCatName(e.target.value)}
                   placeholder="Nome da categoria"
-                  className="px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white"
+                  className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white"
                 />
-                <select
-                  aria-label="Ícone da nova categoria"
+                <IconGridPicker
+                  label="Ícone da Categoria"
                   value={newCatIcon}
-                  onChange={(e) => setNewCatIcon(e.target.value)}
-                  className="px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white"
-                >
-                  {AVAILABLE_ICONS.map((ic) => (
-                    <option key={ic} value={ic}>
-                      Ícone: {ic.replace('ph-', '')}
-                    </option>
-                  ))}
-                </select>
-                <select
-                  aria-label="Cor da nova categoria"
+                  onChange={setNewCatIcon}
+                  compact
+                />
+                <ColorPalettePicker
+                  label="Cor da Categoria"
                   value={newCatColor}
-                  onChange={(e) => setNewCatColor(e.target.value)}
-                  className="px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white"
-                >
-                  {AVAILABLE_COLORS.map((col) => (
-                    <option key={col.id} value={col.id}>
-                      Cor: {col.label}
-                    </option>
-                  ))}
-                </select>
+                  onChange={setNewCatColor}
+                  mode="token"
+                />
               </div>
               <button
                 type="button"
@@ -1720,6 +1737,9 @@ export const UniversalTransactionModal: React.FC<UniversalTransactionModalProps>
 
             {type === 'expense' && splitMode === 'adhoc' && (
               <div className="space-y-3">
+                <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/25 text-[11px] text-amber-200 leading-relaxed">
+                  <strong>Rateio avulso entre contas pessoais:</strong> os convidados recebem a obrigação no Inbox e no Extrato após confirmar. O aceite confirma apenas a cota-parte — não liquida nem marca a despesa como paga automaticamente.
+                </div>
                 <div className="grid grid-cols-1 sm:grid-cols-12 gap-2">
                   <input
                     type="text"
@@ -1764,6 +1784,7 @@ export const UniversalTransactionModal: React.FC<UniversalTransactionModalProps>
                     participantPercentages[emailKey] ??
                     Number((100 / Math.max(1, customSplits.length)).toFixed(2));
                   const customValStr = participantCustomValues[emailKey] ?? '';
+                  const isCurrentOwner = sp.email.toLowerCase() === userEmail.toLowerCase();
                   return (
                     <div
                       key={sp.email}
@@ -1863,6 +1884,17 @@ export const UniversalTransactionModal: React.FC<UniversalTransactionModalProps>
                           }}
                           className="w-24 px-2 py-1 bg-slate-900 border border-slate-700 rounded-lg text-xs text-emerald-400 font-mono text-right"
                         />
+                        {splitMode === 'adhoc' && !isCurrentOwner && (
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveAdhocParticipant(sp.email)}
+                            title={`Remover ${sp.name}`}
+                            aria-label={`Remover ${sp.name}`}
+                            className="p-1.5 rounded-lg bg-slate-900 hover:bg-rose-500/20 text-slate-400 hover:text-rose-300 border border-slate-700 cursor-pointer"
+                          >
+                            <i className="ph-bold ph-trash text-xs"></i>
+                          </button>
+                        )}
                       </div>
                     </div>
                   );

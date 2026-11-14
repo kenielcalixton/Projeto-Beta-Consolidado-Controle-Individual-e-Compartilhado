@@ -89,6 +89,139 @@ export function generateSecureToken(): string {
   return `tok_${Date.now()}_${Math.random().toString(36).substring(2)}${Math.random().toString(36).substring(2)}`;
 }
 
+/**
+ * Extrai e normaliza o token bruto de entrada do usuário (texto puro, URL com ?token= ou espaços).
+ */
+export function extractInviteToken(rawInput: string): string {
+  const trimmed = (rawInput || '').trim();
+  if (!trimmed) return '';
+  const queryMatch = trimmed.match(/[?&](?:token|invite)=([^&#\s]+)/i);
+  if (queryMatch && queryMatch[1]) {
+    try {
+      return decodeURIComponent(queryMatch[1]).trim();
+    } catch {
+      return queryMatch[1].trim();
+    }
+  }
+  return trimmed.replace(/^['"`]+|['"`]+$/g, '').trim();
+}
+
+export type InviteAvailabilityCode =
+  | 'valid'
+  | 'not_found'
+  | 'expired'
+  | 'accepted'
+  | 'rejected'
+  | 'revoked'
+  | 'already_member'
+  | 'email_mismatch';
+
+export interface InviteAvailabilityEvaluation {
+  canAccept: boolean;
+  code: InviteAvailabilityCode;
+  title: string;
+  message: string;
+}
+
+/**
+ * Avalia detalhadamente a disponibilidade de um convite para exibição clara na interface.
+ */
+export function evaluateInviteAvailability(
+  invite: SpaceInvite | null,
+  options: {
+    currentUserUid?: string;
+    currentUserEmail?: string;
+    activeMemberUids?: string[];
+  } = {}
+): InviteAvailabilityEvaluation {
+  if (!invite) {
+    return {
+      canAccept: false,
+      code: 'not_found',
+      title: 'Convite não localizado',
+      message:
+        'Nenhum convite foi encontrado para este token. Verifique se copiou todos os caracteres corretamente.',
+    };
+  }
+
+  if (invite.tokenStatus === 'accepted') {
+    return {
+      canAccept: false,
+      code: 'accepted',
+      title: 'Convite já utilizado',
+      message:
+        invite.acceptedByUid && options.currentUserUid === invite.acceptedByUid
+          ? 'Você já utilizou este convite anteriormente.'
+          : 'Este convite já foi aceito e é de uso único.',
+    };
+  }
+
+  if (invite.tokenStatus === 'revoked') {
+    return {
+      canAccept: false,
+      code: 'revoked',
+      title: 'Convite revogado',
+      message: 'Este convite foi cancelado/revogado por um administrador do espaço.',
+    };
+  }
+
+  if (invite.tokenStatus === 'rejected') {
+    return {
+      canAccept: false,
+      code: 'rejected',
+      title: 'Convite recusado',
+      message: 'Este convite foi recusado anteriormente e não pode ser reutilizado.',
+    };
+  }
+
+  const isExpired =
+    invite.tokenStatus === 'expired' ||
+    new Date(invite.expiresAt).getTime() < Date.now();
+  if (isExpired) {
+    return {
+      canAccept: false,
+      code: 'expired',
+      title: 'Convite expirado',
+      message: `O prazo de validade deste convite encerrou em ${new Date(
+        invite.expiresAt
+      ).toLocaleDateString('pt-BR')}. Solicite um novo token ao criador do espaço.`,
+    };
+  }
+
+  if (
+    options.currentUserUid &&
+    Array.isArray(options.activeMemberUids) &&
+    options.activeMemberUids.includes(options.currentUserUid)
+  ) {
+    return {
+      canAccept: false,
+      code: 'already_member',
+      title: 'Você já participa deste espaço',
+      message: `Você já é membro ativo do espaço "${invite.spaceName}".`,
+    };
+  }
+
+  if (
+    invite.invitedEmail &&
+    options.currentUserEmail &&
+    invite.invitedEmail.trim().toLowerCase() !== options.currentUserEmail.trim().toLowerCase()
+  ) {
+    return {
+      canAccept: false,
+      code: 'email_mismatch',
+      title: 'Convite destinado a outro e-mail',
+      message: `Este convite foi emitido especificamente para ${invite.invitedEmail}, mas você está autenticado como ${options.currentUserEmail}.`,
+    };
+  }
+
+  return {
+    canAccept: true,
+    code: 'valid',
+    title: 'Convite válido para ingresso',
+    message: `Convite pendente para ingressar em "${invite.spaceName}".`,
+  };
+}
+
 export interface CreateSpaceInviteInput {
   invitedEmail?: string;
   invitedRole?: SpaceMemberRole;
@@ -188,8 +321,9 @@ export async function getInviteByRawToken(
   rawToken: string,
   isDemo = false
 ): Promise<SpaceInvite | null> {
-  if (!rawToken || !rawToken.trim()) return null;
-  const tokenHash = await hashToken(rawToken);
+  const cleanToken = extractInviteToken(rawToken);
+  if (!cleanToken) return null;
+  const tokenHash = await hashToken(cleanToken);
 
   if (isDemo) {
     const invites = loadDemoInvites();

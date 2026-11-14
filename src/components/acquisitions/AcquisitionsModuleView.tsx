@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AcquisitionItem,
   AcquisitionList,
@@ -34,15 +34,15 @@ import {
   deleteTaxonomyGroupFromFirestore,
   deleteWorkspaceFromFirestore,
   fetchAcceptedWorkspacesFromFirestore,
-  fetchIndividualListsFromFirestore,
-  fetchItemsForListFromFirestore,
-  fetchSharedListsFromFirestore,
   isAcquisitionAdminUid,
   recordProductInSubcollection,
   saveItemToFirestore,
   saveListToFirestore,
   saveTaxonomyGroupToFirestore,
   saveWorkspaceToFirestore,
+  subscribeToIndividualLists,
+  subscribeToListItems,
+  subscribeToSharedLists,
   upsertUserDocument,
 } from '../../services/acquisitionsFirebase';
 import {
@@ -207,12 +207,24 @@ export const AcquisitionsModuleView: React.FC<AcquisitionsModuleViewProps> = ({
                 (sp.ownerEmail || sharedUser.email).toLowerCase()
             )
             .map((p) => ({
+              uid: p.uid,
               email: p.email.toLowerCase(),
               name: p.name,
               role: 'Membro' as const,
               status: (p.status === 'active' ? 'Aceito' : 'Pendente') as any,
             })),
         ];
+
+        const acceptedUids = Array.from(
+          new Set(
+            [
+              sp.ownerId || (isOwner ? sharedUser.uid : ''),
+              ...sp.participants
+                .filter((p) => p.status === 'active' && p.uid)
+                .map((p) => p.uid as string),
+            ].filter(Boolean)
+          )
+        );
 
         return {
           id: sp.id,
@@ -225,7 +237,7 @@ export const AcquisitionsModuleView: React.FC<AcquisitionsModuleViewProps> = ({
           ownerUid: sp.ownerId || (isOwner ? sharedUser.uid : 'shared_owner'),
           ownerEmail: sp.ownerEmail || sharedUser.email,
           acceptedMemberEmails: acceptedEmails,
-          acceptedMemberUids: [sp.ownerId || sharedUser.uid],
+          acceptedMemberUids: acceptedUids,
           members: membersList,
           monthlyBudget: sp.monthlyBudget,
           createdAt: sp.createdAt
@@ -272,6 +284,19 @@ export const AcquisitionsModuleView: React.FC<AcquisitionsModuleViewProps> = ({
     return saved ? JSON.parse(saved) : INITIAL_TAXONOMY_GROUPS;
   });
 
+  const [syncError, setSyncError] = useState<string | null>(null);
+  const [isLoadingLists, setIsLoadingLists] = useState<boolean>(false);
+  const listsRef = useRef<AcquisitionList[]>(lists);
+  const itemsRef = useRef<AcquisitionItem[]>(items);
+
+  useEffect(() => {
+    listsRef.current = lists;
+  }, [lists]);
+
+  useEffect(() => {
+    itemsRef.current = items;
+  }, [items]);
+
   // Reload user-scoped state when sharedUser.uid changes
   useEffect(() => {
     const savedLists = localStorage.getItem(lsListsKey);
@@ -309,59 +334,162 @@ export const AcquisitionsModuleView: React.FC<AcquisitionsModuleViewProps> = ({
     }
   }, [sharedUser.uid, sharedUser.isDemo, personalWorkspaceId, lsListsKey, lsItemsKey, lsTaxKey]);
 
-  // Hydrate individual & shared lists + items from Firestore when authenticated
+  const sharedSpaceIds = useMemo(
+    () =>
+      effectiveWorkspaces
+        .filter((w) => w.id !== personalWorkspaceId)
+        .map((w) => w.id),
+    [effectiveWorkspaces, personalWorkspaceId]
+  );
+  const sharedSpaceIdsKey = sharedSpaceIds.join('|');
+
+  // Real-time onSnapshot subscriptions for individual & shared lists + items
   useEffect(() => {
-    if (sharedUser.isDemo || !sharedUser.uid || sharedUser.uid === 'usr_anonymous') return;
-    let cancelled = false;
+    if (sharedUser.isDemo || !sharedUser.uid || sharedUser.uid === 'usr_anonymous') {
+      setIsLoadingLists(false);
+      return;
+    }
 
-    const hydrateFromFirestore = async () => {
-      try {
-        const sharedSpaceIds = effectiveWorkspaces
-          .filter((w) => w.id !== personalWorkspaceId)
-          .map((w) => w.id);
+    let disposed = false;
+    setIsLoadingLists(true);
+    setSyncError(null);
 
-        const [indLists, ...sharedListsNested] = await Promise.all([
-          fetchIndividualListsFromFirestore(sharedUser.uid),
-          ...sharedSpaceIds.map((sid) => fetchSharedListsFromFirestore(sid)),
-        ]);
+    let indLists: AcquisitionList[] = [];
+    const sharedListsBySpace = new Map<string, AcquisitionList[]>();
+    const itemUnsubs = new Map<string, () => void>();
+    const itemsByList = new Map<string, AcquisitionItem[]>();
+    const listWorkspaceMap = new Map<string, string>();
 
-        const normalizedIndLists = indLists.map((l) => ({
+    const emitMergedItems = () => {
+      if (disposed) return;
+      const mergedItems: AcquisitionItem[] = [];
+      itemsByList.forEach((listItems) => {
+        mergedItems.push(...listItems);
+      });
+      mergedItems.sort((a, b) => {
+        const ta = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
+        const tb = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
+        return tb - ta;
+      });
+      setItems(mergedItems);
+    };
+
+    const syncListsAndItemListeners = () => {
+      if (disposed) return;
+
+      const mergedMap = new Map<string, AcquisitionList>();
+      indLists.forEach((l) => {
+        const normalized: AcquisitionList = {
           ...l,
           workspaceId: personalWorkspaceId,
-          scopeType: 'individual' as const,
-        }));
-        const normalizedSharedLists = sharedListsNested.flat().map((l) => ({
-          ...l,
-          workspaceId: l.spaceId || l.workspaceId,
-          scopeType: 'shared' as const,
-        }));
-
-        const allFetchedLists = [...normalizedIndLists, ...normalizedSharedLists];
-        const fetchedItemsNested = await Promise.all(
-          allFetchedLists.map((l) => fetchItemsForListFromFirestore(l.id))
-        );
-        const allFetchedItems = fetchedItemsNested.flat().map((item) => {
-          const parentList = allFetchedLists.find((l) => l.id === item.listId);
-          return {
-            ...item,
-            workspaceId: parentList ? parentList.workspaceId : item.workspaceId,
+          scopeType: 'individual',
+        };
+        mergedMap.set(normalized.id, normalized);
+      });
+      sharedListsBySpace.forEach((spaceLists, sid) => {
+        spaceLists.forEach((l) => {
+          const normalized: AcquisitionList = {
+            ...l,
+            workspaceId: l.spaceId || l.workspaceId || sid,
+            scopeType: 'shared',
           };
+          mergedMap.set(normalized.id, normalized);
         });
+      });
 
-        if (!cancelled) {
-          setLists(allFetchedLists);
-          setItems(allFetchedItems);
+      const allLists = Array.from(mergedMap.values());
+      allLists.forEach((l) => listWorkspaceMap.set(l.id, l.workspaceId));
+      setLists(allLists);
+      setIsLoadingLists(false);
+
+      const activeIds = new Set(allLists.map((l) => l.id));
+
+      // Remove listeners for archived/deleted/inaccessible lists
+      for (const [listId, unsub] of itemUnsubs.entries()) {
+        if (!activeIds.has(listId)) {
+          unsub();
+          itemUnsubs.delete(listId);
+          itemsByList.delete(listId);
+          listWorkspaceMap.delete(listId);
         }
-      } catch (err) {
-        console.warn('[AcquisitionsModuleView] Erro ao carregar listas do Firestore:', err);
       }
+
+      // Attach listeners for new lists
+      for (const list of allLists) {
+        if (!itemUnsubs.has(list.id)) {
+          const unsubItems = subscribeToListItems(
+            list.id,
+            (fetchedItems) => {
+              if (disposed) return;
+              const parentWsId = listWorkspaceMap.get(list.id) || list.workspaceId;
+              const normalizedItems = fetchedItems.map((it) => ({
+                ...it,
+                listId: it.listId || list.id,
+                workspaceId: parentWsId,
+              }));
+              itemsByList.set(list.id, normalizedItems);
+              emitMergedItems();
+            },
+            (err) => {
+              console.warn(`[AcquisitionsModuleView] Erro ao sincronizar itens da lista ${list.id}:`, err);
+              if (!disposed) {
+                setSyncError('Falha ao sincronizar itens em tempo real com o servidor.');
+              }
+            }
+          );
+          itemUnsubs.set(list.id, unsubItems);
+        }
+      }
+
+      emitMergedItems();
     };
 
-    hydrateFromFirestore();
+    const unsubListWatchers: Array<() => void> = [];
+
+    unsubListWatchers.push(
+      subscribeToIndividualLists(
+        sharedUser.uid,
+        (fetched) => {
+          indLists = fetched;
+          syncListsAndItemListeners();
+        },
+        (err) => {
+          console.warn('[AcquisitionsModuleView] Erro ao sincronizar listas individuais:', err);
+          if (!disposed) {
+            setIsLoadingLists(false);
+            setSyncError('Não foi possível sincronizar suas listas individuais.');
+          }
+        }
+      )
+    );
+
+    const spaceIdsToWatch = sharedSpaceIdsKey ? sharedSpaceIdsKey.split('|').filter(Boolean) : [];
+    for (const sid of spaceIdsToWatch) {
+      unsubListWatchers.push(
+        subscribeToSharedLists(
+          sid,
+          (fetched) => {
+            sharedListsBySpace.set(sid, fetched);
+            syncListsAndItemListeners();
+          },
+          (err) => {
+            console.warn(`[AcquisitionsModuleView] Erro ao sincronizar listas do espaço ${sid}:`, err);
+            if (!disposed) {
+              setIsLoadingLists(false);
+              setSyncError('Não foi possível sincronizar listas compartilhadas.');
+            }
+          }
+        )
+      );
+    }
+
     return () => {
-      cancelled = true;
+      disposed = true;
+      unsubListWatchers.forEach((unsub) => unsub());
+      itemUnsubs.forEach((unsub) => unsub());
+      itemUnsubs.clear();
     };
-  }, [sharedUser.uid, sharedUser.isDemo, personalWorkspaceId, effectiveWorkspaces.length]);
+  }, [sharedUser.uid, sharedUser.isDemo, personalWorkspaceId, sharedSpaceIdsKey]);
 
   // Navigation State: Default directly to 'workspace_detail' (Kanban das Listas)
   const [activeRoute, setActiveRoute] = useState<ActiveRoute>('workspace_detail');
@@ -752,7 +880,16 @@ export const AcquisitionsModuleView: React.FC<AcquisitionsModuleViewProps> = ({
   // =========================================================================
   // LIST & ITEM STATE MACHINE HANDLERS (CREATE, EDIT, DELETE)
   // =========================================================================
-  const handleCreateList = (
+  const reportSyncError = (actionLabel: string, err: unknown) => {
+    const msg =
+      err instanceof Error && err.message
+        ? err.message
+        : 'Erro inesperado ao sincronizar com o banco de dados.';
+    console.error(`[AcquisitionsModuleView] ${actionLabel}:`, err);
+    setSyncError(`${actionLabel}: ${msg}`);
+  };
+
+  const handleCreateList = async (
     workspaceId: string,
     name: string,
     type: ListType,
@@ -772,55 +909,90 @@ export const AcquisitionsModuleView: React.FC<AcquisitionsModuleViewProps> = ({
       acceptedMemberEmails: ws?.acceptedMemberEmails || [currentUser.email],
       createdAt: new Date().toISOString(),
     };
+    const prevLists = listsRef.current;
+    setSyncError(null);
     setLists((prev) => [...prev, newList]);
-    saveListToFirestore(newList);
+    if (!sharedUser.isDemo) {
+      try {
+        await saveListToFirestore(newList);
+      } catch (err) {
+        setLists(prevLists);
+        reportSyncError('Não foi possível criar a lista', err);
+      }
+    }
   };
 
-  const handleUpdateList = (
+  const handleUpdateList = async (
     listId: string,
     name: string,
     type: ListType,
     description: string
   ) => {
-    setLists((prev) =>
-      prev.map((l) => {
-        if (l.id !== listId) return l;
-        const updatedList: AcquisitionList = {
-          ...l,
-          name,
-          type,
-          description,
-        };
-        saveListToFirestore(updatedList);
-        return updatedList;
-      })
-    );
+    const prevLists = listsRef.current;
+    const prevItems = itemsRef.current;
+    const existingList = prevLists.find((l) => l.id === listId);
+    if (!existingList) return;
+
+    const updatedList: AcquisitionList = {
+      ...existingList,
+      name,
+      type,
+      description,
+    };
 
     const defaultStage = getStagesForListType(type)[0].id as ItemStage;
-    setItems((prev) =>
-      prev.map((item) => {
-        if (item.listId !== listId || item.listType === type) return item;
-        const updatedItem: AcquisitionItem = {
-          ...item,
-          listType: type,
-          stage: defaultStage,
-          updatedAt: new Date().toISOString(),
-        };
-        saveItemToFirestore(updatedItem);
-        return updatedItem;
-      })
-    );
+    const itemsToUpdate = prevItems
+      .filter((item) => item.listId === listId && item.listType !== type)
+      .map((item) => ({
+        ...item,
+        listType: type,
+        stage: defaultStage,
+        createdByUid: item.createdByUid || sharedUser.uid,
+        updatedAt: new Date().toISOString(),
+      }));
+
+    setSyncError(null);
+    setLists((prev) => prev.map((l) => (l.id === listId ? updatedList : l)));
+    if (itemsToUpdate.length > 0) {
+      const byId = new Map(itemsToUpdate.map((i) => [i.id, i]));
+      setItems((prev) => prev.map((i) => byId.get(i.id) || i));
+    }
+
+    if (!sharedUser.isDemo) {
+      try {
+        await saveListToFirestore(updatedList);
+        if (itemsToUpdate.length > 0) {
+          await Promise.all(itemsToUpdate.map((it) => saveItemToFirestore(it)));
+        }
+      } catch (err) {
+        setLists(prevLists);
+        setItems(prevItems);
+        reportSyncError('Não foi possível atualizar a lista', err);
+      }
+    }
   };
 
-  const handleDeleteList = (listId: string) => {
+  const handleDeleteList = async (listId: string) => {
+    const prevLists = listsRef.current;
+    const prevItems = itemsRef.current;
+    setSyncError(null);
     setLists((prev) => prev.filter((l) => l.id !== listId));
     setItems((prev) => prev.filter((i) => i.listId !== listId));
-    deleteListFromFirestore(listId);
+    if (!sharedUser.isDemo) {
+      try {
+        await deleteListFromFirestore(listId);
+      } catch (err) {
+        setLists(prevLists);
+        setItems(prevItems);
+        reportSyncError('Não foi possível excluir a lista', err);
+      }
+    }
   };
 
-  const handleCreateItem = (
+  const handleCreateItem = async (
     newItemData: Omit<AcquisitionItem, 'id' | 'updatedAt' | 'productsHistory'>
   ) => {
+    const prevItems = itemsRef.current;
     const newItem: AcquisitionItem = {
       ...newItemData,
       id: `item_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
@@ -828,42 +1000,81 @@ export const AcquisitionsModuleView: React.FC<AcquisitionsModuleViewProps> = ({
       productsHistory: [],
       updatedAt: new Date().toISOString(),
     };
+    setSyncError(null);
     setItems((prev) => [newItem, ...prev]);
-    saveItemToFirestore(newItem);
+    if (!sharedUser.isDemo) {
+      try {
+        await saveItemToFirestore(newItem);
+      } catch (err) {
+        setItems(prevItems);
+        reportSyncError('Não foi possível salvar o item', err);
+      }
+    }
   };
 
-  const handleUpdateItem = (updatedItem: AcquisitionItem) => {
+  const handleUpdateItem = async (updatedItem: AcquisitionItem) => {
+    const prevItems = itemsRef.current;
+    const normalizedItem: AcquisitionItem = {
+      ...updatedItem,
+      createdByUid: updatedItem.createdByUid || sharedUser.uid,
+      updatedAt: updatedItem.updatedAt || new Date().toISOString(),
+    };
+    setSyncError(null);
     setItems((prev) =>
-      prev.map((i) => (i.id === updatedItem.id ? updatedItem : i))
+      prev.map((i) => (i.id === normalizedItem.id ? normalizedItem : i))
     );
-    saveItemToFirestore(updatedItem);
+    if (!sharedUser.isDemo) {
+      try {
+        await saveItemToFirestore(normalizedItem);
+      } catch (err) {
+        setItems(prevItems);
+        reportSyncError('Não foi possível atualizar o item', err);
+      }
+    }
   };
 
-  const handleDeleteItem = (itemId: string) => {
-    const itemToDelete = items.find((i) => i.id === itemId);
+  const handleDeleteItem = async (itemId: string) => {
+    const prevItems = itemsRef.current;
+    const itemToDelete = prevItems.find((i) => i.id === itemId);
+    setSyncError(null);
     setItems((prev) => prev.filter((i) => i.id !== itemId));
-    deleteItemFromFirestore(itemId, itemToDelete?.listId);
+    if (!sharedUser.isDemo) {
+      try {
+        await deleteItemFromFirestore(itemId, itemToDelete?.listId);
+      } catch (err) {
+        setItems(prevItems);
+        reportSyncError('Não foi possível excluir o item', err);
+      }
+    }
   };
 
-  const handleMoveItemStage = (item: AcquisitionItem, targetStage: ItemStage) => {
-    if (
+  const handleMoveItemStage = async (item: AcquisitionItem, targetStage: ItemStage) => {
+    const prevItems = itemsRef.current;
+    const nextItem: AcquisitionItem =
       item.listType === 'recorrente' &&
       item.stage === 'conferido' &&
       targetStage === 'carrinho'
-    ) {
-      const reverted = revertConfirmedCheckout(item);
-      setItems((prev) => prev.map((i) => (i.id === item.id ? reverted : i)));
-      saveItemToFirestore(reverted);
-      return;
-    }
+        ? {
+            ...revertConfirmedCheckout(item),
+            createdByUid: item.createdByUid || sharedUser.uid,
+          }
+        : {
+            ...item,
+            stage: targetStage,
+            createdByUid: item.createdByUid || sharedUser.uid,
+            updatedAt: new Date().toISOString(),
+          };
 
-    const updated: AcquisitionItem = {
-      ...item,
-      stage: targetStage,
-      updatedAt: new Date().toISOString(),
-    };
-    setItems((prev) => prev.map((i) => (i.id === item.id ? updated : i)));
-    saveItemToFirestore(updated);
+    setSyncError(null);
+    setItems((prev) => prev.map((i) => (i.id === item.id ? nextItem : i)));
+    if (!sharedUser.isDemo) {
+      try {
+        await saveItemToFirestore(nextItem);
+      } catch (err) {
+        setItems(prevItems);
+        reportSyncError('Não foi possível mover o item de etapa', err);
+      }
+    }
   };
 
   const handleConfirmCartCheckout = async (
@@ -877,9 +1088,33 @@ export const AcquisitionsModuleView: React.FC<AcquisitionsModuleViewProps> = ({
     },
     advanceToConfirmed: boolean
   ) => {
+    const prevItems = itemsRef.current;
+    setSyncError(null);
+
     if (advanceToConfirmed) {
       const unitPriceCents = Math.round(productInput.unitPrice * 100);
       const totalPaidCents = unitPriceCents * (productInput.quantity || 1);
+      const { updatedItem: confirmedItem, newProduct } = confirmCartCheckout(
+        item,
+        productInput
+      );
+      const updatedItem: AcquisitionItem = {
+        ...confirmedItem,
+        createdByUid: item.createdByUid || sharedUser.uid,
+      };
+      setItems((prev) => prev.map((i) => (i.id === item.id ? updatedItem : i)));
+
+      if (!sharedUser.isDemo) {
+        try {
+          await saveItemToFirestore(updatedItem);
+          await recordProductInSubcollection(updatedItem, newProduct);
+        } catch (err) {
+          setItems(prevItems);
+          reportSyncError('Não foi possível confirmar a compra do item', err);
+          return;
+        }
+      }
+
       try {
         await recordAcquisitionPurchase(
           sharedUser.uid,
@@ -906,13 +1141,11 @@ export const AcquisitionsModuleView: React.FC<AcquisitionsModuleViewProps> = ({
       } catch (err) {
         console.warn('[Acquisitions] Erro ao registrar compra no serviço canônico:', err);
       }
-      const { updatedItem, newProduct } = confirmCartCheckout(item, productInput);
-      setItems((prev) => prev.map((i) => (i.id === item.id ? updatedItem : i)));
-      recordProductInSubcollection(updatedItem, newProduct);
     } else {
       const updatedItem: AcquisitionItem = {
         ...item,
         stage: 'carrinho',
+        createdByUid: item.createdByUid || sharedUser.uid,
         cartDraft: {
           brand: productInput.brand,
           unitPrice: productInput.unitPrice,
@@ -923,7 +1156,14 @@ export const AcquisitionsModuleView: React.FC<AcquisitionsModuleViewProps> = ({
         updatedAt: new Date().toISOString(),
       };
       setItems((prev) => prev.map((i) => (i.id === item.id ? updatedItem : i)));
-      saveItemToFirestore(updatedItem);
+      if (!sharedUser.isDemo) {
+        try {
+          await saveItemToFirestore(updatedItem);
+        } catch (err) {
+          setItems(prevItems);
+          reportSyncError('Não foi possível salvar o produto no carrinho', err);
+        }
+      }
     }
   };
 
@@ -932,6 +1172,22 @@ export const AcquisitionsModuleView: React.FC<AcquisitionsModuleViewProps> = ({
     amount: number,
     note: string
   ) => {
+    const prevItems = itemsRef.current;
+    setSyncError(null);
+    const updated: AcquisitionItem = {
+      ...addGoalDeposit(item, amount, currentUser.email, note),
+      createdByUid: item.createdByUid || sharedUser.uid,
+    };
+    setItems((prev) => prev.map((i) => (i.id === item.id ? updated : i)));
+    if (!sharedUser.isDemo) {
+      try {
+        await saveItemToFirestore(updated);
+      } catch (err) {
+        setItems(prevItems);
+        reportSyncError('Não foi possível salvar o depósito da meta', err);
+        return;
+      }
+    }
     try {
       await recordAcquisitionDeposit(
         sharedUser.uid,
@@ -947,15 +1203,35 @@ export const AcquisitionsModuleView: React.FC<AcquisitionsModuleViewProps> = ({
     } catch (err) {
       console.warn('[Acquisitions] Erro ao registrar aporte no serviço canônico:', err);
     }
-    const updated = addGoalDeposit(item, amount, currentUser.email, note);
-    setItems((prev) => prev.map((i) => (i.id === item.id ? updated : i)));
-    saveItemToFirestore(updated);
   };
 
   const handleAddGoalQuote = async (
     item: AcquisitionItem,
     quoteInput: Omit<GoalQuote, 'id' | 'recordedAt'>
   ) => {
+    const prevItems = itemsRef.current;
+    setSyncError(null);
+    const newQuote: GoalQuote = {
+      ...quoteInput,
+      id: `quote_${Date.now()}`,
+      recordedAt: new Date().toISOString(),
+    };
+    const updated: AcquisitionItem = {
+      ...item,
+      createdByUid: item.createdByUid || sharedUser.uid,
+      quotes: [newQuote, ...(item.quotes || [])],
+      updatedAt: new Date().toISOString(),
+    };
+    setItems((prev) => prev.map((i) => (i.id === item.id ? updated : i)));
+    if (!sharedUser.isDemo) {
+      try {
+        await saveItemToFirestore(updated);
+      } catch (err) {
+        setItems(prevItems);
+        reportSyncError('Não foi possível salvar a cotação', err);
+        return;
+      }
+    }
     try {
       await recordAcquisitionQuote(
         sharedUser.uid,
@@ -972,36 +1248,36 @@ export const AcquisitionsModuleView: React.FC<AcquisitionsModuleViewProps> = ({
     } catch (err) {
       console.warn('[Acquisitions] Erro ao registrar cotação no serviço canônico:', err);
     }
-    const newQuote: GoalQuote = {
-      ...quoteInput,
-      id: `quote_${Date.now()}`,
-      recordedAt: new Date().toISOString(),
-    };
-    const updated: AcquisitionItem = {
-      ...item,
-      quotes: [newQuote, ...(item.quotes || [])],
-      updatedAt: new Date().toISOString(),
-    };
-    setItems((prev) => prev.map((i) => (i.id === item.id ? updated : i)));
-    saveItemToFirestore(updated);
   };
 
-  const handleDeleteGoalQuote = (item: AcquisitionItem, quoteId: string) => {
+  const handleDeleteGoalQuote = async (item: AcquisitionItem, quoteId: string) => {
+    const prevItems = itemsRef.current;
+    setSyncError(null);
     const updated: AcquisitionItem = {
       ...item,
+      createdByUid: item.createdByUid || sharedUser.uid,
       quotes: (item.quotes || []).filter((q) => q.id !== quoteId),
       updatedAt: new Date().toISOString(),
     };
     setItems((prev) => prev.map((i) => (i.id === item.id ? updated : i)));
-    saveItemToFirestore(updated);
+    if (!sharedUser.isDemo) {
+      try {
+        await saveItemToFirestore(updated);
+      } catch (err) {
+        setItems(prevItems);
+        reportSyncError('Não foi possível remover a cotação', err);
+      }
+    }
   };
 
-  const handleCompleteGoalAcquisition = (
+  const handleCompleteGoalAcquisition = async (
     item: AcquisitionItem,
     finalPaidAmount: number,
     storeName: string,
     brand: string
   ) => {
+    const prevItems = itemsRef.current;
+    setSyncError(null);
     const now = new Date().toISOString();
     const newProd = {
       id: `prod_goal_${Date.now()}`,
@@ -1015,6 +1291,7 @@ export const AcquisitionsModuleView: React.FC<AcquisitionsModuleViewProps> = ({
     };
     const updated: AcquisitionItem = {
       ...item,
+      createdByUid: item.createdByUid || sharedUser.uid,
       stage: 'adquirido',
       finalPaidAmount,
       acquiredStore: storeName,
@@ -1023,23 +1300,48 @@ export const AcquisitionsModuleView: React.FC<AcquisitionsModuleViewProps> = ({
       updatedAt: now,
     };
     setItems((prev) => prev.map((i) => (i.id === item.id ? updated : i)));
-    recordProductInSubcollection(updated, newProd);
+    if (!sharedUser.isDemo) {
+      try {
+        await saveItemToFirestore(updated);
+        await recordProductInSubcollection(updated, newProd);
+      } catch (err) {
+        setItems(prevItems);
+        reportSyncError('Não foi possível concluir a aquisição da meta', err);
+      }
+    }
   };
 
-  const handleConvertWishToGoal = (
+  const handleConvertWishToGoal = async (
     wishItem: AcquisitionItem,
     targetGoalListId: string
   ) => {
-    const { convertedGoalItem, updatedWishItem } = convertWishToGoal(
-      wishItem,
-      targetGoalListId
-    );
+    const prevItems = itemsRef.current;
+    setSyncError(null);
+    const { convertedGoalItem: rawGoalItem, updatedWishItem: rawWishItem } =
+      convertWishToGoal(wishItem, targetGoalListId);
+    const convertedGoalItem: AcquisitionItem = {
+      ...rawGoalItem,
+      createdByUid: sharedUser.uid,
+    };
+    const updatedWishItem: AcquisitionItem = {
+      ...rawWishItem,
+      createdByUid: wishItem.createdByUid || sharedUser.uid,
+    };
     setItems((prev) => [
       convertedGoalItem,
       ...prev.map((i) => (i.id === wishItem.id ? updatedWishItem : i)),
     ]);
-    saveItemToFirestore(convertedGoalItem);
-    saveItemToFirestore(updatedWishItem);
+    if (!sharedUser.isDemo) {
+      try {
+        await Promise.all([
+          saveItemToFirestore(convertedGoalItem),
+          saveItemToFirestore(updatedWishItem),
+        ]);
+      } catch (err) {
+        setItems(prevItems);
+        reportSyncError('Não foi possível converter o desejo em objetivo', err);
+      }
+    }
   };
 
   const handleAdjustItemStock = async (
@@ -1047,6 +1349,22 @@ export const AcquisitionsModuleView: React.FC<AcquisitionsModuleViewProps> = ({
     delta: number,
     autoMoveToBuyOnCritical: boolean
   ) => {
+    const prevItems = itemsRef.current;
+    setSyncError(null);
+    const updated: AcquisitionItem = {
+      ...adjustItemStock(item, delta, autoMoveToBuyOnCritical),
+      createdByUid: item.createdByUid || sharedUser.uid,
+    };
+    setItems((prev) => prev.map((i) => (i.id === item.id ? updated : i)));
+    if (!sharedUser.isDemo) {
+      try {
+        await saveItemToFirestore(updated);
+      } catch (err) {
+        setItems(prevItems);
+        reportSyncError('Não foi possível atualizar o estoque do item', err);
+        return;
+      }
+    }
     try {
       if (delta !== 0) {
         await recordStockMovement(
@@ -1064,12 +1382,25 @@ export const AcquisitionsModuleView: React.FC<AcquisitionsModuleViewProps> = ({
     } catch (err) {
       console.warn('[Acquisitions] Erro ao registrar movimentação de estoque:', err);
     }
-    const updated = adjustItemStock(item, delta, autoMoveToBuyOnCritical);
-    setItems((prev) => prev.map((i) => (i.id === item.id ? updated : i)));
-    saveItemToFirestore(updated);
   };
 
   const handleReturnConfirmedToStock = async (item: AcquisitionItem) => {
+    const prevItems = itemsRef.current;
+    setSyncError(null);
+    const updated: AcquisitionItem = {
+      ...returnConfirmedToStock(item),
+      createdByUid: item.createdByUid || sharedUser.uid,
+    };
+    setItems((prev) => prev.map((i) => (i.id === item.id ? updated : i)));
+    if (!sharedUser.isDemo) {
+      try {
+        await saveItemToFirestore(updated);
+      } catch (err) {
+        setItems(prevItems);
+        reportSyncError('Não foi possível retornar o item para a despensa', err);
+        return;
+      }
+    }
     try {
       const lastProduct = item.productsHistory?.[0];
       const purchaseId = lastProduct?.id || `pur_${item.id}`;
@@ -1086,9 +1417,6 @@ export const AcquisitionsModuleView: React.FC<AcquisitionsModuleViewProps> = ({
     } catch (err) {
       console.warn('[Acquisitions] Erro ao registrar estorno de compra no serviço canônico:', err);
     }
-    const updated = returnConfirmedToStock(item);
-    setItems((prev) => prev.map((i) => (i.id === item.id ? updated : i)));
-    saveItemToFirestore(updated);
   };
 
   // =========================================================================
@@ -1202,6 +1530,30 @@ export const AcquisitionsModuleView: React.FC<AcquisitionsModuleViewProps> = ({
 
   return (
     <div className="space-y-4">
+      {syncError && (
+        <div
+          role="alert"
+          className="bg-rose-950/70 border border-rose-500/40 rounded-xl px-4 py-3 flex items-center justify-between gap-3 text-xs text-rose-200"
+        >
+          <div className="flex items-center gap-2">
+            <i className="ph-bold ph-warning-circle text-rose-400 text-base shrink-0"></i>
+            <span>{syncError}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setSyncError(null)}
+            className="px-2.5 py-1 rounded-lg bg-rose-900/60 hover:bg-rose-800/80 text-rose-100 font-semibold shrink-0 cursor-pointer"
+          >
+            Fechar
+          </button>
+        </div>
+      )}
+      {isLoadingLists && !sharedUser.isDemo && (
+        <div className="bg-slate-800/70 border border-slate-700/70 rounded-xl px-3.5 py-2 text-xs text-slate-300 flex items-center gap-2">
+          <span className="w-2 h-2 rounded-full bg-indigo-400 animate-pulse" />
+          <span>Sincronizando listas e itens em tempo real...</span>
+        </div>
+      )}
       {effectiveWorkspaces.length === 0 ? (
         <div className="bg-slate-800/90 border border-slate-700/80 rounded-2xl p-8 text-center space-y-4">
           <div className="w-12 h-12 rounded-2xl bg-amber-500/15 border border-amber-500/30 text-amber-400 flex items-center justify-center mx-auto">

@@ -40,6 +40,9 @@ import {
   Link2,
   Edit3,
   Trash2,
+  Layers,
+  PackageCheck,
+  Filter,
 } from 'lucide-react';
 
 interface WorkspaceBoardViewProps {
@@ -65,13 +68,13 @@ interface WorkspaceBoardViewProps {
     status: 'Pendente' | 'Aceito' | 'Recusado'
   ) => void;
   onRemoveMember: (workspaceId: string, email: string) => void;
-  onCreateList: (workspaceId: string, name: string, type: ListType, description: string) => void;
-  onUpdateList: (listId: string, name: string, type: ListType, description: string) => void;
-  onDeleteList: (listId: string) => void;
-  onCreateItem: (newItem: Omit<AcquisitionItem, 'id' | 'updatedAt' | 'productsHistory'>) => void;
-  onUpdateItem: (updatedItem: AcquisitionItem) => void;
-  onDeleteItem: (itemId: string) => void;
-  onMoveItemStage: (item: AcquisitionItem, targetStage: ItemStage) => void;
+  onCreateList: (workspaceId: string, name: string, type: ListType, description: string) => void | Promise<void>;
+  onUpdateList: (listId: string, name: string, type: ListType, description: string) => void | Promise<void>;
+  onDeleteList: (listId: string) => void | Promise<void>;
+  onCreateItem: (newItem: Omit<AcquisitionItem, 'id' | 'updatedAt' | 'productsHistory'>) => void | Promise<void>;
+  onUpdateItem: (updatedItem: AcquisitionItem) => void | Promise<void>;
+  onDeleteItem: (itemId: string) => void | Promise<void>;
+  onMoveItemStage: (item: AcquisitionItem, targetStage: ItemStage) => void | Promise<void>;
   onConfirmCartCheckout: (
     item: AcquisitionItem,
     productInput: {
@@ -82,20 +85,20 @@ interface WorkspaceBoardViewProps {
       receiptUrl?: string;
     },
     advanceToConfirmed: boolean
-  ) => void;
-  onAddGoalDeposit: (item: AcquisitionItem, amount: number, note: string) => void;
-  onAddGoalQuote: (item: AcquisitionItem, quote: Omit<GoalQuote, 'id' | 'recordedAt'>) => void;
-  onDeleteGoalQuote: (item: AcquisitionItem, quoteId: string) => void;
+  ) => void | Promise<void>;
+  onAddGoalDeposit: (item: AcquisitionItem, amount: number, note: string) => void | Promise<void>;
+  onAddGoalQuote: (item: AcquisitionItem, quote: Omit<GoalQuote, 'id' | 'recordedAt'>) => void | Promise<void>;
+  onDeleteGoalQuote: (item: AcquisitionItem, quoteId: string) => void | Promise<void>;
   onCompleteGoalAcquisition: (
     item: AcquisitionItem,
     finalPaidAmount: number,
     storeName: string,
     brand: string,
     receiptUrl?: string
-  ) => void;
-  onConvertWishToGoal: (wishItem: AcquisitionItem, targetGoalListId: string) => void;
-  onAdjustItemStock: (item: AcquisitionItem, delta: number, autoMoveToBuyOnCritical: boolean) => void;
-  onReturnConfirmedToStock: (item: AcquisitionItem) => void;
+  ) => void | Promise<void>;
+  onConvertWishToGoal: (wishItem: AcquisitionItem, targetGoalListId: string) => void | Promise<void>;
+  onAdjustItemStock: (item: AcquisitionItem, delta: number, autoMoveToBuyOnCritical: boolean) => void | Promise<void>;
+  onReturnConfirmedToStock: (item: AcquisitionItem) => void | Promise<void>;
   onCreateExpenseFromPurchase?: (payload: {
     description: string;
     amount: number;
@@ -286,6 +289,11 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
   const [targetGoalListId, setTargetGoalListId] = useState(
     goalListsInWorkspace[0]?.id || ''
   );
+
+  // Board UX toggles: group by category, focus cart items, bought/confirmed panel
+  const [groupByCategory, setGroupByCategory] = useState(false);
+  const [showOnlyCart, setShowOnlyCart] = useState(false);
+  const [showBoughtPanel, setShowBoughtPanel] = useState(true);
 
   // Handlers
   const handleGroupSelectChange = (newGroupId: string) => {
@@ -650,9 +658,59 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
     return `${grp.name} · ${cat?.name || 'Geral'}`;
   };
 
+  const getGroupNameOnly = (groupId: string) => {
+    const grp = taxonomyGroups.find((g) => g.id === groupId);
+    return grp?.name || 'Sem Categoria';
+  };
+
   const listItems = activeList
     ? items.filter((i) => i.listId === activeList.id)
     : [];
+
+  const isRecurringActiveList = activeList?.type === 'recorrente';
+  const cartItems = isRecurringActiveList
+    ? listItems.filter((i) => i.stage === 'carrinho')
+    : [];
+  const confirmedItems = isRecurringActiveList
+    ? listItems.filter((i) => i.stage === 'conferido')
+    : [];
+
+  const cartSubtotal = cartItems.reduce((sum, item) => {
+    if (item.cartDraft) {
+      return sum + (Number(item.cartDraft.unitPrice) || 0) * (Number(item.cartDraft.quantity) || 1);
+    }
+    const lastPrice = item.productsHistory?.[0]?.unitPrice || 0;
+    return sum + lastPrice;
+  }, 0);
+
+  const confirmedSubtotal = confirmedItems.reduce((sum, item) => {
+    if (item.cartDraft) {
+      return sum + (Number(item.cartDraft.unitPrice) || 0) * (Number(item.cartDraft.quantity) || 1);
+    }
+    const lastTotal = item.productsHistory?.[0]?.totalPrice || 0;
+    return sum + lastTotal;
+  }, 0);
+
+  const recentListPurchases = listItems
+    .flatMap((item) =>
+      (item.productsHistory || []).map((purchase) => ({
+        itemId: item.id,
+        itemName: item.name,
+        isCurrentlyConfirmed: item.stage === 'conferido',
+        purchase,
+      }))
+    )
+    .sort(
+      (a, b) =>
+        new Date(b.purchase.purchaseDate).getTime() -
+        new Date(a.purchase.purchaseDate).getTime()
+    )
+    .slice(0, 8);
+
+  const displayedStages =
+    isRecurringActiveList && showOnlyCart
+      ? stages.filter((s) => s.id === 'carrinho' || s.id === 'conferido')
+      : stages;
 
   const activeFormListType = editingItem ? editingItem.listType : activeList?.type;
 
@@ -670,14 +728,43 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
         ? calculateGoalProgress(item.savedAmount, item.targetAmount)
         : 0;
 
+    const currentStock = Number(item.currentStock ?? 0);
+    const minStock = Math.max(1, Number(item.minStock ?? 1));
+    const stockPct = Math.min(100, Math.round((currentStock / (minStock * 2)) * 100));
+
+    const activeDraftOrLast = item.cartDraft
+      ? {
+          brand: item.cartDraft.brand,
+          unitPrice: Number(item.cartDraft.unitPrice) || 0,
+          quantity: Number(item.cartDraft.quantity) || 1,
+          storeName: item.cartDraft.storeName,
+        }
+      : item.stage === 'conferido' && item.productsHistory?.[0]
+      ? {
+          brand: item.productsHistory[0].brand,
+          unitPrice: Number(item.productsHistory[0].unitPrice) || 0,
+          quantity: Number(item.productsHistory[0].quantity) || 1,
+          storeName: item.productsHistory[0].storeName,
+        }
+      : null;
+
+    const cardHighlightClass =
+      item.stage === 'carrinho'
+        ? 'border-indigo-500/60 bg-slate-900 shadow-indigo-950/30'
+        : item.stage === 'conferido' || item.stage === 'adquirido'
+        ? 'border-emerald-500/50 bg-slate-900 shadow-emerald-950/20'
+        : critical
+        ? 'border-rose-500/50 bg-slate-900'
+        : 'border-slate-700/80 bg-slate-900 hover:border-slate-600';
+
     return (
       <div
         key={item.id}
-        className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 space-y-3.5 shadow-2xs hover:border-slate-300 dark:hover:border-slate-700 transition-colors"
+        className={`${cardHighlightClass} border rounded-xl p-4 space-y-3.5 shadow-sm transition-colors`}
       >
         {/* Top Taxonomy Metadata Line + Edit / Delete Item Actions */}
-        <div className="flex items-center justify-between gap-2 text-[11px] text-slate-500 dark:text-slate-400">
-          <span className="truncate">
+        <div className="flex items-center justify-between gap-2 text-[11px] text-slate-400">
+          <span className="truncate px-2 py-0.5 rounded-md bg-slate-800/90 border border-slate-700/70 text-slate-300">
             {getTaxonomyLabel(item.groupId, item.categoryId)}
           </span>
 
@@ -686,10 +773,10 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
               <span
                 className={`font-semibold mr-1 ${
                   item.priority === 'Alta'
-                    ? 'text-rose-600 dark:text-rose-400'
+                    ? 'text-rose-400'
                     : item.priority === 'Média'
-                    ? 'text-amber-600 dark:text-amber-400'
-                    : 'text-slate-500'
+                    ? 'text-amber-400'
+                    : 'text-slate-400'
                 }`}
               >
                 {item.priority}
@@ -699,7 +786,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
               type="button"
               onClick={() => openEditItemModal(item)}
               aria-label={`Editar item ${item.name}`}
-              className="p-1 rounded text-slate-400 hover:text-slate-900 hover:bg-slate-100 dark:hover:text-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+              className="p-1.5 rounded-lg text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors cursor-pointer"
             >
               <Edit3 className="w-3.5 h-3.5" />
             </button>
@@ -707,7 +794,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
               type="button"
               onClick={() => setDeletingItem(item)}
               aria-label={`Apagar item ${item.name}`}
-              className="p-1 rounded text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:text-rose-400 dark:hover:bg-rose-950/40 transition-colors cursor-pointer"
+              className="p-1.5 rounded-lg text-slate-400 hover:text-rose-400 hover:bg-rose-950/50 transition-colors cursor-pointer"
             >
               <Trash2 className="w-3.5 h-3.5" />
             </button>
@@ -715,14 +802,26 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
         </div>
 
         {/* Item Generic Name */}
-        <div>
-          <h4 className="text-sm font-bold text-slate-900 dark:text-slate-100 font-display leading-snug">
-            {item.name}
-          </h4>
-          {item.notes && (
-            <p className="text-xs text-slate-600 dark:text-slate-400 mt-1 line-clamp-2">
-              {item.notes}
-            </p>
+        <div className="flex items-start justify-between gap-2">
+          <div>
+            <h4 className="text-sm font-bold text-slate-100 font-display leading-snug">
+              {item.name}
+            </h4>
+            {item.notes && (
+              <p className="text-xs text-slate-400 mt-1 line-clamp-2">
+                {item.notes}
+              </p>
+            )}
+          </div>
+          {item.stage === 'carrinho' && (
+            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-500/20 border border-indigo-500/40 text-indigo-300 shrink-0">
+              No Carrinho
+            </span>
+          )}
+          {item.stage === 'conferido' && (
+            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 shrink-0">
+              Comprado
+            </span>
           )}
         </div>
 
@@ -731,14 +830,14 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
         {/* =============================================================== */}
         {item.listType === 'recorrente' && (
           <div className="space-y-2.5 pt-1">
-            <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-slate-800/60 space-y-2">
+            <div className="p-2.5 rounded-xl bg-slate-800/70 border border-slate-700/60 space-y-2">
               <div className="flex items-center justify-between text-xs">
                 <div>
-                  <span className="text-slate-500 dark:text-slate-400 block text-[11px]">
+                  <span className="text-slate-400 block text-[11px]">
                     Estoque Atual / Mínimo
                   </span>
-                  <span className="font-mono font-semibold tabular-nums text-slate-900 dark:text-slate-100">
-                    {item.currentStock ?? 0} {item.unit || 'un'}{' '}
+                  <span className="font-mono font-semibold tabular-nums text-slate-100">
+                    {currentStock} {item.unit || 'un'}{' '}
                     <span className="text-slate-400 font-normal">
                       / mín. {item.minStock ?? 1} {item.unit || 'un'}
                     </span>
@@ -746,30 +845,44 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
                 </div>
 
                 {critical ? (
-                  <span className="inline-flex items-center gap-1 text-xs font-semibold text-rose-600 dark:text-rose-400">
+                  <span className="inline-flex items-center gap-1 text-xs font-semibold text-rose-400">
                     <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
                     <span>Abaixo da Mínima</span>
                   </span>
                 ) : (
-                  <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-600 dark:text-emerald-400">
+                  <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-400">
                     <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
                     <span>Estoque Normal</span>
                   </span>
                 )}
               </div>
 
+              {/* Stock progress bar */}
+              <div className="w-full h-1.5 rounded-full bg-slate-900 overflow-hidden">
+                <div
+                  className={`h-full rounded-full transition-all ${
+                    critical
+                      ? 'bg-rose-500'
+                      : currentStock <= minStock * 1.25
+                      ? 'bg-amber-400'
+                      : 'bg-emerald-500'
+                  }`}
+                  style={{ width: `${Math.max(6, stockPct)}%` }}
+                />
+              </div>
+
               {/* Quick Stock Consumption Controls in Status 1 (Estoque) */}
               {item.stage === 'estoque' && (
-                <div className="pt-2 border-t border-slate-200/70 dark:border-slate-700/60 flex items-center justify-between gap-2">
-                  <span className="text-[11px] text-slate-500 dark:text-slate-400">
-                    Giro rápido de despensa:
+                <div className="pt-2 border-t border-slate-700/60 flex items-center justify-between gap-2">
+                  <span className="text-[11px] text-slate-400">
+                    Giro rápido:
                   </span>
                   <div className="flex items-center gap-1.5">
                     <button
                       type="button"
                       onClick={() => onAdjustItemStock(item, -1, true)}
                       aria-label={`Consumir 1 unidade de ${item.name}`}
-                      className="px-2 py-1 text-[11px] font-medium rounded bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:border-rose-400 hover:text-rose-600 dark:hover:text-rose-400 transition-colors flex items-center gap-1 whitespace-nowrap shrink-0 cursor-pointer"
+                      className="px-2 py-1 text-[11px] font-medium rounded-lg bg-slate-900 border border-slate-700 text-slate-300 hover:border-rose-500/60 hover:text-rose-400 transition-colors flex items-center gap-1 whitespace-nowrap shrink-0 cursor-pointer"
                     >
                       <Minus className="w-3 h-3" />
                       <span>Consumir 1</span>
@@ -778,7 +891,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
                       type="button"
                       onClick={() => onAdjustItemStock(item, 1, false)}
                       aria-label={`Somar 1 unidade em ${item.name}`}
-                      className="px-2 py-1 text-[11px] font-medium rounded bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:border-indigo-400 transition-colors flex items-center gap-0.5 whitespace-nowrap shrink-0 cursor-pointer"
+                      className="px-2 py-1 text-[11px] font-medium rounded-lg bg-slate-900 border border-slate-700 text-slate-300 hover:border-indigo-500/60 hover:text-indigo-300 transition-colors flex items-center gap-0.5 whitespace-nowrap shrink-0 cursor-pointer"
                     >
                       <Plus className="w-3 h-3" />
                       <span>1</span>
@@ -788,51 +901,63 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
               )}
             </div>
 
-            {/* Active Cart Instance Details */}
+            {/* Active Cart or Confirmed Purchase Instance Details */}
             {(item.stage === 'carrinho' || item.stage === 'conferido') &&
-              item.cartDraft && (
-                <div className="p-2.5 rounded-lg bg-indigo-50/70 dark:bg-indigo-950/30 border border-indigo-100 dark:border-indigo-900/50 text-xs space-y-1">
-                  <div className="flex items-center justify-between gap-2 font-medium text-indigo-950 dark:text-indigo-200">
-                    <span className="truncate">Produto: {item.cartDraft.brand}</span>
-                    <span className="font-mono tabular-nums font-bold shrink-0">
+              activeDraftOrLast && (
+                <div
+                  className={`p-3 rounded-xl border text-xs space-y-1.5 ${
+                    item.stage === 'conferido'
+                      ? 'bg-emerald-950/40 border-emerald-500/35'
+                      : 'bg-indigo-950/45 border-indigo-500/35'
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2 font-semibold text-slate-100">
+                    <span className="truncate">
+                      {activeDraftOrLast.brand || item.name}
+                    </span>
+                    <span
+                      className={`font-mono tabular-nums font-bold shrink-0 ${
+                        item.stage === 'conferido' ? 'text-emerald-300' : 'text-indigo-300'
+                      }`}
+                    >
                       {formatCurrencyBRL(
-                        item.cartDraft.unitPrice * item.cartDraft.quantity
+                        activeDraftOrLast.unitPrice * activeDraftOrLast.quantity
                       )}
                     </span>
                   </div>
-                  <div className="flex items-center justify-between gap-2 text-[11px] text-indigo-700 dark:text-indigo-300 font-mono tabular-nums">
+                  <div className="flex items-center justify-between gap-2 text-[11px] text-slate-300 font-mono tabular-nums">
                     <span className="truncate">
-                      {item.cartDraft.quantity}x{' '}
-                      {formatCurrencyBRL(item.cartDraft.unitPrice)} ·{' '}
-                      {item.cartDraft.storeName}
+                      {activeDraftOrLast.quantity} {item.unit || 'un'} ×{' '}
+                      {formatCurrencyBRL(activeDraftOrLast.unitPrice)} ·{' '}
+                      {activeDraftOrLast.storeName}
                     </span>
                     {item.stage === 'carrinho' && (
                       <button
                         type="button"
                         onClick={() => handleOpenCartProductModal(item, false)}
-                        className="underline font-sans font-semibold hover:text-indigo-900 dark:hover:text-white whitespace-nowrap shrink-0 cursor-pointer"
+                        className="underline font-sans font-semibold text-indigo-300 hover:text-white whitespace-nowrap shrink-0 cursor-pointer"
                       >
                         Editar Produto
                       </button>
                     )}
                   </div>
                   {item.stage === 'conferido' && onCreateExpenseFromPurchase && (
-                    <div className="pt-1.5 border-t border-indigo-200/50 dark:border-indigo-800/50 flex justify-end">
+                    <div className="pt-1.5 border-t border-emerald-500/25 flex justify-end">
                       <button
                         type="button"
                         onClick={() =>
                           onCreateExpenseFromPurchase({
-                            description: `[Compra] ${item.name} - ${item.cartDraft?.brand || ''} (${item.cartDraft?.storeName || ''})`.trim(),
+                            description: `[Compra] ${item.name} - ${activeDraftOrLast.brand} (${activeDraftOrLast.storeName})`.trim(),
                             amount: Number(
                               (
-                                (item.cartDraft?.unitPrice || 0) *
-                                (item.cartDraft?.quantity || 1)
+                                activeDraftOrLast.unitPrice *
+                                activeDraftOrLast.quantity
                               ).toFixed(2)
                             ),
-                            storeName: item.cartDraft?.storeName,
+                            storeName: activeDraftOrLast.storeName,
                           })
                         }
-                        className="text-[11px] font-semibold text-emerald-700 dark:text-emerald-300 hover:underline flex items-center gap-1 cursor-pointer"
+                        className="text-[11px] font-semibold text-emerald-300 hover:text-emerald-200 hover:underline flex items-center gap-1 cursor-pointer"
                       >
                         <span>+ Lançar como Despesa no Financeiro</span>
                       </button>
@@ -842,11 +967,10 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
               )}
 
             {/* Historical Price Summary & Subcollection Trigger */}
-            <div className="flex items-center justify-between gap-2 text-[11px] text-slate-500 dark:text-slate-400 pt-1">
+            <div className="flex items-center justify-between gap-2 text-[11px] text-slate-400 pt-1">
               {priceStats.lastPrice !== null ? (
                 <span className="font-mono tabular-nums truncate">
-                  Último: {formatCurrencyBRL(priceStats.lastPrice)} (
-                  {priceStats.lastBrand})
+                  Último: {formatCurrencyBRL(priceStats.lastPrice)} ({priceStats.lastBrand})
                 </span>
               ) : (
                 <span className="truncate">Sem histórico de compras</span>
@@ -854,7 +978,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
               <button
                 type="button"
                 onClick={() => setHistoryModalItem(item)}
-                className="text-indigo-600 dark:text-indigo-400 hover:underline font-medium flex items-center gap-1 whitespace-nowrap shrink-0 cursor-pointer"
+                className="text-indigo-400 hover:text-indigo-300 hover:underline font-medium flex items-center gap-1 whitespace-nowrap shrink-0 cursor-pointer"
               >
                 <History className="w-3 h-3 shrink-0" />
                 <span>Histórico ({item.productsHistory?.length || 0})</span>
@@ -869,24 +993,22 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
         {item.listType === 'objetivo' && (
           <div className="space-y-3 pt-1">
             {/* Progress Bar & Target */}
-            <div className="space-y-1.5">
+            <div className="space-y-1.5 p-2.5 rounded-xl bg-slate-800/70 border border-slate-700/60">
               <div className="flex items-center justify-between text-xs">
-                <span className="text-slate-500 dark:text-slate-400">
+                <span className="text-slate-400">
                   Poupado:{' '}
-                  <strong className="font-mono tabular-nums text-slate-900 dark:text-slate-100">
+                  <strong className="font-mono tabular-nums text-slate-100">
                     {formatCurrencyBRL(item.savedAmount)}
                   </strong>
                 </span>
-                <span className="font-mono tabular-nums text-slate-600 dark:text-slate-400">
+                <span className="font-mono tabular-nums text-slate-300">
                   Meta: {formatCurrencyBRL(item.targetAmount)} ({goalProgress}%)
                 </span>
               </div>
-              <div className="w-full h-2 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
+              <div className="w-full h-2 rounded-full bg-slate-900 overflow-hidden">
                 <div
                   className={`h-full rounded-full transition-all ${
-                    goalProgress >= 100
-                      ? 'bg-emerald-500'
-                      : 'bg-indigo-600 dark:bg-indigo-500'
+                    goalProgress >= 100 ? 'bg-emerald-500' : 'bg-indigo-500'
                   }`}
                   style={{ width: `${goalProgress}%` }}
                 />
@@ -896,32 +1018,32 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
             {/* Quotes List (Pesquisa/Cotação) with Delete Action */}
             {item.quotes && item.quotes.length > 0 && (
               <div className="space-y-1 pt-1">
-                <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400 block">
+                <span className="text-[11px] font-medium text-slate-400 block">
                   Cotações & Links Salvos:
                 </span>
                 {item.quotes.map((q) => (
                   <div
                     key={q.id}
-                    className="flex items-center justify-between gap-2 text-xs py-1 px-2 rounded bg-slate-50 dark:bg-slate-800/60"
+                    className="flex items-center justify-between gap-2 text-xs py-1.5 px-2.5 rounded-lg bg-slate-800/70 border border-slate-700/60"
                   >
                     <a
                       href={q.url}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="text-indigo-600 dark:text-indigo-400 hover:underline flex items-center gap-1 truncate max-w-[140px]"
+                      className="text-indigo-400 hover:underline flex items-center gap-1 truncate max-w-[140px]"
                     >
                       <ExternalLink className="w-3 h-3 shrink-0" />
                       <span className="truncate">{q.storeName}</span>
                     </a>
                     <div className="flex items-center gap-1.5 shrink-0">
-                      <span className="font-mono tabular-nums font-semibold text-slate-800 dark:text-slate-200">
+                      <span className="font-mono tabular-nums font-semibold text-slate-200">
                         {formatCurrencyBRL(q.price)}
                       </span>
                       <button
                         type="button"
                         onClick={() => onDeleteGoalQuote(item, q.id)}
                         aria-label={`Remover cotação ${q.storeName}`}
-                        className="text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 p-0.5 cursor-pointer"
+                        className="text-slate-400 hover:text-rose-400 p-0.5 cursor-pointer"
                       >
                         <Trash2 className="w-3 h-3" />
                       </button>
@@ -933,11 +1055,11 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
 
             {/* Status 3 (Pronto para Executar) Released Funds Banner */}
             {item.stage === 'pronto' && (
-              <div className="p-2.5 rounded-lg bg-indigo-50 dark:bg-indigo-950/40 border border-indigo-200 dark:border-indigo-800/60 text-xs flex items-center justify-between gap-2">
-                <span className="font-semibold text-indigo-900 dark:text-indigo-200">
+              <div className="p-2.5 rounded-xl bg-indigo-950/50 border border-indigo-500/40 text-xs flex items-center justify-between gap-2">
+                <span className="font-semibold text-indigo-200">
                   Meta atingida! Valor liberado para execução.
                 </span>
-                <span className="font-mono font-bold text-indigo-600 dark:text-indigo-400 shrink-0">
+                <span className="font-mono font-bold text-indigo-300 shrink-0">
                   100%
                 </span>
               </div>
@@ -947,38 +1069,38 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
             {item.stage === 'adquirido' && (() => {
               const report = calculateGoalFinalReport(item);
               return (
-                <div className="p-3 rounded-lg bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800/60 text-xs space-y-2">
-                  <div className="flex items-center justify-between font-semibold text-emerald-900 dark:text-emerald-200 border-b border-emerald-200/60 dark:border-emerald-800/60 pb-1.5">
+                <div className="p-3 rounded-xl bg-emerald-950/45 border border-emerald-500/35 text-xs space-y-2">
+                  <div className="flex items-center justify-between font-semibold text-emerald-200 border-b border-emerald-500/25 pb-1.5">
                     <span>Relatório de Valor Final</span>
                     <span>{item.acquiredStore || 'Compra Concluída'}</span>
                   </div>
                   <div className="grid grid-cols-2 gap-2 font-mono tabular-nums text-[11px]">
                     <div>
-                      <span className="text-emerald-700/80 dark:text-emerald-400/80 block font-sans">
+                      <span className="text-emerald-300/80 block font-sans">
                         Guardado / Orçado:
                       </span>
-                      <strong className="text-slate-900 dark:text-slate-100">
+                      <strong className="text-slate-100">
                         {formatCurrencyBRL(report.savedAmount)}
                       </strong>
                     </div>
                     <div>
-                      <span className="text-emerald-700/80 dark:text-emerald-400/80 block font-sans">
+                      <span className="text-emerald-300/80 block font-sans">
                         Efetivamente Pago:
                       </span>
-                      <strong className="text-slate-900 dark:text-slate-100">
+                      <strong className="text-slate-100">
                         {formatCurrencyBRL(report.paidAmount)}
                       </strong>
                     </div>
                   </div>
-                  <div className="pt-1 border-t border-emerald-200/60 dark:border-emerald-800/60 flex items-center justify-between text-[11px]">
-                    <span className="text-emerald-800 dark:text-emerald-300 font-medium">
+                  <div className="pt-1 border-t border-emerald-500/25 flex items-center justify-between text-[11px]">
+                    <span className="text-emerald-300 font-medium">
                       Diferença vs. Orçado:
                     </span>
                     <span
                       className={`font-mono font-bold tabular-nums ${
                         report.differenceFromBudget >= 0
-                          ? 'text-emerald-700 dark:text-emerald-300'
-                          : 'text-rose-600 dark:text-rose-400'
+                          ? 'text-emerald-300'
+                          : 'text-rose-400'
                       }`}
                     >
                       {report.differenceFromBudget >= 0
@@ -987,7 +1109,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
                     </span>
                   </div>
                   {onCreateExpenseFromPurchase && report.paidAmount > 0 && (
-                    <div className="pt-1.5 border-t border-emerald-200/60 dark:border-emerald-800/60 flex justify-end">
+                    <div className="pt-1.5 border-t border-emerald-500/25 flex justify-end">
                       <button
                         type="button"
                         onClick={() =>
@@ -997,7 +1119,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
                             storeName: item.acquiredStore,
                           })
                         }
-                        className="text-[11px] font-semibold text-indigo-700 dark:text-indigo-300 hover:underline flex items-center gap-1 cursor-pointer"
+                        className="text-[11px] font-semibold text-indigo-300 hover:text-indigo-200 hover:underline flex items-center gap-1 cursor-pointer"
                       >
                         <span>+ Lançar como Despesa no Financeiro</span>
                       </button>
@@ -1012,9 +1134,9 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
               <button
                 type="button"
                 onClick={() => setQuoteModalItem(item)}
-                className="px-2.5 py-1.5 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors flex items-center gap-1 cursor-pointer"
+                className="px-2.5 py-1.5 text-xs font-medium rounded-lg border border-slate-700 bg-slate-800/80 text-slate-200 hover:bg-slate-800 transition-colors flex items-center gap-1 cursor-pointer"
               >
-                <Link2 className="w-3.5 h-3.5 text-indigo-500" />
+                <Link2 className="w-3.5 h-3.5 text-indigo-400" />
                 <span>+ Cotação/Link</span>
               </button>
 
@@ -1040,23 +1162,21 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
         {/* =============================================================== */}
         {item.listType === 'desejo' && (
           <div className="space-y-2.5 pt-1">
-            <div className="flex items-center justify-between text-xs">
-              <span className="text-slate-500 dark:text-slate-400">
-                Valor Estimado:
-              </span>
-              <span className="font-mono tabular-nums font-semibold text-slate-900 dark:text-slate-100">
+            <div className="flex items-center justify-between text-xs p-2.5 rounded-xl bg-slate-800/70 border border-slate-700/60">
+              <span className="text-slate-400">Valor Estimado:</span>
+              <span className="font-mono tabular-nums font-semibold text-slate-100">
                 {formatCurrencyBRL(item.estimatedPrice)}
               </span>
             </div>
 
             {item.prosAndCons && (
-              <p className="text-xs text-slate-600 dark:text-slate-400 bg-slate-50 dark:bg-slate-800/60 p-2.5 rounded-lg">
+              <p className="text-xs text-slate-300 bg-slate-800/60 border border-slate-700/60 p-2.5 rounded-xl">
                 {item.prosAndCons}
               </p>
             )}
 
             {item.convertedToGoalItemId ? (
-              <div className="p-2 rounded-lg bg-indigo-50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 text-xs font-medium">
+              <div className="p-2.5 rounded-xl bg-indigo-950/50 border border-indigo-500/35 text-indigo-300 text-xs font-medium">
                 Convertido em Objetivo Financeiro com sucesso.
               </div>
             ) : (
@@ -1066,7 +1186,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
                   setConvertWishModalItem(item);
                   setTargetGoalListId(goalListsInWorkspace[0]?.id || '');
                 }}
-                className="w-full py-2 px-3 text-xs font-semibold rounded-lg bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-100 dark:hover:bg-indigo-900/60 transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                className="w-full py-2 px-3 text-xs font-semibold rounded-xl bg-indigo-950/60 border border-indigo-500/40 text-indigo-300 hover:bg-indigo-900/60 transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
               >
                 <Sparkles className="w-3.5 h-3.5" />
                 <span>Converter Desejo em Objetivo</span>
@@ -1078,19 +1198,19 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
         {/* =============================================================== */}
         {/* STATE MACHINE NAVIGATION CONTROLS (↩ REVERT & ADVANCE ➔)        */}
         {/* =============================================================== */}
-        <div className="pt-3 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between gap-2">
+        <div className="pt-3 border-t border-slate-800 flex items-center justify-between gap-2">
           {prevStage ? (
             <button
               type="button"
               onClick={() => handleRevertClick(item)}
               aria-label={`Reverter ${item.name} para etapa anterior`}
-              className="min-h-[38px] px-3 py-1.5 text-xs font-medium text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-lg transition-colors flex items-center gap-1 whitespace-nowrap shrink-0 cursor-pointer"
+              className="min-h-[38px] px-3 py-1.5 text-xs font-medium text-slate-300 hover:text-white bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg transition-colors flex items-center gap-1 whitespace-nowrap shrink-0 cursor-pointer"
             >
               <CornerUpLeft className="w-3.5 h-3.5 shrink-0" />
               <span>↩ Reverter</span>
             </button>
           ) : (
-            <span className="text-[11px] text-slate-400 dark:text-slate-600 whitespace-nowrap">
+            <span className="text-[11px] text-slate-500 whitespace-nowrap">
               Etapa Inicial
             </span>
           )}
@@ -1120,13 +1240,13 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
               type="button"
               onClick={() => onReturnConfirmedToStock(item)}
               aria-label={`Novo ciclo de estoque para ${item.name}`}
-              className="min-h-[38px] px-3 py-1.5 text-xs font-semibold text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/60 hover:bg-emerald-100 rounded-lg transition-colors flex items-center gap-1.5 ml-auto whitespace-nowrap shrink-0 cursor-pointer"
+              className="min-h-[38px] px-3 py-1.5 text-xs font-semibold text-emerald-300 bg-emerald-950/60 border border-emerald-500/40 hover:bg-emerald-900/60 rounded-lg transition-colors flex items-center gap-1.5 ml-auto whitespace-nowrap shrink-0 cursor-pointer"
             >
               <RotateCcw className="w-3.5 h-3.5 shrink-0" />
               <span>Repor Despensa</span>
             </button>
           ) : (
-            <span className="text-xs font-semibold text-emerald-600 dark:text-emerald-400 ml-auto whitespace-nowrap">
+            <span className="text-xs font-semibold text-emerald-400 ml-auto whitespace-nowrap">
               Ciclo Concluído
             </span>
           )}
@@ -1135,19 +1255,43 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
     );
   };
 
+  const renderColumnCards = (columnItems: AcquisitionItem[]) => {
+    if (!groupByCategory) {
+      return columnItems.map((item) => renderItemCard(item));
+    }
+
+    const grouped = new Map<string, AcquisitionItem[]>();
+    columnItems.forEach((item) => {
+      const grpName = getGroupNameOnly(item.groupId);
+      const bucket = grouped.get(grpName) || [];
+      bucket.push(item);
+      grouped.set(grpName, bucket);
+    });
+
+    return Array.from(grouped.entries()).map(([groupName, grpItems]) => (
+      <div key={groupName} className="space-y-2">
+        <div className="flex items-center justify-between px-2 py-1 rounded-lg bg-slate-950/60 border border-slate-800 text-[11px] font-bold uppercase tracking-wider text-slate-400">
+          <span className="truncate">{groupName}</span>
+          <span className="font-mono text-indigo-400">{grpItems.length}</span>
+        </div>
+        <div className="space-y-2.5">{grpItems.map((it) => renderItemCard(it))}</div>
+      </div>
+    ));
+  };
+
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
       {/* Workspace Contextual Header */}
-      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 space-y-5">
+      <div className="bg-slate-800/90 border border-slate-700/80 rounded-2xl p-5 sm:p-6 space-y-5 shadow-lg">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
           <div className="space-y-1">
-            <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+            <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400">
               {!isPersonalVirtualWs ? (
                 <>
                   <button
                     type="button"
                     onClick={onBackToHub}
-                    className="text-indigo-600 dark:text-indigo-400 hover:underline font-medium flex items-center gap-1 whitespace-nowrap shrink-0 cursor-pointer"
+                    className="text-indigo-400 hover:underline font-medium flex items-center gap-1 whitespace-nowrap shrink-0 cursor-pointer"
                   >
                     <ArrowLeft className="w-3.5 h-3.5 shrink-0" />
                     <span>Meus Espaços</span>
@@ -1159,7 +1303,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
               {!isPersonalVirtualWs && (
                 <>
                   <span aria-hidden="true">·</span>
-                  <span className="font-mono tabular-nums whitespace-nowrap">
+                  <span className="font-mono tabular-nums whitespace-nowrap text-slate-300">
                     Orçamento: {formatCurrencyBRL(workspace.monthlyBudget)}
                   </span>
                   <span aria-hidden="true">·</span>
@@ -1172,7 +1316,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
                       setEditWsBudget(String(workspace.monthlyBudget ?? 0));
                       setIsEditWorkspaceOpen(true);
                     }}
-                    className="text-slate-500 hover:text-indigo-600 dark:hover:text-indigo-400 inline-flex items-center gap-1 cursor-pointer"
+                    className="text-slate-400 hover:text-indigo-400 inline-flex items-center gap-1 cursor-pointer"
                   >
                     <Edit3 className="w-3 h-3" />
                     <span>Editar Espaço</span>
@@ -1181,7 +1325,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
                   <button
                     type="button"
                     onClick={() => setIsDeleteWorkspaceOpen(true)}
-                    className="text-slate-500 hover:text-rose-600 dark:hover:text-rose-400 inline-flex items-center gap-1 cursor-pointer"
+                    className="text-slate-400 hover:text-rose-400 inline-flex items-center gap-1 cursor-pointer"
                   >
                     <Trash2 className="w-3 h-3" />
                     <span>Apagar Espaço</span>
@@ -1189,10 +1333,10 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
                 </>
               )}
             </div>
-            <h1 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-slate-100 font-display">
+            <h1 className="text-2xl font-bold tracking-tight text-slate-100 font-display">
               {workspace.name}
             </h1>
-            <p className="text-xs text-slate-600 dark:text-slate-400 max-w-2xl">
+            <p className="text-xs text-slate-400 max-w-2xl">
               {workspace.description}
             </p>
           </div>
@@ -1206,9 +1350,9 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
                   setInviteSuccessMsg('');
                   setIsMembersModalOpen(true);
                 }}
-                className="min-h-[42px] px-3.5 py-2 text-xs font-medium rounded-xl border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors flex items-center gap-2 whitespace-nowrap cursor-pointer"
+                className="min-h-[42px] px-3.5 py-2 text-xs font-medium rounded-xl border border-slate-700 bg-slate-900/80 text-slate-200 hover:bg-slate-800 transition-colors flex items-center gap-2 whitespace-nowrap cursor-pointer"
               >
-                <Users className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+                <Users className="w-4 h-4 text-indigo-400" />
                 <span>Membros ({workspace.members.length})</span>
               </button>
             )}
@@ -1216,9 +1360,9 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
             <button
               type="button"
               onClick={() => setIsNewListModalOpen(true)}
-              className="min-h-[42px] px-3.5 py-2 text-xs font-medium rounded-xl border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
+              className="min-h-[42px] px-3.5 py-2 text-xs font-medium rounded-xl border border-slate-700 bg-slate-900/80 text-slate-200 hover:bg-slate-800 transition-colors flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
             >
-              <Plus className="w-4 h-4" />
+              <Plus className="w-4 h-4 text-amber-400" />
               <span>Nova Lista</span>
             </button>
 
@@ -1226,7 +1370,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
               type="button"
               onClick={openNewItemModal}
               disabled={!activeList}
-              className="min-h-[42px] px-4 py-2 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-xl transition-colors flex items-center gap-1.5 whitespace-nowrap shadow-xs cursor-pointer disabled:opacity-50"
+              className="min-h-[42px] px-4 py-2 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-xl transition-colors flex items-center gap-1.5 whitespace-nowrap shadow-md shadow-indigo-500/20 cursor-pointer disabled:opacity-50"
             >
               <Plus className="w-4 h-4" />
               <span>Adicionar Item</span>
@@ -1235,7 +1379,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
         </div>
 
         {/* List Selector Tabs + Active List Edit & Delete Controls */}
-        <div className="pt-4 border-t border-slate-100 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div className="pt-4 border-t border-slate-700/70 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div
             className="flex items-center gap-1.5 overflow-x-auto pb-1 sm:pb-0"
             role="tablist"
@@ -1253,12 +1397,12 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
                   onClick={() => handleSelectList(list)}
                   className={`min-h-[40px] px-4 py-2 text-xs font-semibold rounded-xl transition-colors flex items-center gap-2 whitespace-nowrap shrink-0 cursor-pointer ${
                     isSelected
-                      ? 'bg-slate-900 dark:bg-indigo-600 text-white'
-                      : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                      ? 'bg-indigo-600 text-white shadow-sm'
+                      : 'bg-slate-900 border border-slate-700/80 text-slate-400 hover:text-slate-100 hover:border-slate-600'
                   }`}
                 >
                   <span>{list.name}</span>
-                  <span className="font-mono text-[11px] opacity-80">
+                  <span className="font-mono text-[11px] opacity-85">
                     ({count})
                   </span>
                 </button>
@@ -1267,10 +1411,23 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
           </div>
 
           {activeList && (
-            <div className="flex items-center gap-3 text-xs text-slate-500 dark:text-slate-400 shrink-0">
+            <div className="flex flex-wrap items-center gap-2.5 text-xs text-slate-400 shrink-0">
+              <button
+                type="button"
+                onClick={() => setGroupByCategory((prev) => !prev)}
+                className={`px-2.5 py-1.5 rounded-lg border text-xs font-semibold inline-flex items-center gap-1.5 transition-colors cursor-pointer ${
+                  groupByCategory
+                    ? 'bg-indigo-600/20 border-indigo-500/50 text-indigo-300'
+                    : 'bg-slate-900 border-slate-700 text-slate-300 hover:text-white'
+                }`}
+              >
+                <Layers className="w-3.5 h-3.5" />
+                <span>Agrupar por categoria</span>
+              </button>
+              <span aria-hidden="true">·</span>
               <span>
                 Tipo:{' '}
-                <strong className="text-slate-800 dark:text-slate-200 capitalize">
+                <strong className="text-slate-200 capitalize">
                   {activeList.type}
                 </strong>
               </span>
@@ -1279,7 +1436,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
                 type="button"
                 onClick={() => openEditListModal(activeList)}
                 aria-label={`Editar lista ${activeList.name}`}
-                className="text-slate-600 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 font-medium inline-flex items-center gap-1 cursor-pointer"
+                className="text-slate-300 hover:text-indigo-400 font-medium inline-flex items-center gap-1 cursor-pointer"
               >
                 <Edit3 className="w-3.5 h-3.5" />
                 <span>Editar Lista</span>
@@ -1288,7 +1445,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
                 type="button"
                 onClick={() => setDeletingList(activeList)}
                 aria-label={`Apagar lista ${activeList.name}`}
-                className="text-rose-600 dark:text-rose-400 hover:underline font-medium inline-flex items-center gap-1 cursor-pointer"
+                className="text-rose-400 hover:underline font-medium inline-flex items-center gap-1 cursor-pointer"
               >
                 <Trash2 className="w-3.5 h-3.5" />
                 <span>Apagar Lista</span>
@@ -1298,16 +1455,71 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
         </div>
       </div>
 
+      {/* Live Cart & Confirmed Summary Bar for Recurring Lists */}
+      {activeList && isRecurringActiveList && (
+        <div className="bg-slate-800/90 border border-slate-700/80 rounded-2xl p-4 flex flex-col md:flex-row md:items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="flex items-center gap-2.5 px-3 py-2 rounded-xl bg-indigo-950/60 border border-indigo-500/40">
+              <ShoppingCart className="w-4 h-4 text-indigo-400 shrink-0" />
+              <div className="text-xs">
+                <span className="text-indigo-300 font-semibold block">
+                  No Carrinho ({cartItems.length})
+                </span>
+                <span className="font-mono font-bold text-white">
+                  {formatCurrencyBRL(cartSubtotal)}
+                </span>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2.5 px-3 py-2 rounded-xl bg-emerald-950/50 border border-emerald-500/35">
+              <PackageCheck className="w-4 h-4 text-emerald-400 shrink-0" />
+              <div className="text-xs">
+                <span className="text-emerald-300 font-semibold block">
+                  Comprados / Conferidos ({confirmedItems.length})
+                </span>
+                <span className="font-mono font-bold text-white">
+                  {formatCurrencyBRL(confirmedSubtotal)}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setShowOnlyCart((prev) => !prev)}
+              className={`px-3 py-2 rounded-xl border text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer ${
+                showOnlyCart
+                  ? 'bg-indigo-600 text-white border-indigo-500'
+                  : 'bg-slate-900 border-slate-700 text-slate-300 hover:text-white'
+              }`}
+            >
+              <Filter className="w-3.5 h-3.5" />
+              <span>{showOnlyCart ? 'Mostrar Todas Etapas' : 'Focar Carrinho & Conferidos'}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setShowBoughtPanel((prev) => !prev)}
+              className="px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-xs font-semibold text-slate-300 hover:text-white flex items-center gap-1.5 cursor-pointer"
+            >
+              <History className="w-3.5 h-3.5 text-emerald-400" />
+              <span>{showBoughtPanel ? 'Ocultar Resumo Comprados' : 'Ver Resumo Comprados'}</span>
+            </button>
+          </div>
+        </div>
+      )}
+
       {!activeList ? (
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-10 text-center space-y-4">
-          <div className="w-12 h-12 rounded-2xl bg-indigo-500/15 border border-indigo-500/30 text-indigo-500 dark:text-indigo-400 flex items-center justify-center mx-auto">
+        <div className="bg-slate-800/90 border border-slate-700/80 rounded-2xl p-10 text-center space-y-4">
+          <div className="w-12 h-12 rounded-2xl bg-indigo-500/15 border border-indigo-500/30 text-indigo-400 flex items-center justify-center mx-auto">
             <ShoppingCart className="w-6 h-6" />
           </div>
           <div className="space-y-1">
-            <h3 className="text-base font-bold text-slate-900 dark:text-white">
+            <h3 className="text-base font-bold text-white">
               Nenhuma lista criada neste espaço
             </h3>
-            <p className="text-xs text-slate-500 dark:text-slate-400 max-w-md mx-auto">
+            <p className="text-xs text-slate-400 max-w-md mx-auto">
               Crie uma lista recorrente (despensa/compras do mês), de objetivo financeiro ou de desejos para começar a gerenciar suas aquisições.
             </p>
           </div>
@@ -1327,11 +1539,11 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
           {/* =================================================================== */}
           <div className="lg:hidden space-y-4">
             <div
-              className="flex items-center gap-1.5 overflow-x-auto p-1.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl"
+              className="flex items-center gap-1.5 overflow-x-auto p-1.5 bg-slate-800/90 border border-slate-700/80 rounded-2xl"
               role="tablist"
               aria-label="Colunas da lista no celular"
             >
-              {stages.map((st) => {
+              {displayedStages.map((st) => {
                 const count = listItems.filter((i) => i.stage === st.id).length;
                 const isTabActive = activeMobileStage === st.id;
                 return (
@@ -1344,7 +1556,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
                     className={`min-h-[44px] px-3.5 py-2 text-xs font-semibold rounded-xl transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5 cursor-pointer ${
                       isTabActive
                         ? 'bg-indigo-600 text-white shadow-xs'
-                        : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+                        : 'text-slate-400 hover:text-slate-100 hover:bg-slate-800'
                     }`}
                   >
                     <span>{st.label}</span>
@@ -1359,18 +1571,18 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
             {/* Active Mobile Stage Cards */}
             <div className="space-y-3">
               {listItems.filter((i) => i.stage === activeMobileStage).length === 0 ? (
-                <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-8 text-center space-y-2">
-                  <p className="text-sm font-semibold text-slate-700 dark:text-slate-300">
+                <div className="bg-slate-800/90 border border-slate-700/80 rounded-2xl p-8 text-center space-y-2">
+                  <p className="text-sm font-semibold text-slate-300">
                     Nenhum item nesta etapa
                   </p>
-                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                  <p className="text-xs text-slate-400">
                     Adicione um novo item ou avance cards das etapas anteriores.
                   </p>
                 </div>
               ) : (
-                listItems
-                  .filter((i) => i.stage === activeMobileStage)
-                  .map((item) => renderItemCard(item))
+                renderColumnCards(
+                  listItems.filter((i) => i.stage === activeMobileStage)
+                )
               )}
             </div>
           </div>
@@ -1379,29 +1591,42 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
           {/* DESKTOP KANBAN BOARD WITH LATERAL SCROLL (>= lg)                    */}
           {/* =================================================================== */}
           <div className="hidden lg:flex items-start gap-4 overflow-x-auto pb-4">
-            {stages.map((stageObj, idx) => {
+            {displayedStages.map((stageObj, idx) => {
               const columnItems = listItems.filter((i) => i.stage === stageObj.id);
+              const isCartCol = stageObj.id === 'carrinho';
+              const isConfirmedCol = stageObj.id === 'conferido' || stageObj.id === 'adquirido';
+
               return (
                 <div
                   key={stageObj.id}
-                  className="flex-1 min-w-[285px] bg-slate-100/80 dark:bg-slate-900/50 border border-slate-200/80 dark:border-slate-800 rounded-2xl p-4 flex flex-col gap-3.5 min-h-[540px]"
+                  className={`flex-1 min-w-[285px] rounded-2xl p-4 flex flex-col gap-3.5 min-h-[520px] border ${
+                    isCartCol
+                      ? 'bg-indigo-950/25 border-indigo-500/35'
+                      : isConfirmedCol
+                      ? 'bg-emerald-950/20 border-emerald-500/30'
+                      : 'bg-slate-800/75 border-slate-700/80'
+                  }`}
                 >
                   {/* Column Header */}
-                  <div className="flex items-start justify-between gap-2 pb-2 border-b border-slate-200 dark:border-slate-800">
+                  <div className="flex items-start justify-between gap-2 pb-2.5 border-b border-slate-700/70">
                     <div>
                       <div className="flex items-center gap-1.5">
-                        <span className="text-xs font-mono font-bold text-indigo-600 dark:text-indigo-400">
+                        <span
+                          className={`text-xs font-mono font-bold ${
+                            isConfirmedCol ? 'text-emerald-400' : 'text-indigo-400'
+                          }`}
+                        >
                           0{idx + 1}.
                         </span>
-                        <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100 font-display">
+                        <h3 className="text-sm font-bold text-slate-100 font-display">
                           {stageObj.label}
                         </h3>
                       </div>
-                      <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                      <p className="text-[11px] text-slate-400 mt-0.5">
                         {stageObj.subtitle}
                       </p>
                     </div>
-                    <span className="text-xs font-mono font-semibold tabular-nums text-slate-600 dark:text-slate-400 px-2 py-0.5 rounded bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700">
+                    <span className="text-xs font-mono font-semibold tabular-nums text-slate-300 px-2 py-0.5 rounded-md bg-slate-900 border border-slate-700">
                       {columnItems.length}
                     </span>
                   </div>
@@ -1409,19 +1634,78 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
                   {/* Column Cards */}
                   <div className="space-y-3 flex-1">
                     {columnItems.length === 0 ? (
-                      <div className="h-40 rounded-xl border border-dashed border-slate-300 dark:border-slate-800 flex flex-col items-center justify-center p-4 text-center">
-                        <p className="text-xs text-slate-400 dark:text-slate-500">
+                      <div className="h-40 rounded-xl border border-dashed border-slate-700 flex flex-col items-center justify-center p-4 text-center">
+                        <p className="text-xs text-slate-500">
                           Sem itens em &ldquo;{stageObj.label}&rdquo;
                         </p>
                       </div>
                     ) : (
-                      columnItems.map((item) => renderItemCard(item))
+                      renderColumnCards(columnItems)
                     )}
                   </div>
                 </div>
               );
             })}
           </div>
+
+          {/* =================================================================== */}
+          {/* PANEL: COMPRADOS / CONFERIDOS & HISTÓRICO RECENTE                   */}
+          {/* =================================================================== */}
+          {isRecurringActiveList &&
+            showBoughtPanel &&
+            (confirmedItems.length > 0 || recentListPurchases.length > 0) && (
+              <div className="bg-slate-800/90 border border-slate-700/80 rounded-2xl p-5 space-y-3">
+                <div className="flex items-center justify-between gap-2 border-b border-slate-700/70 pb-3">
+                  <div className="flex items-center gap-2">
+                    <PackageCheck className="w-4 h-4 text-emerald-400" />
+                    <h3 className="text-sm font-bold text-slate-100">
+                      Comprados, Conferidos & Histórico Recente ({activeList.name})
+                    </h3>
+                  </div>
+                  <span className="text-xs font-mono text-emerald-300 font-semibold">
+                    Conferidos nesta lista: {formatCurrencyBRL(confirmedSubtotal)}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+                  {recentListPurchases.map(({ itemName, isCurrentlyConfirmed, purchase }) => (
+                    <div
+                      key={purchase.id}
+                      className="p-3 rounded-xl bg-slate-900/90 border border-slate-700/80 space-y-1 text-xs"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-bold text-slate-100 truncate">
+                          {itemName}
+                        </span>
+                        <span
+                          className={`px-1.5 py-0.5 rounded text-[10px] font-semibold shrink-0 ${
+                            isCurrentlyConfirmed
+                              ? 'bg-emerald-500/20 text-emerald-300'
+                              : 'bg-slate-800 text-slate-400'
+                          }`}
+                        >
+                          {isCurrentlyConfirmed ? 'Conferido' : 'Histórico'}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-400 truncate">
+                        {purchase.brand} · {purchase.storeName}
+                      </p>
+                      <div className="flex items-center justify-between pt-1 font-mono tabular-nums">
+                        <span className="text-[11px] text-slate-400">
+                          {purchase.quantity} × {formatCurrencyBRL(purchase.unitPrice)}
+                        </span>
+                        <span className="font-bold text-emerald-300">
+                          {formatCurrencyBRL(purchase.totalPrice)}
+                        </span>
+                      </div>
+                      <p className="text-[10px] text-slate-500 font-mono">
+                        {new Date(purchase.purchaseDate).toLocaleDateString('pt-BR')}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
         </>
       )}
 
@@ -1438,7 +1722,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
           <div>
             <label
               htmlFor="ws-board-edit-name"
-              className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
+              className="block text-xs font-medium text-slate-300 mb-1"
             >
               Nome do Espaço
             </label>
@@ -1448,16 +1732,16 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
               required
               value={editWsName}
               onChange={(e) => setEditWsName(e.target.value)}
-              className="w-full px-3.5 py-2.5 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100"
+              className="w-full px-3.5 py-2.5 text-sm rounded-lg border border-slate-700 bg-slate-950 text-slate-100 focus:outline-none focus:border-indigo-500"
             />
           </div>
 
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <span className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+              <span className="block text-xs font-medium text-slate-300 mb-1">
                 Modalidade
               </span>
-              <div className="grid grid-cols-2 gap-1.5 p-1 bg-slate-100 dark:bg-slate-800 rounded-lg">
+              <div className="grid grid-cols-2 gap-1.5 p-1 bg-slate-800 rounded-lg border border-slate-700">
                 {(['Compartilhado', 'Individual'] as const).map((t) => (
                   <button
                     key={t}
@@ -1466,7 +1750,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
                     className={`py-2 px-2 text-xs font-semibold rounded-md transition-colors cursor-pointer ${
                       editWsType === t
                         ? 'bg-indigo-600 text-white'
-                        : 'text-slate-600 dark:text-slate-400'
+                        : 'text-slate-400 hover:text-slate-200'
                     }`}
                   >
                     {t}
@@ -1478,7 +1762,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
             <div>
               <label
                 htmlFor="ws-board-edit-budget"
-                className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
+                className="block text-xs font-medium text-slate-300 mb-1"
               >
                 Orçamento Mensal (R$)
               </label>
@@ -1488,7 +1772,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
                 step="50"
                 value={editWsBudget}
                 onChange={(e) => setEditWsBudget(e.target.value)}
-                className="w-full px-3.5 py-2.5 text-sm font-mono rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100"
+                className="w-full px-3.5 py-2.5 text-sm font-mono rounded-lg border border-slate-700 bg-slate-950 text-slate-100 focus:outline-none focus:border-indigo-500"
               />
             </div>
           </div>
@@ -1496,7 +1780,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
           <div>
             <label
               htmlFor="ws-board-edit-desc"
-              className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
+              className="block text-xs font-medium text-slate-300 mb-1"
             >
               Descrição
             </label>
@@ -1505,7 +1789,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
               rows={2}
               value={editWsDesc}
               onChange={(e) => setEditWsDesc(e.target.value)}
-              className="w-full px-3.5 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100"
+              className="w-full px-3.5 py-2 text-sm rounded-lg border border-slate-700 bg-slate-950 text-slate-100 focus:outline-none focus:border-indigo-500"
             />
           </div>
 
@@ -1513,13 +1797,13 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
             <button
               type="button"
               onClick={() => setIsEditWorkspaceOpen(false)}
-              className="px-4 py-2 text-xs text-slate-600 dark:text-slate-400"
+              className="px-4 py-2 text-xs text-slate-400 hover:text-slate-200 cursor-pointer"
             >
               Cancelar
             </button>
             <button
               type="submit"
-              className="px-5 py-2.5 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg"
+              className="px-5 py-2.5 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg cursor-pointer"
             >
               Salvar Alterações
             </button>
@@ -1537,14 +1821,14 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
         subtitle={`Tem certeza que deseja excluir o espaço "${workspace.name}"?`}
       >
         <div className="space-y-4">
-          <p className="text-xs text-slate-600 dark:text-slate-400">
+          <p className="text-xs text-slate-400">
             Todas as listas e itens vinculados a este espaço serão removidos.
           </p>
           <div className="flex justify-end gap-2 pt-2">
             <button
               type="button"
               onClick={() => setIsDeleteWorkspaceOpen(false)}
-              className="px-4 py-2 text-xs text-slate-600 dark:text-slate-400"
+              className="px-4 py-2 text-xs text-slate-400 hover:text-slate-200 cursor-pointer"
             >
               Cancelar
             </button>
@@ -1575,7 +1859,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
         <form onSubmit={handleInviteSubmit} className="space-y-3">
           <label
             htmlFor="multi-email-invite"
-            className="block text-xs font-medium text-slate-700 dark:text-slate-300"
+            className="block text-xs font-medium text-slate-300"
           >
             Convidar Pessoas por E-mail (separados por vírgula ou quebra de linha)
           </label>
@@ -1586,7 +1870,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
               value={inviteEmailsInput}
               onChange={(e) => setInviteEmailsInput(e.target.value)}
               placeholder="amigo1@email.com, familiar2@email.com"
-              className="flex-1 px-3.5 py-2.5 text-xs font-mono rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100"
+              className="flex-1 px-3.5 py-2.5 text-xs font-mono rounded-lg border border-slate-700 bg-slate-950 text-slate-100 focus:outline-none focus:border-indigo-500"
             />
             <button
               type="submit"
@@ -1596,18 +1880,18 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
             </button>
           </div>
           {inviteSuccessMsg && (
-            <p className="text-xs text-emerald-600 dark:text-emerald-400 font-medium">
+            <p className="text-xs text-emerald-400 font-medium">
               {inviteSuccessMsg}
             </p>
           )}
         </form>
 
-        <div className="pt-3 border-t border-slate-200 dark:border-slate-800 space-y-2.5">
-          <h3 className="text-xs font-semibold text-slate-500 dark:text-slate-400">
+        <div className="pt-3 border-t border-slate-800 space-y-2.5">
+          <h3 className="text-xs font-semibold text-slate-400">
             Participantes do Espaço
           </h3>
 
-          <div className="divide-y divide-slate-100 dark:divide-slate-800 border-t border-b border-slate-100 dark:border-slate-800">
+          <div className="divide-y divide-slate-800 border-t border-b border-slate-800">
             {workspace.members.map((member) => (
               <div
                 key={member.email}
@@ -1615,16 +1899,16 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
               >
                 <div className="space-y-0.5">
                   <div className="flex items-center gap-2">
-                    <span className="font-semibold text-slate-900 dark:text-slate-100">
+                    <span className="font-semibold text-slate-100">
                       {member.name || member.email.split('@')[0]}
                     </span>
-                    <span className="text-slate-400">·</span>
-                    <span className="text-slate-500 dark:text-slate-400 font-mono">
+                    <span className="text-slate-500">·</span>
+                    <span className="text-slate-400 font-mono">
                       {member.email}
                     </span>
                   </div>
                   {member.status === 'Recusado' && member.rejectionReason && (
-                    <p className="text-[11px] text-rose-600 dark:text-rose-400">
+                    <p className="text-[11px] text-rose-400">
                       Motivo da recusa: {member.rejectionReason}
                       {member.rejectionNote ? ` — "${member.rejectionNote}"` : ''}
                     </p>
@@ -1644,10 +1928,10 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
                     }
                     className={`px-2.5 py-1 text-xs font-semibold rounded-md border ${
                       member.status === 'Aceito'
-                        ? 'bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800'
+                        ? 'bg-emerald-950/50 text-emerald-300 border-emerald-800'
                         : member.status === 'Pendente'
-                        ? 'bg-amber-50 dark:bg-amber-950/50 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800'
-                        : 'bg-rose-50 dark:bg-rose-950/50 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800'
+                        ? 'bg-amber-950/50 text-amber-300 border-amber-800'
+                        : 'bg-rose-950/50 text-rose-300 border-rose-800'
                     }`}
                   >
                     <option value="Aceito">Aceito</option>
@@ -1660,7 +1944,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
                       type="button"
                       onClick={() => onRemoveMember(workspace.id, member.email)}
                       aria-label={`Remover membro ${member.email}`}
-                      className="p-1.5 rounded text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 cursor-pointer"
+                      className="p-1.5 rounded text-slate-400 hover:text-rose-400 cursor-pointer"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>
@@ -1683,7 +1967,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
       >
         <form onSubmit={handleCreateListSubmit} className="space-y-4">
           <div>
-            <span className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1.5">
+            <span className="block text-xs font-medium text-slate-300 mb-1.5">
               Tipo da Lista
             </span>
             <div className="grid grid-cols-3 gap-2">
@@ -1697,7 +1981,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
                     className={`min-h-[42px] py-2 px-3 text-xs font-semibold rounded-xl border transition-colors cursor-pointer ${
                       isSelected
                         ? 'bg-indigo-600 text-white border-indigo-600 shadow-xs'
-                        : 'bg-slate-50 dark:bg-slate-800/70 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:border-indigo-400'
+                        : 'bg-slate-800/70 text-slate-300 border-slate-700 hover:border-indigo-400'
                     }`}
                   >
                     {btn.label}
@@ -1710,7 +1994,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
           <div>
             <label
               htmlFor="new-list-name"
-              className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
+              className="block text-xs font-medium text-slate-300 mb-1"
             >
               Nome da Lista
             </label>
@@ -1721,14 +2005,14 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
               value={newListName}
               onChange={(e) => setNewListName(e.target.value)}
               placeholder="Ex: Feira Semanal & Orgânicos"
-              className="w-full px-3.5 py-2.5 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100"
+              className="w-full px-3.5 py-2.5 text-sm rounded-lg border border-slate-700 bg-slate-950 text-slate-100 focus:outline-none focus:border-indigo-500"
             />
           </div>
 
           <div>
             <label
               htmlFor="new-list-desc"
-              className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
+              className="block text-xs font-medium text-slate-300 mb-1"
             >
               Descrição (opcional)
             </label>
@@ -1738,7 +2022,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
               value={newListDesc}
               onChange={(e) => setNewListDesc(e.target.value)}
               placeholder="Objetivo desta lista..."
-              className="w-full px-3.5 py-2.5 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100"
+              className="w-full px-3.5 py-2.5 text-sm rounded-lg border border-slate-700 bg-slate-950 text-slate-100 focus:outline-none focus:border-indigo-500"
             />
           </div>
 
@@ -1746,7 +2030,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
             <button
               type="button"
               onClick={() => setIsNewListModalOpen(false)}
-              className="px-4 py-2 text-xs text-slate-600 dark:text-slate-400"
+              className="px-4 py-2 text-xs text-slate-400 hover:text-slate-200 cursor-pointer"
             >
               Cancelar
             </button>
@@ -1771,7 +2055,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
       >
         <form onSubmit={handleEditListSubmit} className="space-y-4">
           <div>
-            <span className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1.5">
+            <span className="block text-xs font-medium text-slate-300 mb-1.5">
               Tipo da Lista
             </span>
             <div className="grid grid-cols-3 gap-2">
@@ -1785,7 +2069,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
                     className={`min-h-[42px] py-2 px-3 text-xs font-semibold rounded-xl border transition-colors cursor-pointer ${
                       isSelected
                         ? 'bg-indigo-600 text-white border-indigo-600 shadow-xs'
-                        : 'bg-slate-50 dark:bg-slate-800/70 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:border-indigo-400'
+                        : 'bg-slate-800/70 text-slate-300 border-slate-700 hover:border-indigo-400'
                     }`}
                   >
                     {btn.label}
@@ -1798,7 +2082,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
           <div>
             <label
               htmlFor="edit-list-name"
-              className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
+              className="block text-xs font-medium text-slate-300 mb-1"
             >
               Nome da Lista
             </label>
@@ -1808,14 +2092,14 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
               required
               value={editListName}
               onChange={(e) => setEditListName(e.target.value)}
-              className="w-full px-3.5 py-2.5 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100"
+              className="w-full px-3.5 py-2.5 text-sm rounded-lg border border-slate-700 bg-slate-950 text-slate-100 focus:outline-none focus:border-indigo-500"
             />
           </div>
 
           <div>
             <label
               htmlFor="edit-list-desc"
-              className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
+              className="block text-xs font-medium text-slate-300 mb-1"
             >
               Descrição
             </label>
@@ -1824,7 +2108,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
               type="text"
               value={editListDesc}
               onChange={(e) => setEditListDesc(e.target.value)}
-              className="w-full px-3.5 py-2.5 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100"
+              className="w-full px-3.5 py-2.5 text-sm rounded-lg border border-slate-700 bg-slate-950 text-slate-100 focus:outline-none focus:border-indigo-500"
             />
           </div>
 
@@ -1832,7 +2116,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
             <button
               type="button"
               onClick={() => setEditingList(null)}
-              className="px-4 py-2 text-xs text-slate-600 dark:text-slate-400"
+              className="px-4 py-2 text-xs text-slate-400 hover:text-slate-200 cursor-pointer"
             >
               Cancelar
             </button>
@@ -1856,14 +2140,14 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
         subtitle={`Confirma a exclusão da lista "${deletingList?.name || ''}" e de seus itens?`}
       >
         <div className="space-y-4">
-          <p className="text-xs text-slate-600 dark:text-slate-400">
+          <p className="text-xs text-slate-400">
             Esta ação removerá a lista e todos os cards contidos nela.
           </p>
           <div className="flex justify-end gap-2 pt-2">
             <button
               type="button"
               onClick={() => setDeletingList(null)}
-              className="px-4 py-2 text-xs text-slate-600 dark:text-slate-400"
+              className="px-4 py-2 text-xs text-slate-400 hover:text-slate-200 cursor-pointer"
             >
               Cancelar
             </button>
@@ -1898,7 +2182,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
           <div>
             <label
               htmlFor="new-item-name"
-              className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
+              className="block text-xs font-medium text-slate-300 mb-1"
             >
               Nome do Item
             </label>
@@ -1915,7 +2199,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
                   ? 'Ex: Ar-Condicionado Split Inverter 12000 BTUs'
                   : 'Ex: Cafeteira Italiana Inox'
               }
-              className="w-full px-3.5 py-2.5 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100"
+              className="w-full px-3.5 py-2.5 text-sm rounded-lg border border-slate-700 bg-slate-950 text-slate-100 focus:outline-none focus:border-indigo-500"
             />
           </div>
 
@@ -1923,7 +2207,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
             <div>
               <label
                 htmlFor="item-group-select"
-                className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
+                className="block text-xs font-medium text-slate-300 mb-1"
               >
                 Categoria Principal
               </label>
@@ -1931,7 +2215,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
                 id="item-group-select"
                 value={selectedGroupId}
                 onChange={(e) => handleGroupSelectChange(e.target.value)}
-                className="w-full px-3 py-2.5 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100"
+                className="w-full px-3 py-2.5 text-xs rounded-lg border border-slate-700 bg-slate-950 text-slate-100 focus:outline-none focus:border-indigo-500"
               >
                 {taxonomyGroups.map((g) => (
                   <option key={g.id} value={g.id}>
@@ -1944,7 +2228,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
             <div>
               <label
                 htmlFor="item-cat-select"
-                className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
+                className="block text-xs font-medium text-slate-300 mb-1"
               >
                 Subcategoria
               </label>
@@ -1952,7 +2236,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
                 id="item-cat-select"
                 value={selectedCategoryId}
                 onChange={(e) => setSelectedCategoryId(e.target.value)}
-                className="w-full px-3 py-2.5 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100"
+                className="w-full px-3 py-2.5 text-xs rounded-lg border border-slate-700 bg-slate-950 text-slate-100 focus:outline-none focus:border-indigo-500"
               >
                 {availableCategories.map((c) => (
                   <option key={c.id} value={c.id}>
@@ -1969,7 +2253,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
               <div>
                 <label
                   htmlFor="item-curr-stock"
-                  className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
+                  className="block text-xs font-medium text-slate-300 mb-1"
                 >
                   Estoque Atual
                 </label>
@@ -1979,13 +2263,13 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
                   min="0"
                   value={currentStockInput}
                   onChange={(e) => setCurrentStockInput(e.target.value)}
-                  className="w-full px-3 py-2 text-sm font-mono rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100"
+                  className="w-full px-3 py-2 text-sm font-mono rounded-lg border border-slate-700 bg-slate-950 text-slate-100 focus:outline-none focus:border-indigo-500"
                 />
               </div>
               <div>
                 <label
                   htmlFor="item-min-stock"
-                  className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
+                  className="block text-xs font-medium text-slate-300 mb-1"
                 >
                   Estoque Mínimo
                 </label>
@@ -1995,13 +2279,13 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
                   min="0"
                   value={minStockInput}
                   onChange={(e) => setMinStockInput(e.target.value)}
-                  className="w-full px-3 py-2 text-sm font-mono rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100"
+                  className="w-full px-3 py-2 text-sm font-mono rounded-lg border border-slate-700 bg-slate-950 text-slate-100 focus:outline-none focus:border-indigo-500"
                 />
               </div>
               <div>
                 <label
                   htmlFor="item-unit"
-                  className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
+                  className="block text-xs font-medium text-slate-300 mb-1"
                 >
                   Unidade
                 </label>
@@ -2009,7 +2293,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
                   id="item-unit"
                   value={unitInput}
                   onChange={(e) => setUnitInput(e.target.value)}
-                  className="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100"
+                  className="w-full px-3 py-2 text-sm rounded-lg border border-slate-700 bg-slate-950 text-slate-100 focus:outline-none focus:border-indigo-500"
                 >
                   <option value="un">un</option>
                   <option value="pct">pct</option>
@@ -2026,7 +2310,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
             <div>
               <label
                 htmlFor="item-target-amount"
-                className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
+                className="block text-xs font-medium text-slate-300 mb-1"
               >
                 Valor Meta do Objetivo (R$)
               </label>
@@ -2036,7 +2320,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
                 step="10"
                 value={targetAmountInput}
                 onChange={(e) => setTargetAmountInput(e.target.value)}
-                className="w-full px-3.5 py-2.5 text-sm font-mono rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100"
+                className="w-full px-3.5 py-2.5 text-sm font-mono rounded-lg border border-slate-700 bg-slate-950 text-slate-100 focus:outline-none focus:border-indigo-500"
               />
             </div>
           )}
@@ -2048,7 +2332,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
                 <div>
                   <label
                     htmlFor="item-est-price"
-                    className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
+                    className="block text-xs font-medium text-slate-300 mb-1"
                   >
                     Preço Estimado (R$)
                   </label>
@@ -2057,13 +2341,13 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
                     type="number"
                     value={estimatedPriceInput}
                     onChange={(e) => setEstimatedPriceInput(e.target.value)}
-                    className="w-full px-3 py-2 text-sm font-mono rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100"
+                    className="w-full px-3 py-2 text-sm font-mono rounded-lg border border-slate-700 bg-slate-950 text-slate-100 focus:outline-none focus:border-indigo-500"
                   />
                 </div>
                 <div>
                   <label
                     htmlFor="item-priority"
-                    className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
+                    className="block text-xs font-medium text-slate-300 mb-1"
                   >
                     Prioridade
                   </label>
@@ -2073,7 +2357,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
                     onChange={(e) =>
                       setPriorityInput(e.target.value as 'Baixa' | 'Média' | 'Alta')
                     }
-                    className="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100"
+                    className="w-full px-3 py-2 text-sm rounded-lg border border-slate-700 bg-slate-950 text-slate-100 focus:outline-none focus:border-indigo-500"
                   >
                     <option value="Alta">Alta</option>
                     <option value="Média">Média</option>
@@ -2085,7 +2369,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
               <div>
                 <label
                   htmlFor="item-pros-cons"
-                  className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
+                  className="block text-xs font-medium text-slate-300 mb-1"
                 >
                   Prós e Contras / Avaliação
                 </label>
@@ -2095,7 +2379,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
                   value={prosConsInput}
                   onChange={(e) => setProsConsInput(e.target.value)}
                   placeholder="Vantagens e pontos de atenção..."
-                  className="w-full px-3.5 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100"
+                  className="w-full px-3.5 py-2 text-sm rounded-lg border border-slate-700 bg-slate-950 text-slate-100 focus:outline-none focus:border-indigo-500"
                 />
               </div>
             </div>
@@ -2104,7 +2388,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
           <div>
             <label
               htmlFor="item-notes"
-              className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
+              className="block text-xs font-medium text-slate-300 mb-1"
             >
               Observações do Item
             </label>
@@ -2114,7 +2398,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
               value={itemNotes}
               onChange={(e) => setItemNotes(e.target.value)}
               placeholder="Especificações ou preferências..."
-              className="w-full px-3.5 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100"
+              className="w-full px-3.5 py-2 text-sm rounded-lg border border-slate-700 bg-slate-950 text-slate-100 focus:outline-none focus:border-indigo-500"
             />
           </div>
 
@@ -2125,7 +2409,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
                 setEditingItem(null);
                 setIsNewItemModalOpen(false);
               }}
-              className="px-4 py-2 text-xs text-slate-600 dark:text-slate-400"
+              className="px-4 py-2 text-xs text-slate-400 hover:text-slate-200 cursor-pointer"
             >
               Cancelar
             </button>
@@ -2149,14 +2433,14 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
         subtitle={`Deseja excluir o item "${deletingItem?.name || ''}"?`}
       >
         <div className="space-y-4">
-          <p className="text-xs text-slate-600 dark:text-slate-400">
+          <p className="text-xs text-slate-400">
             O card e seu histórico de compras serão removidos permanentemente desta lista.
           </p>
           <div className="flex justify-end gap-2 pt-2">
             <button
               type="button"
               onClick={() => setDeletingItem(null)}
-              className="px-4 py-2 text-xs text-slate-600 dark:text-slate-400"
+              className="px-4 py-2 text-xs text-slate-400 hover:text-slate-200 cursor-pointer"
             >
               Cancelar
             </button>
@@ -2188,7 +2472,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
             <div>
               <label
                 htmlFor="prod-brand-input"
-                className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
+                className="block text-xs font-medium text-slate-300 mb-1"
               >
                 Marca Escolhida
               </label>
@@ -2199,14 +2483,14 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
                 value={prodBrand}
                 onChange={(e) => setProdBrand(e.target.value)}
                 placeholder="Ex: Marca Tio João"
-                className="w-full px-3.5 py-2.5 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100"
+                className="w-full px-3.5 py-2.5 text-sm rounded-lg border border-slate-700 bg-slate-950 text-slate-100 focus:outline-none focus:border-indigo-500"
               />
             </div>
 
             <div>
               <label
                 htmlFor="prod-store-input"
-                className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
+                className="block text-xs font-medium text-slate-300 mb-1"
               >
                 Mercado / Estabelecimento
               </label>
@@ -2217,7 +2501,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
                 value={prodStore}
                 onChange={(e) => setProdStore(e.target.value)}
                 placeholder="Ex: Mercado Extra"
-                className="w-full px-3.5 py-2.5 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100"
+                className="w-full px-3.5 py-2.5 text-sm rounded-lg border border-slate-700 bg-slate-950 text-slate-100 focus:outline-none focus:border-indigo-500"
               />
             </div>
           </div>
@@ -2226,7 +2510,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
             <div>
               <label
                 htmlFor="prod-price-input"
-                className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
+                className="block text-xs font-medium text-slate-300 mb-1"
               >
                 Preço Unitário (R$)
               </label>
@@ -2238,14 +2522,14 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
                 value={prodPrice}
                 onChange={(e) => setProdPrice(e.target.value)}
                 placeholder="25.00"
-                className="w-full px-3.5 py-2.5 text-sm font-mono rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100"
+                className="w-full px-3.5 py-2.5 text-sm font-mono rounded-lg border border-slate-700 bg-slate-950 text-slate-100 focus:outline-none focus:border-indigo-500"
               />
             </div>
 
             <div>
               <label
                 htmlFor="prod-qty-input"
-                className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
+                className="block text-xs font-medium text-slate-300 mb-1"
               >
                 Quantidade Comprada
               </label>
@@ -2256,24 +2540,24 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
                 required
                 value={prodQty}
                 onChange={(e) => setProdQty(e.target.value)}
-                className="w-full px-3.5 py-2.5 text-sm font-mono rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100"
+                className="w-full px-3.5 py-2.5 text-sm font-mono rounded-lg border border-slate-700 bg-slate-950 text-slate-100 focus:outline-none focus:border-indigo-500"
               />
             </div>
           </div>
 
           {/* Receipt / Photo Upload */}
-          <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-800 flex items-center justify-between gap-3">
+          <div className="p-3.5 rounded-xl bg-slate-800/60 border border-slate-700/80 flex items-center justify-between gap-3">
             <div className="text-xs">
-              <span className="font-semibold text-slate-800 dark:text-slate-200 block">
+              <span className="font-semibold text-slate-200 block">
                 Anexar Cupom Fiscal ou Foto do Produto
               </span>
-              <span className="text-slate-500 dark:text-slate-400">
+              <span className="text-slate-400">
                 {prodReceiptUrl
                   ? 'Foto ou comprovante anexado com sucesso.'
                   : 'Opcional: envie imagem da nota fiscal ou etiqueta de preço.'}
               </span>
             </div>
-            <label className="cursor-pointer px-3 py-2 text-xs font-medium rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 hover:bg-slate-100 transition-colors flex items-center gap-1.5 shrink-0">
+            <label className="cursor-pointer px-3 py-2 text-xs font-medium rounded-lg border border-slate-700 bg-slate-900 text-slate-200 hover:bg-slate-800 transition-colors flex items-center gap-1.5 shrink-0">
               <Upload className="w-3.5 h-3.5" />
               <span>{isUploadingReceipt ? 'Enviando...' : 'Anexar Foto'}</span>
               <input
@@ -2286,23 +2570,23 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
           </div>
 
           {cartModalState?.advanceToConfirmed && onCreateExpenseFromPurchase && (
-            <label className="p-3 rounded-xl bg-emerald-50/70 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800/60 flex items-center gap-2.5 cursor-pointer text-xs">
+            <label className="p-3 rounded-xl bg-emerald-950/35 border border-emerald-800/60 flex items-center gap-2.5 cursor-pointer text-xs">
               <input
                 type="checkbox"
                 checked={createExpenseOnCartConfirm}
                 onChange={(e) => setCreateExpenseOnCartConfirm(e.target.checked)}
-                className="rounded border-emerald-400 text-emerald-600 focus:ring-emerald-500"
+                className="rounded border-emerald-500 text-emerald-500 focus:ring-emerald-500 bg-slate-900"
               />
-              <span className="font-medium text-emerald-900 dark:text-emerald-200">
+              <span className="font-medium text-emerald-200">
                 Abrir modal para lançar automaticamente como Despesa no Financeiro ao confirmar
               </span>
             </label>
           )}
 
           <div className="pt-2 flex items-center justify-between">
-            <div className="text-xs font-mono tabular-nums text-slate-600 dark:text-slate-400">
+            <div className="text-xs font-mono tabular-nums text-slate-400">
               Total:{' '}
-              <strong className="text-slate-900 dark:text-slate-100">
+              <strong className="text-slate-100">
                 {formatCurrencyBRL((Number(prodPrice) || 0) * (Number(prodQty) || 1))}
               </strong>
             </div>
@@ -2311,7 +2595,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
               <button
                 type="button"
                 onClick={() => setCartModalState(null)}
-                className="px-4 py-2 text-xs text-slate-600 dark:text-slate-400"
+                className="px-4 py-2 text-xs text-slate-400 hover:text-slate-200 cursor-pointer"
               >
                 Cancelar
               </button>
@@ -2344,15 +2628,15 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
         {historyModalItem && (
           <div className="space-y-4">
             {historyModalItem.productsHistory.length === 0 ? (
-              <p className="text-xs text-slate-500 py-6 text-center">
+              <p className="text-xs text-slate-400 py-6 text-center">
                 Nenhuma compra registrada para este item ainda.
               </p>
             ) : (
               <>
-                <div className="grid grid-cols-3 gap-3 p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-800 text-xs">
+                <div className="grid grid-cols-3 gap-3 p-3.5 rounded-xl bg-slate-800/60 border border-slate-700/80 text-xs">
                   <div>
-                    <span className="text-slate-500 block">Menor Preço</span>
-                    <span className="font-mono font-bold text-emerald-600 dark:text-emerald-400 text-sm">
+                    <span className="text-slate-400 block">Menor Preço</span>
+                    <span className="font-mono font-bold text-emerald-400 text-sm">
                       {formatCurrencyBRL(
                         calculatePriceStats(historyModalItem.productsHistory)
                           .lowestPrice
@@ -2360,8 +2644,8 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
                     </span>
                   </div>
                   <div>
-                    <span className="text-slate-500 block">Preço Médio</span>
-                    <span className="font-mono font-bold text-slate-900 dark:text-slate-100 text-sm">
+                    <span className="text-slate-400 block">Preço Médio</span>
+                    <span className="font-mono font-bold text-slate-100 text-sm">
                       {formatCurrencyBRL(
                         calculatePriceStats(historyModalItem.productsHistory)
                           .averagePrice
@@ -2369,8 +2653,8 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
                     </span>
                   </div>
                   <div>
-                    <span className="text-slate-500 block">Última Compra</span>
-                    <span className="font-mono font-bold text-indigo-600 dark:text-indigo-400 text-sm">
+                    <span className="text-slate-400 block">Última Compra</span>
+                    <span className="font-mono font-bold text-indigo-400 text-sm">
                       {formatCurrencyBRL(
                         calculatePriceStats(historyModalItem.productsHistory).lastPrice
                       )}
@@ -2378,26 +2662,26 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
                   </div>
                 </div>
 
-                <div className="divide-y divide-slate-100 dark:divide-slate-800 border-t border-b border-slate-100 dark:border-slate-800">
+                <div className="divide-y divide-slate-800 border-t border-b border-slate-800">
                   {historyModalItem.productsHistory.map((prod) => (
                     <div
                       key={prod.id}
                       className="py-3 flex items-center justify-between gap-3 text-xs"
                     >
                       <div>
-                        <p className="font-semibold text-slate-900 dark:text-slate-100">
+                        <p className="font-semibold text-slate-100">
                           {prod.brand} · {prod.storeName}
                         </p>
-                        <p className="text-slate-500 dark:text-slate-400 font-mono text-[11px]">
+                        <p className="text-slate-400 font-mono text-[11px]">
                           {new Date(prod.purchaseDate).toLocaleDateString('pt-BR')} ·{' '}
                           {prod.quantity}x {formatCurrencyBRL(prod.unitPrice)}
                         </p>
                       </div>
                       <div className="text-right font-mono tabular-nums">
-                        <span className="font-bold text-slate-900 dark:text-slate-100 block">
+                        <span className="font-bold text-slate-100 block">
                           {formatCurrencyBRL(prod.totalPrice)}
                         </span>
-                        <span className="text-[11px] text-slate-500">
+                        <span className="text-[11px] text-slate-400">
                           un: {formatCurrencyBRL(prod.unitPrice)}
                         </span>
                       </div>
@@ -2423,7 +2707,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
           <div>
             <label
               htmlFor="deposit-amount-input"
-              className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
+              className="block text-xs font-medium text-slate-300 mb-1"
             >
               Valor do Depósito (R$)
             </label>
@@ -2435,14 +2719,14 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
               required
               value={depositAmount}
               onChange={(e) => setDepositAmount(e.target.value)}
-              className="w-full px-3.5 py-2.5 text-sm font-mono rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100"
+              className="w-full px-3.5 py-2.5 text-sm font-mono rounded-lg border border-slate-700 bg-slate-950 text-slate-100 focus:outline-none focus:border-indigo-500"
             />
           </div>
 
           <div>
             <label
               htmlFor="deposit-note-input"
-              className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
+              className="block text-xs font-medium text-slate-300 mb-1"
             >
               Identificação do Aporte
             </label>
@@ -2452,7 +2736,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
               value={depositNote}
               onChange={(e) => setDepositNote(e.target.value)}
               placeholder="Ex: Transferência Reserva Mensal"
-              className="w-full px-3.5 py-2.5 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100"
+              className="w-full px-3.5 py-2.5 text-sm rounded-lg border border-slate-700 bg-slate-950 text-slate-100 focus:outline-none focus:border-indigo-500"
             />
           </div>
 
@@ -2460,7 +2744,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
             <button
               type="button"
               onClick={() => setDepositModalItem(null)}
-              className="px-4 py-2 text-xs text-slate-600 dark:text-slate-400"
+              className="px-4 py-2 text-xs text-slate-400 hover:text-slate-200 cursor-pointer"
             >
               Cancelar
             </button>
@@ -2488,7 +2772,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
             <div>
               <label
                 htmlFor="quote-store"
-                className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
+                className="block text-xs font-medium text-slate-300 mb-1"
               >
                 Nome da Loja
               </label>
@@ -2499,14 +2783,14 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
                 value={quoteStore}
                 onChange={(e) => setQuoteStore(e.target.value)}
                 placeholder="Ex: Fast Shop / Amazon"
-                className="w-full px-3.5 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100"
+                className="w-full px-3.5 py-2 text-sm rounded-lg border border-slate-700 bg-slate-950 text-slate-100 focus:outline-none focus:border-indigo-500"
               />
             </div>
 
             <div>
               <label
                 htmlFor="quote-price"
-                className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
+                className="block text-xs font-medium text-slate-300 mb-1"
               >
                 Preço Cotado (R$)
               </label>
@@ -2518,7 +2802,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
                 value={quotePrice}
                 onChange={(e) => setQuotePrice(e.target.value)}
                 placeholder="3490.00"
-                className="w-full px-3.5 py-2 text-sm font-mono rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100"
+                className="w-full px-3.5 py-2 text-sm font-mono rounded-lg border border-slate-700 bg-slate-950 text-slate-100 focus:outline-none focus:border-indigo-500"
               />
             </div>
           </div>
@@ -2526,7 +2810,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
           <div>
             <label
               htmlFor="quote-url"
-              className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
+              className="block text-xs font-medium text-slate-300 mb-1"
             >
               Link do Anúncio (URL)
             </label>
@@ -2536,14 +2820,14 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
               value={quoteUrl}
               onChange={(e) => setQuoteUrl(e.target.value)}
               placeholder="https://loja.com.br/produto"
-              className="w-full px-3.5 py-2 text-sm font-mono rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100"
+              className="w-full px-3.5 py-2 text-sm font-mono rounded-lg border border-slate-700 bg-slate-950 text-slate-100 focus:outline-none focus:border-indigo-500"
             />
           </div>
 
           <div>
             <label
               htmlFor="quote-notes"
-              className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
+              className="block text-xs font-medium text-slate-300 mb-1"
             >
               Condições (Cashback, Parcelamento, Frete)
             </label>
@@ -2553,7 +2837,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
               value={quoteNotes}
               onChange={(e) => setQuoteNotes(e.target.value)}
               placeholder="Ex: 10% de desconto à vista no PIX"
-              className="w-full px-3.5 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100"
+              className="w-full px-3.5 py-2 text-sm rounded-lg border border-slate-700 bg-slate-950 text-slate-100 focus:outline-none focus:border-indigo-500"
             />
           </div>
 
@@ -2561,7 +2845,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
             <button
               type="button"
               onClick={() => setQuoteModalItem(null)}
-              className="px-4 py-2 text-xs text-slate-600 dark:text-slate-400"
+              className="px-4 py-2 text-xs text-slate-400 hover:text-slate-200 cursor-pointer"
             >
               Cancelar
             </button>
@@ -2588,7 +2872,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
           <div>
             <label
               htmlFor="final-brand"
-              className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
+              className="block text-xs font-medium text-slate-300 mb-1"
             >
               Marca / Modelo Escolhido
             </label>
@@ -2599,7 +2883,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
               value={finalBrandInput}
               onChange={(e) => setFinalBrandInput(e.target.value)}
               placeholder="Ex: Brastemp Gourmand Inox"
-              className="w-full px-3.5 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100"
+              className="w-full px-3.5 py-2 text-sm rounded-lg border border-slate-700 bg-slate-950 text-slate-100 focus:outline-none focus:border-indigo-500"
             />
           </div>
 
@@ -2607,7 +2891,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
             <div>
               <label
                 htmlFor="final-paid"
-                className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
+                className="block text-xs font-medium text-slate-300 mb-1"
               >
                 Valor Final Pago (R$)
               </label>
@@ -2618,14 +2902,14 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
                 required
                 value={finalPaidInput}
                 onChange={(e) => setFinalPaidInput(e.target.value)}
-                className="w-full px-3.5 py-2 text-sm font-mono rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100"
+                className="w-full px-3.5 py-2 text-sm font-mono rounded-lg border border-slate-700 bg-slate-950 text-slate-100 focus:outline-none focus:border-indigo-500"
               />
             </div>
 
             <div>
               <label
                 htmlFor="final-store"
-                className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
+                className="block text-xs font-medium text-slate-300 mb-1"
               >
                 Loja da Compra
               </label>
@@ -2636,20 +2920,20 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
                 value={finalStoreInput}
                 onChange={(e) => setFinalStoreInput(e.target.value)}
                 placeholder="Ex: Fast Shop"
-                className="w-full px-3.5 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100"
+                className="w-full px-3.5 py-2 text-sm rounded-lg border border-slate-700 bg-slate-950 text-slate-100 focus:outline-none focus:border-indigo-500"
               />
             </div>
           </div>
 
           {onCreateExpenseFromPurchase && (
-            <label className="p-3 rounded-xl bg-emerald-50/70 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800/60 flex items-center gap-2.5 cursor-pointer text-xs">
+            <label className="p-3 rounded-xl bg-emerald-950/35 border border-emerald-800/60 flex items-center gap-2.5 cursor-pointer text-xs">
               <input
                 type="checkbox"
                 checked={createExpenseOnGoalComplete}
                 onChange={(e) => setCreateExpenseOnGoalComplete(e.target.checked)}
-                className="rounded border-emerald-400 text-emerald-600 focus:ring-emerald-500"
+                className="rounded border-emerald-500 text-emerald-500 focus:ring-emerald-500 bg-slate-900"
               />
-              <span className="font-medium text-emerald-900 dark:text-emerald-200">
+              <span className="font-medium text-emerald-200">
                 Abrir modal para lançar este valor pago como Despesa no Financeiro
               </span>
             </label>
@@ -2659,7 +2943,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
             <button
               type="button"
               onClick={() => setAcquireGoalModalItem(null)}
-              className="px-4 py-2 text-xs text-slate-600 dark:text-slate-400"
+              className="px-4 py-2 text-xs text-slate-400 hover:text-slate-200 cursor-pointer"
             >
               Cancelar
             </button>
@@ -2683,13 +2967,13 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
         subtitle={`Migrar "${convertWishModalItem?.name || ''}" para uma Lista de Objetivo com meta de economia.`}
       >
         <form onSubmit={handleConvertWishSubmit} className="space-y-4">
-          <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
+          <p className="text-xs text-slate-400 leading-relaxed">
             Ao converter este desejo, o card atual será arquivado na Wishlist e um novo card será criado na coluna{' '}
-            <strong className="text-slate-900 dark:text-slate-100">
+            <strong className="text-slate-100">
               Pesquisa / Cotação
             </strong>{' '}
             da Lista de Objetivo selecionada, mantendo o preço estimado de{' '}
-            <strong className="font-mono">
+            <strong className="font-mono text-slate-100">
               {formatCurrencyBRL(convertWishModalItem?.estimatedPrice)}
             </strong>
             .
@@ -2698,7 +2982,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
           <div>
             <label
               htmlFor="target-goal-list-select"
-              className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
+              className="block text-xs font-medium text-slate-300 mb-1"
             >
               Lista de Objetivo de Destino
             </label>
@@ -2706,7 +2990,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
               id="target-goal-list-select"
               value={targetGoalListId}
               onChange={(e) => setTargetGoalListId(e.target.value)}
-              className="w-full px-3.5 py-2.5 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100"
+              className="w-full px-3.5 py-2.5 text-sm rounded-lg border border-slate-700 bg-slate-950 text-slate-100 focus:outline-none focus:border-indigo-500"
             >
               {goalListsInWorkspace.map((gl) => (
                 <option key={gl.id} value={gl.id}>
@@ -2720,7 +3004,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
             <button
               type="button"
               onClick={() => setConvertWishModalItem(null)}
-              className="px-4 py-2 text-xs text-slate-600 dark:text-slate-400"
+              className="px-4 py-2 text-xs text-slate-400 hover:text-slate-200 cursor-pointer"
             >
               Cancelar
             </button>
