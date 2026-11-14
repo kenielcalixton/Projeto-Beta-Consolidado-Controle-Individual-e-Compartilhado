@@ -4,14 +4,10 @@ import {
   getDoc,
   getDocs,
   query,
-  runTransaction,
-  setDoc,
-  updateDoc,
   where,
 } from 'firebase/firestore';
 import { db } from './firebase';
 import {
-  ISO8601String,
   Space,
   SpaceInvite,
   SpaceMember,
@@ -24,6 +20,7 @@ import {
 import { sendSpaceNotification } from './spaceNotificationService';
 import { getSpaceById, getSpaceMembers } from './spaceService';
 import { universalStorage } from '../utils/universalStorage';
+import { sha256Hex } from '../utils/hashUtils';
 
 /**
  * ==============================================================================
@@ -32,14 +29,15 @@ import { universalStorage } from '../utils/universalStorage';
  * Ciclo de vida completo de convites com hash criptográfico SHA-256:
  * 1. O token bruto nunca é salvo no Firestore; armazena-se exclusivamente seu hash.
  * 2. Uso estritamente único e atômico (impossibilidade de dupla aceitação).
- * 3. Validação temporal com prazo configurável (padrão 15 dias, sob aprovação).
+ * 3. Validação temporal com prazo configurável (padrão 15 dias).
  * 4. Bloqueio absoluto de convites para espaços arquivados.
  * 5. Associação atômica e inequívoca do UID autenticado aos membros do espaço.
- * 6. SEGURANÇA (Problema 1): Ex-participantes e terceiros NÃO podem listar convites
- *    do espaço (`getSpaceInvites` exige `allowHistorical = false`).
+ * 6. Distinção explícita entre Situação A (conta já existente) e Situação B (pendente para futuro cadastro),
+ *    sem nunca inserir o convidado automaticamente no espaço ao criar conta e exigindo verificação de e-mail.
+ * 7. Hashing SHA-256 portátil via utilitário puro (sem dependência de crypto.subtle.digest).
  */
 
-/** Prazo padrão configurável em dias (regra de 15 dias pendente de homologação definitiva) */
+/** Prazo padrão configurável em dias */
 export const DEFAULT_INVITE_EXPIRATION_DAYS = 15;
 
 const DEMO_INVITES_KEY = 'mpf_v3_demo_space_invites';
@@ -63,30 +61,28 @@ function saveDemoInvites(invites: SpaceInvite[]): void {
 
 /**
  * Gera um hash SHA-256 hexadecimal a partir do token em texto puro.
+ * Usa implementação pura em TypeScript (FIPS 180-4), compatível com HTTP local, HTTPS e Node.js
+ * sem depender de `crypto.subtle.digest`.
  */
 export async function hashToken(rawToken: string): Promise<string> {
   if (!rawToken || !rawToken.trim()) {
     throw new Error('Token inválido para hashing.');
   }
 
-  const clean = rawToken.trim();
-  const encoder = new TextEncoder();
-  const data = encoder.encode(clean);
-  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-  const hashArray = Array.from(new Uint8Array(hashBuffer));
-  return hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
+  return sha256Hex(rawToken.trim());
 }
 
 /**
  * Gera um token seguro e aleatório de 48 caracteres hexadecimais.
  */
 export function generateSecureToken(): string {
-  if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
+  if (typeof globalThis.crypto !== 'undefined' && typeof globalThis.crypto.getRandomValues === 'function') {
     const array = new Uint8Array(24);
-    crypto.getRandomValues(array);
+    globalThis.crypto.getRandomValues(array);
     return Array.from(array, (b) => b.toString(16).padStart(2, '0')).join('');
   }
-  return `tok_${Date.now()}_${Math.random().toString(36).substring(2)}${Math.random().toString(36).substring(2)}`;
+  const entropy = `${Date.now()}:${Math.random()}:${Math.random()}:${performance?.now?.() ?? 0}`;
+  return sha256Hex(entropy).slice(0, 48);
 }
 
 /**
@@ -114,7 +110,8 @@ export type InviteAvailabilityCode =
   | 'rejected'
   | 'revoked'
   | 'already_member'
-  | 'email_mismatch';
+  | 'email_mismatch'
+  | 'email_not_verified';
 
 export interface InviteAvailabilityEvaluation {
   canAccept: boolean;
@@ -131,6 +128,7 @@ export function evaluateInviteAvailability(
   options: {
     currentUserUid?: string;
     currentUserEmail?: string;
+    currentUserEmailVerified?: boolean;
     activeMemberUids?: string[];
   } = {}
 ): InviteAvailabilityEvaluation {
@@ -201,16 +199,26 @@ export function evaluateInviteAvailability(
     };
   }
 
-  if (
-    invite.invitedEmail &&
-    options.currentUserEmail &&
-    invite.invitedEmail.trim().toLowerCase() !== options.currentUserEmail.trim().toLowerCase()
-  ) {
+  if (invite.invitedEmail) {
+    const normalizedInvited = invite.invitedEmail.trim().toLowerCase();
+    const normalizedCurrent = (options.currentUserEmail || '').trim().toLowerCase();
+    if (!normalizedCurrent || normalizedInvited !== normalizedCurrent) {
+      return {
+        canAccept: false,
+        code: 'email_mismatch',
+        title: 'Convite destinado a outro e-mail',
+        message: `Este convite foi emitido especificamente para ${invite.invitedEmail}, mas você está autenticado como ${options.currentUserEmail || 'conta sem e-mail'}.`,
+      };
+    }
+  }
+
+  if (options.currentUserEmailVerified === false) {
     return {
       canAccept: false,
-      code: 'email_mismatch',
-      title: 'Convite destinado a outro e-mail',
-      message: `Este convite foi emitido especificamente para ${invite.invitedEmail}, mas você está autenticado como ${options.currentUserEmail}.`,
+      code: 'email_not_verified',
+      title: 'E-mail aguardando verificação',
+      message:
+        'Confirme seu endereço de e-mail antes de aceitar o convite para ingressar neste espaço.',
     };
   }
 
@@ -226,11 +234,13 @@ export interface CreateSpaceInviteInput {
   invitedEmail?: string;
   invitedRole?: SpaceMemberRole;
   expirationDays?: number;
+  requireEmailVerification?: boolean;
 }
 
 /**
  * Cria um convite seguro para ingresso no espaço compartilhado.
- * Retorna o objeto do convite persistido (com hash) e o token em texto puro para compartilhamento.
+ * Em ambiente real/emulador, executa via Cloud Function (`createSpaceInviteOfficial`)
+ * distinguindo Situação A (conta existente) e Situação B (pendente para cadastro futuro).
  */
 export async function createSpaceInvite(
   spaceId: string,
@@ -239,79 +249,107 @@ export async function createSpaceInvite(
   input: CreateSpaceInviteInput,
   isDemo = false
 ): Promise<{ invite: SpaceInvite; rawToken: string }> {
-  const space = await getSpaceById(spaceId, requesterUid, isDemo, false);
-  if (!space) {
-    throw new Error(`Espaço "${spaceId}" não encontrado.`);
-  }
-
-  if (space.spaceStatus === 'archived') {
-    throw new Error('Não é permitido criar convites para um espaço arquivado.');
-  }
-
-  const members = await getSpaceMembers(spaceId, requesterUid, isDemo);
-  const requester = members.find((m) => m.uid === requesterUid && m.participationStatus === 'active');
-  if (!requester || (requester.role !== 'owner' && requester.role !== 'admin' && space.creatorUid !== requesterUid)) {
-    throw new Error('Apenas proprietários ou administradores do espaço podem gerar convites.');
-  }
-
-  const rawToken = generateSecureToken();
-  const tokenHash = await hashToken(rawToken);
-
-  const days = input.expirationDays && input.expirationDays > 0
-    ? input.expirationDays
-    : DEFAULT_INVITE_EXPIRATION_DAYS;
-
-  const now = new Date();
-  const expiresAt = new Date(now.getTime() + days * 24 * 60 * 60 * 1000).toISOString();
-
-  const invite: SpaceInvite = {
-    id: tokenHash,
-    spaceId,
-    spaceName: space.name,
-    invitedEmail: input.invitedEmail?.trim() || undefined,
-    invitedRole: input.invitedRole || 'member',
-    invitedByUid: requesterUid,
-    invitedByName: requesterName,
-    tokenStatus: 'pending',
-    expiresAt,
-    createdAt: now.toISOString(),
-  };
-
-  const auditInput = {
-    spaceId,
-    eventType: 'invite_created' as const,
-    performedByUid: requesterUid,
-    performedByName: requesterName,
-    details: {
-      tokenHash,
-      invitedEmail: invite.invitedEmail,
-      role: invite.invitedRole,
-      expiresAt,
-    },
-    operationKey: `invite_create_${tokenHash}`,
-    timestamp: invite.createdAt,
-  };
+  const normalizedEmail = input.invitedEmail?.trim().toLowerCase() || undefined;
 
   if (isDemo) {
+    const space = await getSpaceById(spaceId, requesterUid, true, false);
+    if (!space) {
+      throw new Error(`Espaço "${spaceId}" não encontrado.`);
+    }
+    if (space.spaceStatus === 'archived') {
+      throw new Error('Não é permitido criar convites para um espaço arquivado.');
+    }
+
+    const members = await getSpaceMembers(spaceId, requesterUid, true);
+    const requester = members.find((m) => m.uid === requesterUid && m.participationStatus === 'active');
+    if (!requester || (requester.role !== 'owner' && requester.role !== 'admin' && space.creatorUid !== requesterUid)) {
+      throw new Error('Apenas proprietários ou administradores do espaço podem gerar convites.');
+    }
+
+    const rawToken = generateSecureToken();
+    const tokenHash = await hashToken(rawToken);
+    const days = input.expirationDays && input.expirationDays > 0
+      ? input.expirationDays
+      : DEFAULT_INVITE_EXPIRATION_DAYS;
+
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + days * 24 * 60 * 60 * 1000).toISOString();
+
+    const accountExists = normalizedEmail
+      ? members.some((m) => (m.contactEmail || '').trim().toLowerCase() === normalizedEmail)
+      : undefined;
+
+    const invite: SpaceInvite = {
+      id: tokenHash,
+      spaceId,
+      spaceName: space.name,
+      invitedEmail: normalizedEmail,
+      invitedRole: input.invitedRole || 'member',
+      invitedByUid: requesterUid,
+      invitedByName: requesterName,
+      tokenStatus: 'pending',
+      expiresAt,
+      accountExists,
+      emailDeliveryStatus: normalizedEmail ? 'not_configured_local_emulator' : 'not_applicable',
+      emailDeliveryMessage: normalizedEmail
+        ? 'Modo demonstração local: envio real de e-mail indisponível. Compartilhe o token gerado manualmente.'
+        : 'Convite aberto por token.',
+      requireEmailVerification: input.requireEmailVerification,
+      createdAt: now.toISOString(),
+    };
+
     const invites = loadDemoInvites();
     invites.push(invite);
     saveDemoInvites(invites);
 
-    await recordSpaceAuditEvent(auditInput, true);
+    await recordSpaceAuditEvent(
+      {
+        spaceId,
+        eventType: 'invite_created',
+        performedByUid: requesterUid,
+        performedByName: requesterName,
+        details: {
+          tokenHash,
+          invitedEmail: invite.invitedEmail,
+          role: invite.invitedRole,
+          expiresAt,
+        },
+        operationKey: `invite_create_${tokenHash}`,
+        timestamp: invite.createdAt,
+      },
+      true
+    );
 
     return { invite, rawToken };
   }
 
-  const firestoreInvite: Record<string, unknown> = { ...invite };
-  if (firestoreInvite.invitedEmail === undefined) {
-    delete firestoreInvite.invitedEmail;
-  }
+  const { httpsCallable } = await import('firebase/functions');
+  const { functions } = await import('./firebase');
 
-  await setDoc(doc(db, 'space_invites', tokenHash), firestoreInvite);
+  const callable = httpsCallable<
+    {
+      spaceId: string;
+      requesterName: string;
+      invitedEmail?: string;
+      invitedRole?: SpaceMemberRole;
+      expirationDays?: number;
+      requireEmailVerification?: boolean;
+    },
+    { invite: SpaceInvite; rawToken: string }
+  >(functions, 'createSpaceInviteOfficial');
 
-  await recordSpaceAuditEvent(auditInput, false);
+  const res = await callable({
+    spaceId,
+    requesterName,
+    ...(normalizedEmail !== undefined ? { invitedEmail: normalizedEmail } : {}),
+    invitedRole: input.invitedRole || 'member',
+    ...(input.expirationDays !== undefined ? { expirationDays: input.expirationDays } : {}),
+    ...(typeof input.requireEmailVerification === 'boolean'
+      ? { requireEmailVerification: input.requireEmailVerification }
+      : {}),
+  });
 
-  return { invite, rawToken };
+  return res.data;
 }
 
 /**
@@ -333,12 +371,45 @@ export async function getInviteByRawToken(
 
   const snap = await getDoc(doc(db, 'space_invites', tokenHash));
   if (!snap.exists()) return null;
-  return snap.data() as SpaceInvite;
+  return { ...(snap.data() as SpaceInvite), id: snap.id };
+}
+
+/**
+ * Lista convites pendentes destinados ao e-mail do usuário autenticado (Situação A e Situação B pós-cadastro).
+ */
+export async function getPendingInvitesForUser(
+  userEmail: string,
+  isDemo = false
+): Promise<SpaceInvite[]> {
+  const normalized = (userEmail || '').trim().toLowerCase();
+  if (!normalized) return [];
+
+  if (isDemo) {
+    const nowMs = Date.now();
+    return loadDemoInvites()
+      .filter((inv) => {
+        if (inv.tokenStatus !== 'pending') return false;
+        if ((inv.invitedEmail || '').trim().toLowerCase() !== normalized) return false;
+        const expMs = new Date(inv.expiresAt).getTime();
+        return !Number.isFinite(expMs) || expMs >= nowMs;
+      })
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  }
+
+  const { httpsCallable } = await import('firebase/functions');
+  const { functions } = await import('./firebase');
+
+  const callable = httpsCallable<Record<string, never>, { invites: SpaceInvite[] }>(
+    functions,
+    'getPendingSpaceInvitesOfficial'
+  );
+  const res = await callable({});
+  return res.data?.invites || [];
 }
 
 /**
  * Lista todos os convites emitidos para um espaço.
- * SEGURANÇA (Problema 1): Ex-participantes NÃO têm direito a consultar convites operacionais do espaço.
+ * SEGURANÇA: Ex-participantes NÃO têm direito a consultar convites operacionais do espaço.
  */
 export async function getSpaceInvites(
   spaceId: string,
@@ -349,11 +420,12 @@ export async function getSpaceInvites(
     throw new Error('Identificação do solicitante (requesterUid) é obrigatória para consultar convites.');
   }
 
-  // Exige participação ATIVA no espaço (allowHistorical = false)
   await getSpaceById(spaceId, requesterUid, isDemo, false);
 
   if (isDemo) {
-    return loadDemoInvites().filter((i) => i.spaceId === spaceId);
+    return loadDemoInvites()
+      .filter((i) => i.spaceId === spaceId)
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   }
 
   const q = query(
@@ -373,139 +445,162 @@ export async function getSpaceInvites(
   return result.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 }
 
+export interface AcceptInviteOptions {
+  requireEmailVerification?: boolean;
+}
+
+async function executeDemoAcceptInvite(
+  tokenHash: string,
+  user: { uid: string; displayName?: string; email?: string; emailVerified?: boolean },
+  options: AcceptInviteOptions = {}
+): Promise<{ space: Space; member: SpaceMember }> {
+  const cleanUid = user.uid.trim();
+  const operationKey = `invite_accept_${tokenHash}_${cleanUid}`;
+
+  const invites = loadDemoInvites();
+  const inviteIndex = invites.findIndex((i) => i.id === tokenHash);
+  if (inviteIndex === -1) {
+    throw new Error('Convite não encontrado ou token inválido.');
+  }
+
+  const invite = invites[inviteIndex];
+  if (invite.tokenStatus !== 'pending') {
+    throw new Error(`Este convite não pode ser utilizado pois seu status atual é: ${invite.tokenStatus}.`);
+  }
+
+  if (new Date(invite.expiresAt).getTime() < Date.now()) {
+    invites[inviteIndex] = { ...invite, tokenStatus: 'expired' };
+    saveDemoInvites(invites);
+    throw new Error('Este convite expirou e não pode mais ser aceito.');
+  }
+
+  if (invite.invitedEmail) {
+    const invitedNorm = invite.invitedEmail.trim().toLowerCase();
+    const userNorm = (user.email || '').trim().toLowerCase();
+    if (!userNorm || invitedNorm !== userNorm) {
+      throw new Error(`Este convite foi emitido especificamente para ${invite.invitedEmail}.`);
+    }
+  }
+
+  if ((options.requireEmailVerification || invite.requireEmailVerification) && user.emailVerified === false) {
+    throw new Error('Confirme seu endereço de e-mail antes de aceitar este convite.');
+  }
+
+  const spaces = JSON.parse(universalStorage.getItem('mpf_v3_demo_spaces') || '[]') as Space[];
+  const spaceIndex = spaces.findIndex((s) => s.id === invite.spaceId);
+  if (spaceIndex === -1) {
+    throw new Error('O espaço associado ao convite não foi encontrado.');
+  }
+
+  const space = spaces[spaceIndex];
+  if (space.spaceStatus === 'archived') {
+    throw new Error('Não é possível ingressar em um espaço que se encontra arquivado.');
+  }
+
+  if (space.memberUids.includes(cleanUid)) {
+    throw new Error('Você já é um participante ativo deste espaço.');
+  }
+
+  const now = new Date().toISOString();
+
+  const updatedInvite: SpaceInvite = {
+    ...invite,
+    tokenStatus: 'accepted',
+    acceptedByUid: cleanUid,
+    acceptedByName: user.displayName || 'Novo Participante',
+    acceptedAt: now,
+  };
+  invites[inviteIndex] = updatedInvite;
+  saveDemoInvites(invites);
+
+  const updatedHistoricalUids = Array.from(
+    new Set([...(space.historicalMemberUids || space.memberUids), cleanUid])
+  );
+  const updatedSpace: Space = {
+    ...space,
+    memberUids: [...space.memberUids, cleanUid],
+    historicalMemberUids: updatedHistoricalUids,
+  };
+  spaces[spaceIndex] = updatedSpace;
+  universalStorage.setItem('mpf_v3_demo_spaces', JSON.stringify(spaces));
+
+  const memberKey = `mpf_v3_demo_space_members_${space.id}`;
+  const members = JSON.parse(universalStorage.getItem(memberKey) || '[]') as SpaceMember[];
+  const existingMemberIdx = members.findIndex((m) => m.uid === cleanUid);
+
+  const newMember: SpaceMember = {
+    id: cleanUid,
+    spaceId: space.id,
+    uid: cleanUid,
+    displayName: user.displayName?.trim() || 'Novo Participante',
+    contactEmail: user.email?.trim() || '',
+    role: invite.invitedRole || 'member',
+    participationStatus: 'active',
+    invitedAt: invite.createdAt,
+    joinedAt: now,
+  };
+
+  if (existingMemberIdx >= 0) {
+    members[existingMemberIdx] = newMember;
+  } else {
+    members.push(newMember);
+  }
+  universalStorage.setItem(memberKey, JSON.stringify(members));
+
+  const auditInput = {
+    spaceId: space.id,
+    eventType: 'invite_accepted' as const,
+    performedByUid: cleanUid,
+    performedByName: newMember.displayName,
+    targetUid: cleanUid,
+    details: { role: newMember.role, tokenHash },
+    operationKey,
+    timestamp: now,
+  };
+  const eventId = generateDeterministicAuditEventId(auditInput);
+
+  await recordSpaceAuditEvent({ ...auditInput, eventId }, true);
+
+  await sendSpaceNotification(
+    {
+      userId: space.creatorUid,
+      spaceId: space.id,
+      spaceName: space.name,
+      type: 'invite_accepted',
+      title: 'Novo Participante no Espaço',
+      message: `${newMember.displayName} aceitou o convite e ingressou no espaço "${space.name}".`,
+      senderUid: cleanUid,
+      originEventId: eventId,
+      governanceEventType: 'invite_accepted',
+    },
+    true
+  );
+
+  return { space: updatedSpace, member: newMember };
+}
+
 /**
- * Aceitação atômica de convite por usuário autenticado.
- * REQUISITOS:
- * - O convite deve estar pendente e não expirado.
- * - O espaço não pode estar arquivado.
- * - O usuário não pode ser participante ativo duplicado.
- * - Vinculação atômica do UID real à lista de membros e a memberUids.
+ * Aceitação atômica de convite por usuário autenticado usando o token bruto.
  */
 export async function acceptSpaceInvite(
   rawToken: string,
-  user: { uid: string; displayName?: string; email?: string },
-  isDemo = false
+  user: { uid: string; displayName?: string; email?: string; emailVerified?: boolean },
+  isDemo = false,
+  options: AcceptInviteOptions = {}
 ): Promise<{ space: Space; member: SpaceMember }> {
   if (!user || !user.uid || !user.uid.trim()) {
     throw new Error('É obrigatório estar autenticado com um UID válido para aceitar o convite.');
   }
 
   const cleanUid = user.uid.trim();
-  const tokenHash = await hashToken(rawToken);
+  const cleanToken = extractInviteToken(rawToken);
+  const tokenHash = await hashToken(cleanToken);
   const operationKey = `invite_accept_${tokenHash}_${cleanUid}`;
 
   if (isDemo) {
-    const invites = loadDemoInvites();
-    const inviteIndex = invites.findIndex((i) => i.id === tokenHash);
-    if (inviteIndex === -1) {
-      throw new Error('Convite não encontrado ou token inválido.');
-    }
-
-    const invite = invites[inviteIndex];
-    if (invite.tokenStatus !== 'pending') {
-      throw new Error(`Este convite não pode ser utilizado pois seu status atual é: ${invite.tokenStatus}.`);
-    }
-
-    if (new Date(invite.expiresAt).getTime() < Date.now()) {
-      invites[inviteIndex] = { ...invite, tokenStatus: 'expired' };
-      saveDemoInvites(invites);
-      throw new Error('Este convite expirou e não pode mais ser aceito.');
-    }
-
-    const spaces = JSON.parse(universalStorage.getItem('mpf_v3_demo_spaces') || '[]') as Space[];
-    const spaceIndex = spaces.findIndex((s) => s.id === invite.spaceId);
-    if (spaceIndex === -1) {
-      throw new Error('O espaço associado ao convite não foi encontrado.');
-    }
-
-    const space = spaces[spaceIndex];
-    if (space.spaceStatus === 'archived') {
-      throw new Error('Não é possível ingressar em um espaço que se encontra arquivado.');
-    }
-
-    if (space.memberUids.includes(cleanUid)) {
-      throw new Error('Você já é um participante ativo deste espaço.');
-    }
-
-    const now = new Date().toISOString();
-
-    const updatedInvite: SpaceInvite = {
-      ...invite,
-      tokenStatus: 'accepted',
-      acceptedByUid: cleanUid,
-      acceptedByName: user.displayName || 'Novo Participante',
-      acceptedAt: now,
-    };
-    invites[inviteIndex] = updatedInvite;
-    saveDemoInvites(invites);
-
-    const updatedHistoricalUids = Array.from(
-      new Set([...(space.historicalMemberUids || space.memberUids), cleanUid])
-    );
-    const updatedSpace: Space = {
-      ...space,
-      memberUids: [...space.memberUids, cleanUid],
-      historicalMemberUids: updatedHistoricalUids,
-    };
-    spaces[spaceIndex] = updatedSpace;
-    universalStorage.setItem('mpf_v3_demo_spaces', JSON.stringify(spaces));
-
-    const memberKey = `mpf_v3_demo_space_members_${space.id}`;
-    const members = JSON.parse(universalStorage.getItem(memberKey) || '[]') as SpaceMember[];
-    const existingMemberIdx = members.findIndex((m) => m.uid === cleanUid);
-
-    const newMember: SpaceMember = {
-      id: cleanUid,
-      spaceId: space.id,
-      uid: cleanUid,
-      displayName: user.displayName?.trim() || 'Novo Participante',
-      contactEmail: user.email?.trim() || '',
-      role: invite.invitedRole || 'member',
-      participationStatus: 'active',
-      invitedAt: invite.createdAt,
-      joinedAt: now,
-    };
-
-    if (existingMemberIdx >= 0) {
-      members[existingMemberIdx] = newMember;
-    } else {
-      members.push(newMember);
-    }
-    universalStorage.setItem(memberKey, JSON.stringify(members));
-
-    const auditInput = {
-      spaceId: space.id,
-      eventType: 'invite_accepted' as const,
-      performedByUid: cleanUid,
-      performedByName: newMember.displayName,
-      targetUid: cleanUid,
-      details: { role: newMember.role, tokenHash },
-      operationKey,
-      timestamp: now,
-    };
-    const eventId = generateDeterministicAuditEventId(auditInput);
-
-    await recordSpaceAuditEvent({ ...auditInput, eventId }, true);
-
-    await sendSpaceNotification(
-      {
-        userId: space.creatorUid,
-        spaceId: space.id,
-        spaceName: space.name,
-        type: 'invite_accepted',
-        title: 'Novo Participante no Espaço',
-        message: `${newMember.displayName} aceitou o convite e ingressou no espaço "${space.name}".`,
-        senderUid: cleanUid,
-        originEventId: eventId,
-        governanceEventType: 'invite_accepted',
-      },
-      true
-    );
-
-    return { space: updatedSpace, member: newMember };
+    return executeDemoAcceptInvite(tokenHash, user, options);
   }
 
-  // Execução atômica server-side via Cloud Function (Admin SDK) no Functions Emulator / Produção
   const { httpsCallable } = await import('firebase/functions');
   const { functions } = await import('./firebase');
 
@@ -515,12 +610,13 @@ export async function acceptSpaceInvite(
       tokenHash: string;
       user: { uid: string; displayName?: string; email?: string };
       operationKey: string;
+      requireEmailVerification?: boolean;
     },
     { space: Space; member: SpaceMember }
   >(functions, 'acceptSpaceInviteOfficial');
 
   const response = await callable({
-    rawToken,
+    rawToken: cleanToken,
     tokenHash,
     user: {
       uid: cleanUid,
@@ -528,20 +624,79 @@ export async function acceptSpaceInvite(
       email: user.email,
     },
     operationKey,
+    requireEmailVerification: options.requireEmailVerification,
   });
 
   return response.data;
 }
 
 /**
- * Rejeição formal de convite por usuário autenticado.
+ * Aceitação atômica diretamente pelo tokenHash (Inbox / convites nominais ao e-mail autenticado).
+ */
+export async function acceptSpaceInviteByTokenHash(
+  tokenHash: string,
+  user: { uid: string; displayName?: string; email?: string; emailVerified?: boolean },
+  isDemo = false,
+  options: AcceptInviteOptions = {}
+): Promise<{ space: Space; member: SpaceMember }> {
+  if (!user || !user.uid || !user.uid.trim()) {
+    throw new Error('É obrigatório estar autenticado com um UID válido para aceitar o convite.');
+  }
+  if (!tokenHash || !tokenHash.trim()) {
+    throw new Error('Identificador de convite inválido.');
+  }
+
+  const cleanUid = user.uid.trim();
+  const cleanHash = tokenHash.trim();
+
+  if (isDemo) {
+    return executeDemoAcceptInvite(cleanHash, user, options);
+  }
+
+  const { httpsCallable } = await import('firebase/functions');
+  const { functions } = await import('./firebase');
+
+  const callable = httpsCallable<
+    {
+      tokenHash: string;
+      user: { uid: string; displayName?: string; email?: string };
+      operationKey: string;
+      requireEmailVerification?: boolean;
+    },
+    { space: Space; member: SpaceMember }
+  >(functions, 'acceptSpaceInviteOfficial');
+
+  const response = await callable({
+    tokenHash: cleanHash,
+    user: {
+      uid: cleanUid,
+      displayName: user.displayName,
+      email: user.email,
+    },
+    operationKey: `invite_accept_${cleanHash}_${cleanUid}`,
+    requireEmailVerification: options.requireEmailVerification,
+  });
+
+  return response.data;
+}
+
+/**
+ * Rejeição formal de convite por usuário autenticado (suporta token bruto ou tokenHash nominal).
  */
 export async function rejectSpaceInvite(
-  rawToken: string,
-  user: { uid: string; displayName?: string },
-  isDemo = false
+  rawTokenOrHash: string,
+  user: { uid: string; displayName?: string; email?: string },
+  isDemo = false,
+  options: { isTokenHash?: boolean } = {}
 ): Promise<void> {
-  const tokenHash = await hashToken(rawToken);
+  if (!user?.uid?.trim()) {
+    throw new Error('Autenticação obrigatória para recusar convite.');
+  }
+
+  const cleanInput = options.isTokenHash
+    ? rawTokenOrHash.trim()
+    : extractInviteToken(rawTokenOrHash);
+  const tokenHash = options.isTokenHash ? cleanInput : await hashToken(cleanInput);
   const now = new Date().toISOString();
   const operationKey = `invite_reject_${tokenHash}_${user.uid}`;
 
@@ -574,35 +729,30 @@ export async function rejectSpaceInvite(
       },
       true
     );
-
     return;
   }
 
-  const inviteSnap = await getDoc(doc(db, 'space_invites', tokenHash));
-  if (!inviteSnap.exists()) throw new Error('Convite não encontrado.');
-  const invite = inviteSnap.data() as SpaceInvite;
-  if (invite.tokenStatus !== 'pending') {
-    throw new Error('Este convite não está pendente.');
-  }
+  const { httpsCallable } = await import('firebase/functions');
+  const { functions } = await import('./firebase');
 
-  await updateDoc(doc(db, 'space_invites', tokenHash), {
-    tokenStatus: 'rejected',
-    rejectedByUid: user.uid,
-    rejectedAt: now,
-  });
-
-  await recordSpaceAuditEvent(
+  const callable = httpsCallable<
     {
-      spaceId: invite.spaceId,
-      eventType: 'invite_rejected',
-      performedByUid: user.uid,
-      performedByName: user.displayName || 'Usuário Convidado',
-      details: { tokenHash },
-      operationKey,
-      timestamp: now,
+      rawToken?: string;
+      tokenHash: string;
+      user: { uid: string; displayName?: string; email?: string };
     },
-    false
-  );
+    { ok: boolean }
+  >(functions, 'rejectSpaceInviteOfficial');
+
+  await callable({
+    rawToken: options.isTokenHash ? undefined : cleanInput,
+    tokenHash,
+    user: {
+      uid: user.uid,
+      displayName: user.displayName,
+      email: user.email,
+    },
+  });
 }
 
 /**
@@ -652,31 +802,13 @@ export async function revokeSpaceInvite(
     return;
   }
 
-  const inviteSnap = await getDoc(doc(db, 'space_invites', tokenHash));
-  if (!inviteSnap.exists()) throw new Error('Convite não encontrado.');
-  const invite = inviteSnap.data() as SpaceInvite;
-  if (invite.tokenStatus !== 'pending') {
-    throw new Error('Apenas convites pendentes podem ser revogados.');
-  }
+  const { httpsCallable } = await import('firebase/functions');
+  const { functions } = await import('./firebase');
 
-  await getSpaceById(invite.spaceId, requesterUid, false, false);
+  const callable = httpsCallable<
+    { tokenHash: string; requesterName: string },
+    { ok: boolean }
+  >(functions, 'revokeSpaceInviteOfficial');
 
-  await updateDoc(doc(db, 'space_invites', tokenHash), {
-    tokenStatus: 'revoked',
-    revokedByUid: requesterUid,
-    revokedAt: now,
-  });
-
-  await recordSpaceAuditEvent(
-    {
-      spaceId: invite.spaceId,
-      eventType: 'invite_revoked',
-      performedByUid: requesterUid,
-      performedByName: requesterName,
-      details: { tokenHash },
-      operationKey,
-      timestamp: now,
-    },
-    false
-  );
+  await callable({ tokenHash, requesterName });
 }

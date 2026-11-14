@@ -1,9 +1,12 @@
 import React, { useState } from 'react';
 import { Space, Transaction } from '../types/finance';
+import { SpaceInvite } from '../types/financeV3';
 import { formatCurrency } from '../utils/financeEngine';
 
 interface PendingDisputesViewProps {
   spaces: Space[];
+  spaceInvites?: SpaceInvite[];
+  userEmailVerified?: boolean;
   transactions: Transaction[];
   userEmail: string;
   userUid?: string;
@@ -12,6 +15,8 @@ interface PendingDisputesViewProps {
   onClearAllSpaceNotifs: (txIds: string[]) => void;
   onAcceptSpaceInvite: (spaceId: string) => Promise<void>;
   onDeclineSpaceInvite: (spaceId: string) => Promise<void>;
+  onAcceptV3SpaceInvite?: (invite: SpaceInvite) => Promise<void>;
+  onDeclineV3SpaceInvite?: (invite: SpaceInvite) => Promise<void>;
   onAcceptSplit: (tx: Transaction) => Promise<void>;
   onRejectSplit: (tx: Transaction, reason: string) => Promise<void>;
   onProposeNewValue: (
@@ -28,6 +33,8 @@ interface PendingDisputesViewProps {
 
 export const PendingDisputesView: React.FC<PendingDisputesViewProps> = ({
   spaces,
+  spaceInvites = [],
+  userEmailVerified = true,
   transactions,
   userEmail,
   userUid,
@@ -36,6 +43,8 @@ export const PendingDisputesView: React.FC<PendingDisputesViewProps> = ({
   onClearAllSpaceNotifs,
   onAcceptSpaceInvite,
   onDeclineSpaceInvite,
+  onAcceptV3SpaceInvite,
+  onDeclineV3SpaceInvite,
   onAcceptSplit,
   onRejectSplit,
   onProposeNewValue,
@@ -48,6 +57,7 @@ export const PendingDisputesView: React.FC<PendingDisputesViewProps> = ({
   const [proposedVal, setProposedVal] = useState('');
   const [disputeNote, setDisputeNote] = useState('');
   const [processingTxId, setProcessingTxId] = useState<string | null>(null);
+  const [processingInviteId, setProcessingInviteId] = useState<string | null>(null);
 
   // 1. Convites para Novos Espaços / Grupos onde o usuário atual está com status 'invited' (Pendente)
   const pendingSpaceInvites = spaces.filter((sp) =>
@@ -57,6 +67,8 @@ export const PendingDisputesView: React.FC<PendingDisputesViewProps> = ({
         p.status === 'invited'
     )
   );
+  const totalPendingSpaceInvitesCount =
+    spaceInvites.length + pendingSpaceInvites.length;
 
   // 2. Despesas Avulsas (Fora de Espaço: !tx.spaceId) que aguardam aceite, cotação ou contraproposta
   const adhocInboxItems = transactions.filter((tx) => {
@@ -162,14 +174,21 @@ export const PendingDisputesView: React.FC<PendingDisputesViewProps> = ({
 
       {/* 1. Convites para Entrar em Novos Espaços / Grupos */}
       <div>
-        <h3 className="text-sm font-bold text-indigo-300 mb-3 flex items-center gap-2">
-          <i className="ph-fill ph-users-three text-lg text-indigo-400"></i>
-          <span>
-            1. Convites para Novos Espaços / Grupos ({pendingSpaceInvites.length})
-          </span>
-        </h3>
+        <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+          <h3 className="text-sm font-bold text-indigo-300 flex items-center gap-2">
+            <i className="ph-fill ph-users-three text-lg text-indigo-400"></i>
+            <span>
+              1. Convites para Novos Espaços / Grupos ({totalPendingSpaceInvitesCount})
+            </span>
+          </h3>
+          {!userEmailVerified && totalPendingSpaceInvitesCount > 0 && (
+            <span className="px-2.5 py-1 rounded-lg bg-amber-500/15 border border-amber-500/35 text-amber-200 text-[11px] font-semibold">
+              Confirme seu e-mail para aceitar convites de espaços.
+            </span>
+          )}
+        </div>
 
-        {pendingSpaceInvites.length === 0 ? (
+        {totalPendingSpaceInvitesCount === 0 ? (
           <div className="bg-slate-800/60 border border-slate-700/70 rounded-2xl p-4 text-xs text-slate-400 flex items-center gap-2.5">
             <i className="ph-fill ph-check-circle text-emerald-400 text-base"></i>
             <span>
@@ -178,6 +197,100 @@ export const PendingDisputesView: React.FC<PendingDisputesViewProps> = ({
           </div>
         ) : (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            {spaceInvites.map((inv) => {
+              const isBusy = processingInviteId === inv.id;
+              return (
+                <div
+                  key={inv.id}
+                  className="bg-slate-800 border border-indigo-500/40 rounded-3xl p-5 flex flex-col justify-between gap-4"
+                >
+                  <div>
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex items-center gap-3">
+                        <div className="w-11 h-11 rounded-2xl bg-indigo-500/15 border border-indigo-500/30 text-indigo-400 flex items-center justify-center shrink-0">
+                          <i className="ph-fill ph-envelope-open text-2xl"></i>
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="px-2 py-0.5 rounded-md bg-amber-500/15 border border-amber-500/30 text-amber-300 text-[10px] font-bold uppercase tracking-wider">
+                              Convite Pendente
+                            </span>
+                            <span className="px-2 py-0.5 rounded-md bg-indigo-500/15 border border-indigo-500/30 text-indigo-200 text-[10px] font-semibold">
+                              {inv.invitedRole === 'admin'
+                                ? 'Administrador'
+                                : inv.invitedRole === 'owner'
+                                ? 'Proprietário'
+                                : 'Membro'}
+                            </span>
+                          </div>
+                          <h4 className="text-base font-bold text-white mt-1">
+                            {inv.spaceName}
+                          </h4>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="mt-3 p-3 rounded-2xl bg-slate-900/80 border border-slate-700/70 text-xs text-slate-300 space-y-1">
+                      <div>
+                        Convidado por:{' '}
+                        <strong className="text-white">{inv.invitedByName}</strong>
+                      </div>
+                      <div className="text-[11px] text-slate-400">
+                        E-mail convidado:{' '}
+                        <span className="font-mono text-slate-300">
+                          {inv.invitedEmail || userEmail}
+                        </span>{' '}
+                        · Validade:{' '}
+                        {new Date(inv.expiresAt).toLocaleDateString('pt-BR')}
+                      </div>
+                      {!userEmailVerified && (
+                        <div className="text-[11px] text-amber-300 pt-1">
+                          Verifique seu endereço de e-mail para liberar o aceite.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2 pt-3 border-t border-slate-700/60">
+                    <button
+                      type="button"
+                      disabled={isBusy || !userEmailVerified || !onAcceptV3SpaceInvite}
+                      onClick={async () => {
+                        if (!onAcceptV3SpaceInvite) return;
+                        setProcessingInviteId(inv.id);
+                        try {
+                          await onAcceptV3SpaceInvite(inv);
+                        } finally {
+                          setProcessingInviteId(null);
+                        }
+                      }}
+                      className="flex-1 py-2.5 px-3.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer"
+                    >
+                      <i className="ph-bold ph-check-circle"></i>
+                      <span>{isBusy ? 'Processando...' : 'Aceitar Entrada no Espaço'}</span>
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isBusy || !onDeclineV3SpaceInvite}
+                      onClick={async () => {
+                        if (!onDeclineV3SpaceInvite) return;
+                        setProcessingInviteId(inv.id);
+                        try {
+                          await onDeclineV3SpaceInvite(inv);
+                        } finally {
+                          setProcessingInviteId(null);
+                        }
+                      }}
+                      className="py-2.5 px-3.5 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 disabled:opacity-50 border border-rose-500/30 text-rose-300 text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer"
+                    >
+                      <i className="ph-bold ph-x-circle"></i>
+                      <span>Recusar</span>
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+
             {pendingSpaceInvites.map((sp) => (
               <div
                 key={sp.id}
@@ -224,8 +337,9 @@ export const PendingDisputesView: React.FC<PendingDisputesViewProps> = ({
                 <div className="flex flex-wrap items-center gap-2 pt-3 border-t border-slate-700/60">
                   <button
                     type="button"
+                    disabled={!userEmailVerified}
                     onClick={() => onAcceptSpaceInvite(sp.id)}
-                    className="flex-1 py-2.5 px-3.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer"
+                    className="flex-1 py-2.5 px-3.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer"
                   >
                     <i className="ph-bold ph-check-circle"></i>
                     <span>Aceitar Entrada no Grupo</span>

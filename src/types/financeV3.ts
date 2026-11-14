@@ -216,6 +216,9 @@ export interface CreditCardInvoiceCharge {
   categoryId: string;
   categoryName: string;
   status: 'active' | 'cancelled';
+  installmentNumber?: number;
+  totalInstallments?: number;
+  contractId?: string;
   createdAt: ISO8601String;
   updatedAt: ISO8601String;
 }
@@ -755,6 +758,14 @@ export interface SpaceInvite {
   tokenStatus: SpaceInviteTokenStatus;
   /** Data de expiração ISO-8601 (prazo padrão configurável, ex: 15 dias, aguardando aprovação definitiva) */
   expiresAt: ISO8601String;
+  /** Situação A vs B: indica se o e-mail convidado já pertence a conta cadastrada no momento da criação */
+  recipientUid?: string;
+  accountExists?: boolean;
+  /** Estado real e transparente da tentativa de entrega de e-mail transacional */
+  emailDeliveryStatus?: 'sent' | 'not_configured_local_emulator' | 'failed' | 'not_applicable';
+  emailDeliveryMessage?: string;
+  /** Quando true, exige explicitamente request.auth.token.email_verified === true no backend */
+  requireEmailVerification?: boolean;
   acceptedByUid?: string;
   acceptedByName?: string;
   acceptedAt?: ISO8601String;

@@ -31,6 +31,7 @@ import {
   InstallmentContractStatus,
   InstallmentOccurrence,
   InstallmentOccurrenceStatus,
+  CreditCardInvoiceCharge,
   PersonalTransaction,
   PersonalTransactionType,
   CentsInteger,
@@ -41,7 +42,13 @@ import {
 import { validatePositiveCents } from '../utils/movementLedger';
 import { universalStorage } from '../utils/universalStorage';
 import { withDemoLock } from './ledgerService';
-import { loadDemoInvoices, saveDemoInvoices } from './creditCardService';
+import {
+  loadDemoInvoices,
+  saveDemoInvoices,
+  loadDemoCardCharges,
+  saveDemoCardCharges,
+  cancelDemoCardChargeById,
+} from './creditCardService';
 import { loadDemoTransactions, saveDemoTransactions } from './personalTransactionService';
 
 // ------------------------------------------------------------------------------
@@ -612,8 +619,33 @@ export async function createInstallmentContract(
 
         occurrences.push(occurrenceDoc);
 
-        // Se fundingSource for cartão de crédito em demo, projeta nas faturas
+        // Se fundingSource for cartão de crédito em demo, projeta nas faturas e registra charge individual
         if (isCredit && params.sourceCardAccountId) {
+          const demoCharges = loadDemoCardCharges();
+          const chargeId = `chg_${contractId}_${occId}`;
+          if (!demoCharges.some((c) => c.id === chargeId)) {
+            const chargeDoc: CreditCardInvoiceCharge = {
+              id: chargeId,
+              transactionId: contractId,
+              accountId: params.sourceCardAccountId,
+              userId: params.userId,
+              invoiceMonth: compMonth,
+              description: `${params.title.trim()} (${i}/${params.totalInstallmentsCount})`,
+              amountCents: principalAmountCents,
+              purchaseDate: dueDate,
+              categoryId: 'installment',
+              categoryName: 'Parcelamento',
+              status: 'active',
+              installmentNumber: i,
+              totalInstallments: params.totalInstallmentsCount,
+              contractId,
+              createdAt: now,
+              updatedAt: now,
+            };
+            demoCharges.push(chargeDoc);
+            saveDemoCardCharges(demoCharges);
+          }
+
           const invoices = loadDemoInvoices();
           let inv = invoices.find(
             (invItem) =>
@@ -709,6 +741,10 @@ export async function cancelInstallmentContract(
           cancelledCount++;
 
           if (contract.fundingSource === 'credit_card' && contract.sourceCardAccountId) {
+            cancelDemoCardChargeById(
+              contract.sourceCardAccountId,
+              `chg_${params.contractId}_${occ.id}`
+            );
             const inv = invoices.find(
               (inv) => inv.accountId === contract.sourceCardAccountId && inv.invoiceMonth === occ.competenceMonth
             );

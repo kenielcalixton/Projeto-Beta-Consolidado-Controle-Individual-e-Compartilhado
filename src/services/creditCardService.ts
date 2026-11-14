@@ -13,11 +13,15 @@ import {
   CentsInteger,
   CompetenceMonthString,
   CreditCardInvoice,
+  CreditCardInvoiceCharge,
   CreditCardInvoiceStatus,
   DateString,
   FinancialMovement,
+  InstallmentContract,
+  InstallmentOccurrence,
   InvoiceCarryOver,
   InvoicePayment,
+  PersonalTransaction,
 } from '../types/financeV3';
 import { recordMovement, withDemoLock } from './ledgerService';
 import { getUserAccounts } from './accountService';
@@ -43,6 +47,64 @@ import { generateMovementDocId, validatePositiveCents } from '../utils/movementL
 const DEMO_INVOICES_KEY = 'mpf_v3_demo_card_invoices';
 const DEMO_INVOICE_PAYMENTS_KEY = 'mpf_v3_demo_invoice_payments';
 const DEMO_INVOICE_CARRY_OVERS_KEY = 'mpf_v3_demo_invoice_carry_overs';
+const DEMO_CARD_CHARGES_KEY = 'mpf_v3_demo_card_charges';
+
+export function loadDemoCardCharges(): CreditCardInvoiceCharge[] {
+  try {
+    const raw = universalStorage.getItem(DEMO_CARD_CHARGES_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveDemoCardCharges(charges: CreditCardInvoiceCharge[]): void {
+  try {
+    universalStorage.setItem(DEMO_CARD_CHARGES_KEY, JSON.stringify(charges));
+  } catch (err) {
+    console.warn('[DemoCardCharges] Erro ao salvar compras de cartão:', err);
+  }
+}
+
+export function cancelDemoCardChargeByTransactionId(
+  cardAccountId: string,
+  transactionId: string
+): void {
+  if (!cardAccountId || !transactionId) return;
+  const charges = loadDemoCardCharges();
+  let modified = false;
+  const now = new Date().toISOString();
+  const updated = charges.map((c) => {
+    if (
+      c.accountId === cardAccountId &&
+      (c.transactionId === transactionId || c.id === transactionId) &&
+      c.status !== 'cancelled'
+    ) {
+      modified = true;
+      return { ...c, status: 'cancelled' as const, updatedAt: now };
+    }
+    return c;
+  });
+  if (modified) saveDemoCardCharges(updated);
+}
+
+export function cancelDemoCardChargeById(
+  cardAccountId: string,
+  chargeId: string
+): void {
+  if (!cardAccountId || !chargeId) return;
+  const charges = loadDemoCardCharges();
+  let modified = false;
+  const now = new Date().toISOString();
+  const updated = charges.map((c) => {
+    if (c.accountId === cardAccountId && c.id === chargeId && c.status !== 'cancelled') {
+      modified = true;
+      return { ...c, status: 'cancelled' as const, updatedAt: now };
+    }
+    return c;
+  });
+  if (modified) saveDemoCardCharges(updated);
+}
 
 export function loadDemoInvoices(): CreditCardInvoice[] {
   try {
@@ -198,6 +260,18 @@ export async function getOrCreateCardInvoice(
   return buildEmptyCardInvoice(cardAccount, invoiceMonth, userId);
 }
 
+export interface AttachPurchaseChargeOptions {
+  idempotencyKey?: string;
+  transactionId?: string;
+  description?: string;
+  categoryId?: string;
+  categoryName?: string;
+  installmentNumber?: number;
+  totalInstallments?: number;
+  contractId?: string;
+  chargeId?: string;
+}
+
 /**
  * Adiciona compra no cartão à fatura correspondente (interno em demo).
  */
@@ -205,7 +279,8 @@ export function attachPurchaseToInvoiceDemoSync(
   cardAccount: Account,
   amountCents: CentsInteger,
   purchaseDate: DateString,
-  userId: string
+  userId: string,
+  options?: AttachPurchaseChargeOptions
 ): CreditCardInvoice {
   if (cardAccount.type !== 'credit') {
     throw new Error(`A conta "${cardAccount.name}" não é um cartão de crédito.`);
@@ -244,13 +319,14 @@ export function attachPurchaseToInvoiceDemoSync(
     }
   }
 
+  const nowIso = new Date().toISOString();
   const updatedInvoice: CreditCardInvoice = {
     ...invoice,
     totalPurchasesAmountCents: newPurchasesTotal,
     totalDueAmountCents: newTotalDue,
     remainingBalanceCents: newRemaining,
     invoiceStatus: status,
-    updatedAt: new Date().toISOString(),
+    updatedAt: nowIso,
   };
 
   const idx = invoices.findIndex(
@@ -259,6 +335,34 @@ export function attachPurchaseToInvoiceDemoSync(
   if (idx >= 0) invoices[idx] = updatedInvoice;
   else invoices.push(updatedInvoice);
   saveDemoInvoices(invoices);
+
+  // Persiste lançamento detalhado de compra na fatura em modo demo
+  const charges = loadDemoCardCharges();
+  const chargeId =
+    options?.chargeId ||
+    options?.transactionId ||
+    `chg_${cardAccount.id}_${invoiceMonth}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+  if (!charges.some((c) => c.accountId === cardAccount.id && c.id === chargeId)) {
+    charges.push({
+      id: chargeId,
+      transactionId: options?.transactionId || chargeId,
+      accountId: cardAccount.id,
+      userId,
+      invoiceMonth,
+      description: options?.description?.trim() || 'Compra no cartão de crédito',
+      amountCents,
+      purchaseDate,
+      categoryId: options?.categoryId || 'uncategorized',
+      categoryName: options?.categoryName || 'Geral',
+      status: 'active',
+      installmentNumber: options?.installmentNumber,
+      totalInstallments: options?.totalInstallments,
+      contractId: options?.contractId,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    });
+    saveDemoCardCharges(charges);
+  }
 
   return updatedInvoice;
 }
@@ -272,7 +376,7 @@ export async function attachPurchaseToInvoice(
   purchaseDate: DateString,
   userId: string,
   isDemo = false,
-  options?: { idempotencyKey?: string; transactionId?: string; description?: string }
+  options?: AttachPurchaseChargeOptions
 ): Promise<CreditCardInvoice> {
   if (!validatePositiveCents(amountCents)) {
     throw new Error('O valor da compra no cartão deve ser um inteiro positivo em centavos.');
@@ -280,7 +384,7 @@ export async function attachPurchaseToInvoice(
 
   if (isDemo) {
     return withDemoLock(async () =>
-      attachPurchaseToInvoiceDemoSync(cardAccount, amountCents, purchaseDate, userId)
+      attachPurchaseToInvoiceDemoSync(cardAccount, amountCents, purchaseDate, userId, options)
     );
   }
 
@@ -728,5 +832,312 @@ export async function calculateCardAvailableLimit(
     creditLimitCents: totalLimit,
     usedAmountCents: totalUsed,
     availableLimitCents: available,
+  };
+}
+
+/**
+ * Consulta as compras/lançamentos alocados a uma fatura específica do cartão.
+ */
+export async function getInvoiceCharges(
+  cardAccountId: string,
+  invoiceMonth: CompetenceMonthString,
+  isDemo = false
+): Promise<CreditCardInvoiceCharge[]> {
+  if (!cardAccountId || !invoiceMonth) return [];
+
+  if (isDemo) {
+    return loadDemoCardCharges()
+      .filter((c) => c.accountId === cardAccountId && c.invoiceMonth === invoiceMonth)
+      .sort((a, b) => (b.purchaseDate || '').localeCompare(a.purchaseDate || ''));
+  }
+
+  const snap = await getDocs(
+    collection(db, 'accounts', cardAccountId, 'invoices', invoiceMonth, 'charges')
+  );
+  const list: CreditCardInvoiceCharge[] = [];
+  snap.forEach((d) => {
+    const raw = d.data() as CreditCardInvoiceCharge;
+    list.push({ ...raw, id: d.id || raw.id });
+  });
+  return list.sort((a, b) => (b.purchaseDate || '').localeCompare(a.purchaseDate || ''));
+}
+
+/**
+ * Consulta todas as compras alocadas em todas as faturas de um cartão.
+ */
+export async function getAllCardCharges(
+  cardAccountId: string,
+  userId: string,
+  invoices?: CreditCardInvoice[],
+  isDemo = false
+): Promise<CreditCardInvoiceCharge[]> {
+  if (!cardAccountId || !userId) return [];
+
+  if (isDemo) {
+    return loadDemoCardCharges()
+      .filter((c) => c.accountId === cardAccountId && c.userId === userId)
+      .sort((a, b) => (b.purchaseDate || '').localeCompare(a.purchaseDate || ''));
+  }
+
+  const invList = invoices || (await getCardInvoices(cardAccountId, userId, false));
+  const perMonth = await Promise.all(
+    invList.map((inv) =>
+      getInvoiceCharges(cardAccountId, inv.invoiceMonth, false).catch(() => [])
+    )
+  );
+  return perMonth
+    .flat()
+    .sort((a, b) => (b.purchaseDate || '').localeCompare(a.purchaseDate || ''));
+}
+
+/**
+ * Consulta todos os pagamentos realizados para todas as faturas de um cartão.
+ */
+export async function getAllCardPayments(
+  cardAccountId: string,
+  invoices: CreditCardInvoice[],
+  isDemo = false
+): Promise<InvoicePayment[]> {
+  if (!cardAccountId) return [];
+
+  if (isDemo) {
+    return loadDemoInvoicePayments()
+      .filter((p) => p.accountId === cardAccountId)
+      .sort((a, b) => (b.paymentDate || '').localeCompare(a.paymentDate || ''));
+  }
+
+  const perMonth = await Promise.all(
+    invoices.map((inv) =>
+      getInvoicePayments(cardAccountId, inv.invoiceMonth, false).catch(() => [])
+    )
+  );
+  return perMonth
+    .flat()
+    .sort((a, b) => (b.paymentDate || '').localeCompare(a.paymentDate || ''));
+}
+
+export interface CardLedgerOverview {
+  cardAccount: Account;
+  limitSummary: {
+    creditLimitCents: CentsInteger;
+    usedAmountCents: CentsInteger;
+    availableLimitCents: CentsInteger;
+  };
+  invoices: CreditCardInvoice[];
+  charges: CreditCardInvoiceCharge[];
+  payments: InvoicePayment[];
+  contracts: InstallmentContract[];
+  occurrencesByContract: Record<string, InstallmentOccurrence[]>;
+}
+
+/**
+ * Carrega a visão completa e unificada do Livro-Razão do Cartão de Crédito:
+ * Limite, Faturas (atual, futuras, pagas), Compras à vista e Parceladas, e Pagamentos realizados.
+ */
+export async function getCardLedgerOverview(
+  cardAccount: Account,
+  userId: string,
+  isDemo = false
+): Promise<CardLedgerOverview> {
+  const invoices = await getCardInvoices(cardAccount.id, userId, isDemo);
+
+  const totalLimit = cardAccount.creditLimitCents || 0;
+  const totalUsed = invoices.reduce((acc, curr) => {
+    if (curr.invoiceStatus !== 'paid' && curr.invoiceStatus !== 'carried_over') {
+      return acc + (curr.remainingBalanceCents || 0);
+    }
+    return acc;
+  }, 0);
+  const limitSummary = {
+    creditLimitCents: totalLimit,
+    usedAmountCents: totalUsed,
+    availableLimitCents: Math.max(0, totalLimit - totalUsed),
+  };
+
+  // Carrega charges, payments, personal_transactions do cartão e contratos de parcelamento em paralelo
+  let cardTxs: PersonalTransaction[] = [];
+  let cardContracts: InstallmentContract[] = [];
+  const occurrencesByContract: Record<string, InstallmentOccurrence[]> = {};
+
+  if (isDemo) {
+    try {
+      const rawTxs = universalStorage.getItem('mpf_v3_demo_personal_transactions');
+      const allTxs: PersonalTransaction[] = rawTxs ? JSON.parse(rawTxs) : [];
+      cardTxs = allTxs.filter(
+        (t) => t.userId === userId && t.accountId === cardAccount.id && t.type === 'expense'
+      );
+    } catch {}
+    try {
+      const rawContracts = universalStorage.getItem('demo_installment_contracts_v3');
+      const allContracts: InstallmentContract[] = rawContracts ? JSON.parse(rawContracts) : [];
+      cardContracts = allContracts.filter(
+        (c) =>
+          c.scope === 'personal' &&
+          c.userId === userId &&
+          c.fundingSource === 'credit_card' &&
+          c.sourceCardAccountId === cardAccount.id
+      );
+      const rawOccs = universalStorage.getItem('demo_installment_occurrences_v3');
+      const allOccs: InstallmentOccurrence[] = rawOccs ? JSON.parse(rawOccs) : [];
+      for (const c of cardContracts) {
+        occurrencesByContract[c.id] = allOccs
+          .filter((o) => o.contractId === c.id)
+          .sort((a, b) => a.installmentNumber - b.installmentNumber);
+      }
+    } catch {}
+  } else {
+    const [txSnap, contractSnap] = await Promise.all([
+      getDocs(
+        query(
+          collection(db, 'users', userId, 'personal_transactions'),
+          where('accountId', '==', cardAccount.id)
+        )
+      ).catch(() => null),
+      getDocs(
+        query(
+          collection(db, 'installment_contracts'),
+          where('scope', '==', 'personal'),
+          where('userId', '==', userId)
+        )
+      ).catch(() => null),
+    ]);
+
+    if (txSnap) {
+      txSnap.forEach((d) => {
+        const t = { ...(d.data() as PersonalTransaction), id: d.id };
+        if (t.type === 'expense') cardTxs.push(t);
+      });
+    }
+
+    if (contractSnap) {
+      contractSnap.forEach((d) => {
+        const c = { ...(d.data() as InstallmentContract), id: d.id };
+        if (c.fundingSource === 'credit_card' && c.sourceCardAccountId === cardAccount.id) {
+          cardContracts.push(c);
+        }
+      });
+      await Promise.all(
+        cardContracts.map(async (c) => {
+          const occSnap = await getDocs(
+            collection(db, 'installment_contracts', c.id, 'occurrences')
+          ).catch(() => null);
+          const occs: InstallmentOccurrence[] = [];
+          if (occSnap) {
+            occSnap.forEach((od) => occs.push(od.data() as InstallmentOccurrence));
+          }
+          occurrencesByContract[c.id] = occs.sort(
+            (a, b) => a.installmentNumber - b.installmentNumber
+          );
+        })
+      );
+    }
+  }
+
+  const [rawCharges, payments] = await Promise.all([
+    getAllCardCharges(cardAccount.id, userId, invoices, isDemo),
+    getAllCardPayments(cardAccount.id, invoices, isDemo),
+  ]);
+
+  // Enriquece charges com dados de parcelamento e sintetiza fallback para compras legadas sem subdocumento charge
+  const contractMap = new Map<string, InstallmentContract>();
+  for (const c of cardContracts) contractMap.set(c.id, c);
+
+  const chargeById = new Map<string, CreditCardInvoiceCharge>();
+  const chargedTxIds = new Set<string>();
+
+  for (const ch of rawCharges) {
+    let enriched: CreditCardInvoiceCharge = { ...ch };
+    const matchedContract =
+      (ch.contractId && contractMap.get(ch.contractId)) ||
+      contractMap.get(ch.transactionId);
+
+    if (matchedContract) {
+      enriched.contractId = matchedContract.id;
+      enriched.totalInstallments = matchedContract.totalInstallmentsCount;
+      const occs = occurrencesByContract[matchedContract.id] || [];
+      const matchedOcc = occs.find(
+        (o) =>
+          ch.id === `chg_${matchedContract.id}_${o.id}` ||
+          (o.competenceMonth === ch.invoiceMonth && o.principalAmountCents === ch.amountCents)
+      );
+      if (matchedOcc) {
+        enriched.installmentNumber = matchedOcc.installmentNumber;
+      }
+    } else if (!enriched.installmentNumber || !enriched.totalInstallments) {
+      const m = (ch.description || '').match(/\((\d+)\/(\d+)\)\s*$/);
+      if (m) {
+        enriched.installmentNumber = parseInt(m[1], 10);
+        enriched.totalInstallments = parseInt(m[2], 10);
+      }
+    }
+
+    chargeById.set(enriched.id, enriched);
+    if (enriched.transactionId) chargedTxIds.add(enriched.transactionId);
+  }
+
+  // Fallback para compras pessoais legadas no cartão sem documento em charges/
+  for (const tx of cardTxs) {
+    if (chargedTxIds.has(tx.id) || chargeById.has(tx.id)) continue;
+    const invMonth =
+      tx.invoiceMonth ||
+      calculateInvoiceMonth(tx.competenceDate, cardAccount.closingDay || 20);
+    chargeById.set(tx.id, {
+      id: tx.id,
+      transactionId: tx.id,
+      accountId: cardAccount.id,
+      userId,
+      invoiceMonth: invMonth,
+      description: tx.description,
+      amountCents: tx.amountCents,
+      purchaseDate: tx.competenceDate,
+      categoryId: tx.categoryId || 'uncategorized',
+      categoryName: tx.categoryName || 'Geral',
+      status: tx.status === 'cancelled' ? 'cancelled' : 'active',
+      createdAt: tx.createdAt,
+      updatedAt: tx.updatedAt || tx.createdAt,
+    });
+  }
+
+  // Fallback para parcelas em ocorrências que ainda não estejam na coleção charges
+  for (const contract of cardContracts) {
+    const occs = occurrencesByContract[contract.id] || [];
+    for (const occ of occs) {
+      const chId = `chg_${contract.id}_${occ.id}`;
+      if (chargeById.has(chId)) continue;
+      chargeById.set(chId, {
+        id: chId,
+        transactionId: contract.id,
+        accountId: cardAccount.id,
+        userId,
+        invoiceMonth: occ.competenceMonth,
+        description: `${contract.title} (${occ.installmentNumber}/${contract.totalInstallmentsCount})`,
+        amountCents: occ.totalInstallmentAmountCents,
+        purchaseDate: occ.dueDate,
+        categoryId: 'installment',
+        categoryName: 'Parcelamento',
+        status: occ.status === 'cancelled' ? 'cancelled' : 'active',
+        installmentNumber: occ.installmentNumber,
+        totalInstallments: contract.totalInstallmentsCount,
+        contractId: contract.id,
+        createdAt: contract.createdAt,
+        updatedAt: contract.createdAt,
+      });
+    }
+  }
+
+  const charges = Array.from(chargeById.values()).sort((a, b) => {
+    const dateCmp = (b.purchaseDate || '').localeCompare(a.purchaseDate || '');
+    if (dateCmp !== 0) return dateCmp;
+    return (b.createdAt || '').localeCompare(a.createdAt || '');
+  });
+
+  return {
+    cardAccount,
+    limitSummary,
+    invoices,
+    charges,
+    payments,
+    contracts: cardContracts,
+    occurrencesByContract,
   };
 }

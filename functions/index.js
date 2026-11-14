@@ -567,17 +567,328 @@ export async function executeServerSideDissolutionTimeout(db, callerUid, payload
   });
 }
 
+function normalizeCallerAuthServer(callerAuthOrUid, fallbackUser) {
+  if (typeof callerAuthOrUid === 'string') {
+    return {
+      uid: callerAuthOrUid.trim(),
+      email: String(fallbackUser?.email || '').trim().toLowerCase(),
+      emailVerified: undefined,
+    };
+  }
+  if (callerAuthOrUid && typeof callerAuthOrUid === 'object') {
+    return {
+      uid: String(callerAuthOrUid.uid || '').trim(),
+      email: String(callerAuthOrUid.email || fallbackUser?.email || '').trim().toLowerCase(),
+      emailVerified:
+        typeof callerAuthOrUid.emailVerified === 'boolean'
+          ? callerAuthOrUid.emailVerified
+          : undefined,
+    };
+  }
+  return { uid: '', email: '', emailVerified: undefined };
+}
+
+async function resolveCallerEmailAndVerificationServer(callerInfo, authInstance) {
+  let email = callerInfo.email;
+  let emailVerified = callerInfo.emailVerified;
+  if ((!email || emailVerified !== true) && authInstance && typeof authInstance.getUser === 'function') {
+    try {
+      const userRec = await authInstance.getUser(callerInfo.uid);
+      if (!email && userRec?.email) {
+        email = String(userRec.email).trim().toLowerCase();
+      }
+      if (typeof userRec?.emailVerified === 'boolean') {
+        emailVerified = userRec.emailVerified;
+      }
+    } catch {
+      // ignora se authInstance não possuir o registro
+    }
+  }
+  return { email, emailVerified };
+}
+
+/**
+ * Criação server-side de convite seguro com distinção entre Situação A (conta já existente)
+ * e Situação B (e-mail ainda não cadastrado) e status transparente de entrega de e-mail.
+ */
+export async function executeServerSideCreateSpaceInvite(
+  db,
+  callerAuthOrUid,
+  payload,
+  authInstance = null
+) {
+  const caller = normalizeCallerAuthServer(callerAuthOrUid);
+  if (!caller.uid) {
+    throw new HttpsError('unauthenticated', 'Autenticação obrigatória para criar convites.');
+  }
+  const cleanUid = caller.uid;
+  const params = payload || {};
+  const spaceId = String(params.spaceId || '').trim();
+  if (!spaceId) {
+    throw new HttpsError('invalid-argument', 'spaceId é obrigatório.');
+  }
+
+  const invitedEmailNorm = params.invitedEmail
+    ? String(params.invitedEmail).trim().toLowerCase()
+    : undefined;
+  const invitedRole = params.invitedRole === 'admin' ? 'admin' : 'member';
+  const days =
+    typeof params.expirationDays === 'number' && params.expirationDays > 0
+      ? Math.min(90, Math.round(params.expirationDays))
+      : 15;
+
+  const rawToken = crypto.randomBytes(24).toString('hex');
+  const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+
+  const effectiveAuth = authInstance || getAuth();
+  const registeredRecipient = invitedEmailNorm
+    ? await resolveRegisteredUidByEmail(db, effectiveAuth, invitedEmailNorm)
+    : null;
+  const explicitRequireEmailVerification =
+    typeof params.requireEmailVerification === 'boolean'
+      ? params.requireEmailVerification
+      : undefined;
+  const requireEmailVerification =
+    explicitRequireEmailVerification !== undefined
+      ? explicitRequireEmailVerification
+      : Boolean(invitedEmailNorm && !registeredRecipient);
+
+  let emailDeliveryStatus = 'not_applicable';
+  let emailDeliveryMessage = 'Convite aberto por token (sem e-mail de destino).';
+
+  if (invitedEmailNorm) {
+    const resendKey = process.env.RESEND_API_KEY;
+    const smtpHost = process.env.SMTP_HOST;
+    if (resendKey) {
+      try {
+        const resp = await fetch('https://api.resend.com/emails', {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${resendKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            from: process.env.MAIL_FROM || 'no-reply@financas.local',
+            to: [invitedEmailNorm],
+            subject: 'Convite para espaço compartilhado',
+            text: `Você recebeu um convite para ingressar em um espaço compartilhado. Token de acesso: ${rawToken}`,
+          }),
+        });
+        if (resp.ok) {
+          emailDeliveryStatus = 'sent';
+          emailDeliveryMessage = `E-mail transacional enviado para ${invitedEmailNorm}.`;
+        } else {
+          emailDeliveryStatus = 'failed';
+          emailDeliveryMessage = `Falha HTTP ${resp.status} ao enviar e-mail para ${invitedEmailNorm}.`;
+        }
+      } catch {
+        emailDeliveryStatus = 'failed';
+        emailDeliveryMessage = `Não foi possível contactar o provedor de e-mail para ${invitedEmailNorm}.`;
+      }
+    } else if (smtpHost) {
+      emailDeliveryStatus = 'not_configured_local_emulator';
+      emailDeliveryMessage =
+        'Transporte SMTP direto indisponível nesta função sem worker configurado.';
+    } else {
+      emailDeliveryStatus = 'not_configured_local_emulator';
+      emailDeliveryMessage = registeredRecipient
+        ? 'Envio de e-mail externo não configurado no Firebase Emulator local. O convite foi entregue na Caixa de Entrada do destinatário e o token está disponível para compartilhamento.'
+        : 'Envio de e-mail externo não configurado no Firebase Emulator local. O convite ficou pendente vinculado ao e-mail e o token está disponível para envio manual.';
+    }
+  }
+
+  const spaceRef = db.collection('spaces').doc(spaceId);
+  const memberRef = spaceRef.collection('members').doc(cleanUid);
+  const inviteRef = db.collection('space_invites').doc(tokenHash);
+
+  const invite = await db.runTransaction(async (tx) => {
+    const [spaceSnap, requesterMemberSnap] = await Promise.all([
+      tx.get(spaceRef),
+      tx.get(memberRef),
+    ]);
+
+    if (!spaceSnap.exists) {
+      throw new HttpsError('not-found', `Espaço "${spaceId}" não encontrado.`);
+    }
+    const space = spaceSnap.data();
+    if (space.spaceStatus === 'archived') {
+      throw new HttpsError(
+        'failed-precondition',
+        'Não é permitido criar convites para um espaço arquivado.'
+      );
+    }
+
+    const isActiveMember =
+      Array.isArray(space.memberUids) && space.memberUids.includes(cleanUid);
+    const reqRole = requesterMemberSnap.exists ? requesterMemberSnap.data()?.role : undefined;
+    const canInvite =
+      isActiveMember &&
+      (space.creatorUid === cleanUid || reqRole === 'owner' || reqRole === 'admin');
+
+    if (!canInvite) {
+      throw new HttpsError(
+        'permission-denied',
+        'Apenas proprietários ou administradores ativos podem gerar convites.'
+      );
+    }
+
+    const now = new Date();
+    const nowIso = now.toISOString();
+    const expiresAt = new Date(now.getTime() + days * 24 * 60 * 60 * 1000).toISOString();
+    const requesterName =
+      String(params.requesterName || '').trim() ||
+      (requesterMemberSnap.exists ? requesterMemberSnap.data()?.displayName : '') ||
+      'Administrador';
+
+    const inviteDoc = stripUndefined({
+      id: tokenHash,
+      spaceId,
+      spaceName: space.name || 'Espaço Compartilhado',
+      invitedEmail: invitedEmailNorm,
+      invitedRole,
+      invitedByUid: cleanUid,
+      invitedByName: requesterName,
+      tokenStatus: 'pending',
+      expiresAt,
+      recipientUid: registeredRecipient?.uid,
+      accountExists: invitedEmailNorm ? Boolean(registeredRecipient) : undefined,
+      emailDeliveryStatus,
+      emailDeliveryMessage,
+      requireEmailVerification: requireEmailVerification || undefined,
+      createdAt: nowIso,
+    });
+
+    const deterministicAuditId = buildDeterministicGovernanceId('audit', [
+      spaceId,
+      'invite_created',
+      `invite_create_${tokenHash}`,
+    ]);
+    const auditRef = spaceRef.collection('audit').doc(deterministicAuditId);
+
+    tx.set(inviteRef, inviteDoc);
+    tx.set(
+      auditRef,
+      stripUndefined({
+        id: deterministicAuditId,
+        spaceId,
+        eventType: 'invite_created',
+        performedByUid: cleanUid,
+        performedByName: requesterName,
+        targetUid: registeredRecipient?.uid,
+        details: stripUndefined({
+          tokenHash,
+          invitedEmail: invitedEmailNorm,
+          role: invitedRole,
+          accountExists: invitedEmailNorm ? Boolean(registeredRecipient) : undefined,
+          expiresAt,
+        }),
+        timestamp: nowIso,
+      })
+    );
+
+    if (registeredRecipient?.uid && registeredRecipient.uid !== cleanUid) {
+      const notifId = buildDeterministicGovernanceId('notif', [
+        deterministicAuditId,
+        registeredRecipient.uid,
+        'invite_received',
+      ]);
+      const notifRef = db
+        .collection('users')
+        .doc(registeredRecipient.uid)
+        .collection('notifications')
+        .doc(notifId);
+      tx.set(notifRef, {
+        id: notifId,
+        userId: registeredRecipient.uid,
+        spaceId,
+        spaceName: space.name || 'Espaço Compartilhado',
+        type: 'invite_received',
+        title: 'Convite para Espaço Compartilhado',
+        message: `${requesterName} convidou você para participar de "${space.name}". Acesse sua Caixa de Entrada para aceitar ou recusar.`,
+        read: false,
+        senderUid: cleanUid,
+        originEventId: deterministicAuditId,
+        createdAt: nowIso,
+      });
+    }
+
+    return inviteDoc;
+  });
+
+  return { invite, rawToken };
+}
+
+/**
+ * Lista convites pendentes vinculados ao e-mail autenticado do usuário (Situação A e Situação B pós-cadastro).
+ */
+export async function executeServerSideGetPendingSpaceInvites(
+  db,
+  callerAuthOrUid,
+  authInstance = null
+) {
+  const caller = normalizeCallerAuthServer(callerAuthOrUid);
+  if (!caller.uid) {
+    throw new HttpsError('unauthenticated', 'Autenticação obrigatória para consultar convites.');
+  }
+
+  const effectiveAuth = authInstance || getAuth();
+  const resolved = await resolveCallerEmailAndVerificationServer(caller, effectiveAuth);
+  let callerEmail = resolved.email;
+
+  if (!callerEmail) {
+    try {
+      const userSnap = await db.collection('users').doc(caller.uid).get();
+      if (userSnap.exists && userSnap.data()?.email) {
+        callerEmail = String(userSnap.data().email).trim().toLowerCase();
+      }
+    } catch {
+      // ignora
+    }
+  }
+
+  if (!callerEmail) {
+    return { invites: [] };
+  }
+
+  const snap = await db
+    .collection('space_invites')
+    .where('invitedEmail', '==', callerEmail)
+    .where('tokenStatus', '==', 'pending')
+    .get();
+
+  const nowMs = Date.now();
+  const invites = [];
+  snap.forEach((d) => {
+    const data = d.data() || {};
+    const expMs = new Date(data.expiresAt).getTime();
+    if (!Number.isFinite(expMs) || expMs >= nowMs) {
+      invites.push({ ...data, id: d.id });
+    }
+  });
+
+  invites.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  return { invites };
+}
+
 /**
  * Aceitação atômica e server-side de convite por usuário autenticado, validando hash SHA-256,
- * uso único, prazo de expiração, estado do espaço e gravando auditoria e notificação determinísticas.
+ * uso único, prazo de expiração, vínculo de e-mail, verificação de e-mail (quando exigida) e
+ * estado do espaço, gravando auditoria e notificação determinísticas.
  */
-export async function executeServerSideAcceptSpaceInvite(db, callerUid, payload) {
-  if (!callerUid || typeof callerUid !== 'string' || !callerUid.trim()) {
+export async function executeServerSideAcceptSpaceInvite(
+  db,
+  callerAuthOrUid,
+  payload,
+  authInstance = null
+) {
+  const { rawToken, tokenHash: providedHash, user, operationKey, requireEmailVerification } =
+    payload || {};
+  const caller = normalizeCallerAuthServer(callerAuthOrUid, user);
+  if (!caller.uid) {
     throw new HttpsError('unauthenticated', 'Autenticação obrigatória para aceitar convite.');
   }
 
-  const { rawToken, tokenHash: providedHash, user, operationKey } = payload || {};
-  const cleanUid = callerUid.trim();
+  const cleanUid = caller.uid;
 
   if (user?.uid && user.uid.trim() !== cleanUid) {
     throw new HttpsError(
@@ -586,8 +897,12 @@ export async function executeServerSideAcceptSpaceInvite(db, callerUid, payload)
     );
   }
 
+  const effectiveAuth = authInstance;
+  const resolvedCaller = await resolveCallerEmailAndVerificationServer(caller, effectiveAuth);
+
+  const hasRawToken = Boolean(rawToken && typeof rawToken === 'string' && rawToken.trim());
   let tokenHash = providedHash;
-  if (rawToken && typeof rawToken === 'string' && rawToken.trim()) {
+  if (hasRawToken) {
     tokenHash = crypto.createHash('sha256').update(rawToken.trim()).digest('hex');
   }
 
@@ -619,6 +934,40 @@ export async function executeServerSideAcceptSpaceInvite(db, callerUid, payload)
       );
     }
 
+    const invitedEmailNorm = invite.invitedEmail
+      ? String(invite.invitedEmail).trim().toLowerCase()
+      : '';
+
+    // Aceite direto via tokenHash (Inbox) só é permitido para convites nominais ao e-mail autenticado
+    if (!hasRawToken && !invitedEmailNorm) {
+      throw new HttpsError(
+        'permission-denied',
+        'Convites sem destinatário nominal exigem apresentação do token original.'
+      );
+    }
+
+    if (invitedEmailNorm) {
+      const effectiveEmail = (resolvedCaller.email || user?.email || '').trim().toLowerCase();
+      if (!effectiveEmail || effectiveEmail !== invitedEmailNorm) {
+        throw new HttpsError(
+          'permission-denied',
+          `Este convite foi emitido especificamente para ${invite.invitedEmail}. Entre com o e-mail convidado para aceitar.`
+        );
+      }
+    }
+
+    const mustCheckVerification = Boolean(
+      requireEmailVerification ||
+        invite.explicitRequireEmailVerification ||
+        (invite.requireEmailVerification && !hasRawToken)
+    );
+    if (mustCheckVerification && resolvedCaller.emailVerified !== true) {
+      throw new HttpsError(
+        'failed-precondition',
+        'Confirme seu endereço de e-mail antes de aceitar este convite.'
+      );
+    }
+
     const spaceRef = db.collection('spaces').doc(invite.spaceId);
     const spaceSnap = await tx.get(spaceRef);
     if (!spaceSnap.exists) {
@@ -642,7 +991,7 @@ export async function executeServerSideAcceptSpaceInvite(db, callerUid, payload)
 
     const now = new Date().toISOString();
     const displayName = user?.displayName?.trim() || 'Novo Participante';
-    const contactEmail = user?.email?.trim() || '';
+    const contactEmail = resolvedCaller.email || user?.email?.trim() || '';
 
     const updatedMemberUids = [...(space.memberUids || []), cleanUid];
     const updatedHistoricalUids = Array.from(
@@ -733,6 +1082,157 @@ export async function executeServerSideAcceptSpaceInvite(db, callerUid, payload)
   });
 }
 
+/**
+ * Rejeição formal server-side de convite por usuário autenticado.
+ */
+export async function executeServerSideRejectSpaceInvite(
+  db,
+  callerAuthOrUid,
+  payload,
+  authInstance = null
+) {
+  const { rawToken, tokenHash: providedHash, user } = payload || {};
+  const caller = normalizeCallerAuthServer(callerAuthOrUid, user);
+  if (!caller.uid) {
+    throw new HttpsError('unauthenticated', 'Autenticação obrigatória para recusar convite.');
+  }
+
+  const hasRawToken = Boolean(rawToken && typeof rawToken === 'string' && rawToken.trim());
+  let tokenHash = providedHash;
+  if (hasRawToken) {
+    tokenHash = crypto.createHash('sha256').update(rawToken.trim()).digest('hex');
+  }
+  if (!tokenHash || typeof tokenHash !== 'string') {
+    throw new HttpsError('invalid-argument', 'Token de convite inválido.');
+  }
+
+  const resolvedCaller = await resolveCallerEmailAndVerificationServer(caller, authInstance);
+  const inviteRef = db.collection('space_invites').doc(tokenHash);
+
+  return await db.runTransaction(async (tx) => {
+    const inviteSnap = await tx.get(inviteRef);
+    if (!inviteSnap.exists) {
+      throw new HttpsError('not-found', 'Convite não encontrado.');
+    }
+    const invite = inviteSnap.data();
+    if (invite.tokenStatus !== 'pending') {
+      throw new HttpsError('failed-precondition', 'Este convite não está pendente.');
+    }
+
+    const invitedEmailNorm = invite.invitedEmail
+      ? String(invite.invitedEmail).trim().toLowerCase()
+      : '';
+    if (!hasRawToken && !invitedEmailNorm) {
+      throw new HttpsError('permission-denied', 'Token original obrigatório para recusar este convite.');
+    }
+    if (invitedEmailNorm) {
+      const effectiveEmail = (resolvedCaller.email || user?.email || '').trim().toLowerCase();
+      if (!effectiveEmail || effectiveEmail !== invitedEmailNorm) {
+        throw new HttpsError(
+          'permission-denied',
+          'Apenas o e-mail destinatário pode recusar este convite.'
+        );
+      }
+    }
+
+    const now = new Date().toISOString();
+    const displayName = user?.displayName?.trim() || 'Usuário Convidado';
+    const opKey = `invite_reject_${tokenHash}_${caller.uid}`;
+    const deterministicAuditId = buildDeterministicGovernanceId('audit', [
+      invite.spaceId,
+      'invite_rejected',
+      opKey,
+    ]);
+
+    tx.update(inviteRef, {
+      tokenStatus: 'rejected',
+      rejectedByUid: caller.uid,
+      rejectedAt: now,
+    });
+
+    tx.set(db.collection('spaces').doc(invite.spaceId).collection('audit').doc(deterministicAuditId), {
+      id: deterministicAuditId,
+      spaceId: invite.spaceId,
+      eventType: 'invite_rejected',
+      performedByUid: caller.uid,
+      performedByName: displayName,
+      targetUid: caller.uid,
+      details: { tokenHash },
+      timestamp: now,
+    });
+
+    return { ok: true, spaceId: invite.spaceId };
+  });
+}
+
+/**
+ * Revogação formal server-side de convite por criador/admin ativo.
+ */
+export async function executeServerSideRevokeSpaceInvite(db, callerAuthOrUid, payload) {
+  const caller = normalizeCallerAuthServer(callerAuthOrUid);
+  if (!caller.uid) {
+    throw new HttpsError('unauthenticated', 'Autenticação obrigatória para revogar convite.');
+  }
+
+  const tokenHash = String(payload?.tokenHash || '').trim();
+  if (!tokenHash) {
+    throw new HttpsError('invalid-argument', 'tokenHash é obrigatório.');
+  }
+
+  const inviteRef = db.collection('space_invites').doc(tokenHash);
+  return await db.runTransaction(async (tx) => {
+    const inviteSnap = await tx.get(inviteRef);
+    if (!inviteSnap.exists) {
+      throw new HttpsError('not-found', 'Convite não encontrado.');
+    }
+    const invite = inviteSnap.data();
+    if (invite.tokenStatus !== 'pending') {
+      throw new HttpsError('failed-precondition', 'Apenas convites pendentes podem ser revogados.');
+    }
+
+    const spaceRef = db.collection('spaces').doc(invite.spaceId);
+    const [spaceSnap, memberSnap] = await Promise.all([
+      tx.get(spaceRef),
+      tx.get(spaceRef.collection('members').doc(caller.uid)),
+    ]);
+    if (!spaceSnap.exists) {
+      throw new HttpsError('not-found', 'Espaço não encontrado.');
+    }
+    const space = spaceSnap.data();
+    const isActive = Array.isArray(space.memberUids) && space.memberUids.includes(caller.uid);
+    const role = memberSnap.exists ? memberSnap.data()?.role : undefined;
+    if (!isActive || (space.creatorUid !== caller.uid && role !== 'owner' && role !== 'admin')) {
+      throw new HttpsError('permission-denied', 'Apenas proprietários ou administradores podem revogar convites.');
+    }
+
+    const now = new Date().toISOString();
+    const requesterName = String(payload?.requesterName || '').trim() || 'Administrador';
+    const deterministicAuditId = buildDeterministicGovernanceId('audit', [
+      invite.spaceId,
+      'invite_revoked',
+      `invite_revoke_${tokenHash}`,
+    ]);
+
+    tx.update(inviteRef, {
+      tokenStatus: 'revoked',
+      revokedByUid: caller.uid,
+      revokedAt: now,
+    });
+
+    tx.set(spaceRef.collection('audit').doc(deterministicAuditId), {
+      id: deterministicAuditId,
+      spaceId: invite.spaceId,
+      eventType: 'invite_revoked',
+      performedByUid: caller.uid,
+      performedByName: requesterName,
+      details: { tokenHash },
+      timestamp: now,
+    });
+
+    return { ok: true };
+  });
+}
+
 // Cloud Functions v2 HTTP Callable Endpoints (executados pelo Functions Emulator na porta 5001)
 export const recordOfficialSpaceGovernanceEvent = onCall(
   { region: 'us-central1' },
@@ -750,11 +1250,81 @@ export const processSpaceDissolutionTimeout = onCall(
   }
 );
 
+export const createSpaceInviteOfficial = onCall(
+  { region: 'us-central1' },
+  async (request) => {
+    return await executeServerSideCreateSpaceInvite(
+      getAdminDb(),
+      {
+        uid: request.auth?.uid,
+        email: request.auth?.token?.email,
+        emailVerified: request.auth?.token?.email_verified,
+      },
+      request.data,
+      getAuth()
+    );
+  }
+);
+
+export const getPendingSpaceInvitesOfficial = onCall(
+  { region: 'us-central1' },
+  async (request) => {
+    return await executeServerSideGetPendingSpaceInvites(
+      getAdminDb(),
+      {
+        uid: request.auth?.uid,
+        email: request.auth?.token?.email,
+        emailVerified: request.auth?.token?.email_verified,
+      },
+      getAuth()
+    );
+  }
+);
+
 export const acceptSpaceInviteOfficial = onCall(
   { region: 'us-central1' },
   async (request) => {
-    const callerUid = request.auth?.uid;
-    return await executeServerSideAcceptSpaceInvite(getAdminDb(), callerUid, request.data);
+    return await executeServerSideAcceptSpaceInvite(
+      getAdminDb(),
+      {
+        uid: request.auth?.uid,
+        email: request.auth?.token?.email,
+        emailVerified: request.auth?.token?.email_verified,
+      },
+      request.data,
+      getAuth()
+    );
+  }
+);
+
+export const rejectSpaceInviteOfficial = onCall(
+  { region: 'us-central1' },
+  async (request) => {
+    return await executeServerSideRejectSpaceInvite(
+      getAdminDb(),
+      {
+        uid: request.auth?.uid,
+        email: request.auth?.token?.email,
+        emailVerified: request.auth?.token?.email_verified,
+      },
+      request.data,
+      getAuth()
+    );
+  }
+);
+
+export const revokeSpaceInviteOfficial = onCall(
+  { region: 'us-central1' },
+  async (request) => {
+    return await executeServerSideRevokeSpaceInvite(
+      getAdminDb(),
+      {
+        uid: request.auth?.uid,
+        email: request.auth?.token?.email,
+        emailVerified: request.auth?.token?.email_verified,
+      },
+      request.data
+    );
   }
 );
 

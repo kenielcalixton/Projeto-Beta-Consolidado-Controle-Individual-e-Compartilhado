@@ -1,3 +1,5 @@
+import { universalStorage } from '../utils/universalStorage';
+
 export interface EmailJSConfig {
   serviceId: string;
   templateId: string;
@@ -16,12 +18,26 @@ export interface TransactionalEmailPayload {
   sentAt: string;
 }
 
+export type EmailDeliveryStatus = 'sent' | 'not_configured_local_emulator' | 'failed';
+
+export interface EmailDispatchLog {
+  toEmail: string;
+  toName: string;
+  fromName: string;
+  subject: string;
+  spaceOrTransactionTitle: string;
+  amountFormatted?: string;
+  type: 'space_invite' | 'split_notification' | 'dispute_update';
+  status: EmailDeliveryStatus;
+  sentAt: string;
+}
+
 const STORAGE_KEY_CONFIG = 'mpf_emailjs_config_v1';
 const STORAGE_KEY_LOG = 'mpf_emailjs_sent_logs_v1';
 
 export function getEmailJSConfig(): EmailJSConfig {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY_CONFIG);
+    const raw = universalStorage.getItem(STORAGE_KEY_CONFIG);
     if (raw) return JSON.parse(raw);
   } catch {
     // ignore
@@ -34,12 +50,12 @@ export function getEmailJSConfig(): EmailJSConfig {
 }
 
 export function saveEmailJSConfig(config: EmailJSConfig): void {
-  localStorage.setItem(STORAGE_KEY_CONFIG, JSON.stringify(config));
+  universalStorage.setItem(STORAGE_KEY_CONFIG, JSON.stringify(config));
 }
 
-export function getSentEmailLogs(): TransactionalEmailPayload[] {
+export function getSentEmailLogs(): EmailDispatchLog[] {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY_LOG);
+    const raw = universalStorage.getItem(STORAGE_KEY_LOG);
     if (raw) return JSON.parse(raw);
   } catch {
     // ignore
@@ -47,21 +63,33 @@ export function getSentEmailLogs(): TransactionalEmailPayload[] {
   return [];
 }
 
+function appendEmailAuditLog(entry: EmailDispatchLog): void {
+  try {
+    const logs = getSentEmailLogs();
+    universalStorage.setItem(STORAGE_KEY_LOG, JSON.stringify([entry, ...logs].slice(0, 50)));
+  } catch {
+    // ignore storage errors
+  }
+}
+
 /**
- * Dispara e-mail transacional via API REST do EmailJS quando configurado,
- * e registra no histórico auditável de notificações enviadas do aplicativo.
+ * Dispara e-mail transacional via EmailJS quando configurado.
+ * Nunca mascara ausência de provedor como envio bem-sucedido e nunca armazena tokens sensíveis no log local.
  */
 export async function sendTransactionalEmail(
   payload: Omit<TransactionalEmailPayload, 'sentAt'>
-): Promise<{ ok: boolean; mode: 'emailjs_live' | 'logged_dispatch'; message: string }> {
-  const fullPayload: TransactionalEmailPayload = {
-    ...payload,
-    sentAt: new Date().toISOString(),
+): Promise<{ ok: boolean; mode: EmailDeliveryStatus; message: string }> {
+  const sentAt = new Date().toISOString();
+  const baseLog: Omit<EmailDispatchLog, 'status'> = {
+    toEmail: payload.toEmail,
+    toName: payload.toName,
+    fromName: payload.fromName,
+    subject: payload.subject,
+    spaceOrTransactionTitle: payload.spaceOrTransactionTitle,
+    amountFormatted: payload.amountFormatted,
+    type: payload.type,
+    sentAt,
   };
-
-  // Salva sempre no log auditável de envios
-  const logs = getSentEmailLogs();
-  localStorage.setItem(STORAGE_KEY_LOG, JSON.stringify([fullPayload, ...logs].slice(0, 50)));
 
   const cfg = getEmailJSConfig();
   if (cfg.serviceId && cfg.templateId && cfg.publicKey) {
@@ -86,20 +114,35 @@ export async function sendTransactionalEmail(
       });
 
       if (response.ok) {
+        appendEmailAuditLog({ ...baseLog, status: 'sent' });
         return {
           ok: true,
-          mode: 'emailjs_live',
-          message: `E-mail enviado via EmailJS para ${payload.toEmail}`,
+          mode: 'sent',
+          message: `E-mail enviado via EmailJS para ${payload.toEmail}.`,
         };
       }
+
+      appendEmailAuditLog({ ...baseLog, status: 'failed' });
+      return {
+        ok: false,
+        mode: 'failed',
+        message: `Falha HTTP ${response.status} ao enviar e-mail para ${payload.toEmail}.`,
+      };
     } catch {
-      // Fallback para despacho registrado
+      appendEmailAuditLog({ ...baseLog, status: 'failed' });
+      return {
+        ok: false,
+        mode: 'failed',
+        message: `Erro de rede ao tentar enviar e-mail para ${payload.toEmail}.`,
+      };
     }
   }
 
+  appendEmailAuditLog({ ...baseLog, status: 'not_configured_local_emulator' });
   return {
-    ok: true,
-    mode: 'logged_dispatch',
-    message: `Notificação transacional registrada e despachada para ${payload.toEmail}`,
+    ok: false,
+    mode: 'not_configured_local_emulator',
+    message:
+      'Envio de e-mail externo não configurado no ambiente local / Firebase Emulator. Utilize o token ou a Caixa de Entrada do aplicativo.',
   };
 }

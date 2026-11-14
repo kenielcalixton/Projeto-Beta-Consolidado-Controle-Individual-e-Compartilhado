@@ -16,6 +16,8 @@ import {
   logoutUser,
   mapFirebaseUser,
   registerWithEmailPassword,
+  reloadCurrentUserSession,
+  sendCurrentUserVerificationEmail,
   sendPasswordReset,
   updateUserDisplayName,
 } from '../services/authService';
@@ -61,6 +63,10 @@ export interface AuthContextType {
   logout: () => Promise<void>;
   /** Dispara envio de link para recuperação e redefinição de senha */
   resetPassword: (email: string) => Promise<void>;
+  /** Reenvia o link oficial de verificação de e-mail via Firebase Auth */
+  resendEmailVerification: () => Promise<void>;
+  /** Recarrega os metadados atuais do usuário no Firebase Auth (ex: emailVerified) */
+  reloadUserSession: () => Promise<CanonicalAuthUser | null>;
   /** Realiza login via pop-up com Google */
   loginWithGoogle: () => Promise<CanonicalAuthUser>;
   /** Entra em sessão local de demonstração (para testes e transição) */
@@ -272,6 +278,32 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     [user]
   );
 
+  const resendEmailVerification = useCallback(async (): Promise<void> => {
+    setLoading(true);
+    setError(null);
+    try {
+      await sendCurrentUserVerificationEmail();
+    } catch (err: unknown) {
+      const friendlyMessage = formatAuthError(err);
+      setError(friendlyMessage);
+      throw new Error(friendlyMessage);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const reloadUserSession = useCallback(async (): Promise<CanonicalAuthUser | null> => {
+    try {
+      const refreshed = await reloadCurrentUserSession();
+      if (refreshed) {
+        setUser(refreshed);
+      }
+      return refreshed;
+    } catch {
+      return null;
+    }
+  }, []);
+
   const value = useMemo<AuthContextType>(
     () => ({
       user,
@@ -284,6 +316,8 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       register,
       logout,
       resetPassword,
+      resendEmailVerification,
+      reloadUserSession,
       loginWithGoogle,
       enterDemoMode,
       updateDisplayName,
@@ -298,6 +332,8 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       register,
       logout,
       resetPassword,
+      resendEmailVerification,
+      reloadUserSession,
       loginWithGoogle,
       enterDemoMode,
       updateDisplayName,

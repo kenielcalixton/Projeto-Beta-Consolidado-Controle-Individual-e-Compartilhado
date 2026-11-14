@@ -92,6 +92,11 @@ import {
 } from './services/recurrenceService';
 import { getUserAccounts } from './services/accountService';
 import { getSpaceMembers, getUserSpaces } from './services/spaceService';
+import {
+  acceptSpaceInviteByTokenHash,
+  getPendingInvitesForUser,
+  rejectSpaceInvite,
+} from './services/spaceInviteService';
 import { createSharedExpense } from './services/sharedFinanceService';
 import { SplitParticipant } from './utils/splitEngine';
 import {
@@ -99,6 +104,7 @@ import {
   PersonalCategory,
   PersonalTransaction,
   Space as SpaceV3,
+  SpaceInvite,
 } from './types/financeV3';
 import { resolveAutomatedV3Status } from './utils/financeEngine';
 
@@ -150,10 +156,21 @@ export const saveLocalMpfData = <T,>(key: string, data: T): void => {
 };
 
 function AppInner() {
-  const { user, isAuthenticated, authReady, logout, enterDemoMode, updateDisplayName } = useAuth();
+  const {
+    user,
+    isAuthenticated,
+    authReady,
+    logout,
+    enterDemoMode,
+    updateDisplayName,
+    resendEmailVerification,
+    reloadUserSession,
+  } = useAuth();
   const [profileDisplayName, setProfileDisplayName] = useState<string | null>(null);
   const [openNewSpaceTrigger, setOpenNewSpaceTrigger] = useState(0);
   const [openNewAcqListTrigger, setOpenNewAcqListTrigger] = useState(0);
+  const [pendingV3Invites, setPendingV3Invites] = useState<SpaceInvite[]>([]);
+  const [resendingVerification, setResendingVerification] = useState(false);
 
   const currentUser = useMemo(() => {
     if (!user) return null;
@@ -162,6 +179,7 @@ function AppInner() {
       name: profileDisplayName || user.displayName || 'Usuário',
       email: user.email,
       isDemo: !!user.isDemo,
+      emailVerified: user.isDemo ? true : Boolean(user.emailVerified),
     };
   }, [user, profileDisplayName]);
 
@@ -2164,6 +2182,79 @@ function AppInner() {
     }
   };
 
+  const refreshPendingV3Invites = async () => {
+    if (!currentUser?.email) {
+      setPendingV3Invites([]);
+      return;
+    }
+    try {
+      const list = await getPendingInvitesForUser(
+        currentUser.email,
+        !!currentUser.isDemo
+      );
+      setPendingV3Invites(list);
+    } catch {
+      // Silencioso caso Functions ainda não esteja disponível
+    }
+  };
+
+  useEffect(() => {
+    void refreshPendingV3Invites();
+  }, [
+    currentUser?.uid,
+    currentUser?.email,
+    currentUser?.isDemo,
+    v3RefreshToken,
+    activeTab,
+  ]);
+
+  const handleAcceptV3SpaceInvite = async (invite: SpaceInvite) => {
+    if (!currentUser) return;
+    if (!currentUser.emailVerified && !currentUser.isDemo) {
+      showToast('Confirme seu e-mail antes de aceitar convites de espaços.');
+      return;
+    }
+    try {
+      const res = await acceptSpaceInviteByTokenHash(
+        invite.id,
+        {
+          uid: currentUser.uid,
+          displayName: currentUser.name,
+          email: currentUser.email,
+          emailVerified: currentUser.emailVerified,
+        },
+        !!currentUser.isDemo,
+        { requireEmailVerification: !currentUser.isDemo }
+      );
+      await refreshPendingV3Invites();
+      setV3RefreshToken((n) => n + 1);
+      showToast(`Você ingressou no espaço "${res.space.name}"!`);
+    } catch (err: any) {
+      showToast(err?.message || 'Não foi possível aceitar o convite.');
+    }
+  };
+
+  const handleDeclineV3SpaceInvite = async (invite: SpaceInvite) => {
+    if (!currentUser) return;
+    try {
+      await rejectSpaceInvite(
+        invite.id,
+        {
+          uid: currentUser.uid,
+          displayName: currentUser.name,
+          email: currentUser.email,
+        },
+        !!currentUser.isDemo,
+        { isTokenHash: true }
+      );
+      await refreshPendingV3Invites();
+      setV3RefreshToken((n) => n + 1);
+      showToast(`Convite para "${invite.spaceName}" recusado.`);
+    } catch (err: any) {
+      showToast(err?.message || 'Não foi possível recusar o convite.');
+    }
+  };
+
   const handleDismissSpaceNotification = (txId: string) => {
     setDismissedSpaceNotifIds((prev) => {
       const next = Array.from(new Set([...prev, txId]));
@@ -2858,6 +2949,59 @@ function AppInner() {
             </div>
           )}
 
+        {/* Aviso quando o e-mail cadastrado ainda não foi verificado */}
+        {!currentUser.isDemo && !currentUser.emailVerified && (
+          <div className="mx-3.5 sm:mx-8 mt-3 p-3.5 rounded-2xl bg-indigo-500/10 border border-indigo-500/35 text-indigo-100 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 max-w-7xl lg:mx-auto w-auto">
+            <div className="flex items-start sm:items-center gap-2.5 min-w-0">
+              <i className="ph-fill ph-envelope-simple text-indigo-400 text-lg shrink-0 mt-0.5 sm:mt-0"></i>
+              <div className="leading-relaxed">
+                <span className="font-bold text-indigo-300">
+                  Verificação de e-mail pendente ({currentUser.email}):
+                </span>{' '}
+                Confirme seu e-mail para liberar o aceite de convites de espaços compartilhados.
+              </div>
+            </div>
+            <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
+              <button
+                type="button"
+                disabled={resendingVerification}
+                onClick={async () => {
+                  setResendingVerification(true);
+                  try {
+                    await resendEmailVerification();
+                    showToast('Link de verificação reenviado para seu e-mail!');
+                  } catch (err: unknown) {
+                    showToast(
+                      err instanceof Error
+                        ? err.message
+                        : 'Não foi possível reenviar o link de verificação.'
+                    );
+                  } finally {
+                    setResendingVerification(false);
+                  }
+                }}
+                className="px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-bold text-[11px] whitespace-nowrap cursor-pointer transition-colors"
+              >
+                {resendingVerification ? 'Enviando...' : 'Reenviar link de verificação'}
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  const reloaded = await reloadUserSession();
+                  if (reloaded?.emailVerified) {
+                    showToast('E-mail verificado com sucesso!');
+                  } else {
+                    showToast('E-mail ainda consta como pendente de verificação.');
+                  }
+                }}
+                className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white cursor-pointer text-[11px] font-semibold"
+              >
+                Já verifiquei meu e-mail
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Notificação Toast */}
         {toastMsg && (
           <div
@@ -2948,10 +3092,14 @@ function AppInner() {
               userId={currentUser?.uid || 'usr_anonymous'}
               userName={currentUser?.name || 'Usuário'}
               userEmail={currentUser?.email || ''}
+              userEmailVerified={currentUser.emailVerified}
               isDemo={!!currentUser?.isDemo}
               openCreateTrigger={openNewSpaceTrigger}
               refreshTrigger={v3RefreshToken}
+              initialSelectedSpaceId={activeLedgerSpace?.id || null}
+              onClearInitialSpace={() => setActiveLedgerSpace(null)}
               onConsumeCreateTrigger={() => setOpenNewSpaceTrigger(0)}
+              onInvitesChanged={() => void refreshPendingV3Invites()}
               onSpacesChanged={async (createdSpace) => {
                 if (!currentUser) return;
                 if (createdSpace) {
@@ -3034,6 +3182,8 @@ function AppInner() {
             <PendingDisputesView
               transactions={inboxTransactions}
               spaces={spaces}
+              spaceInvites={pendingV3Invites}
+              userEmailVerified={currentUser.emailVerified}
               userEmail={currentUser.email}
               userUid={currentUser.uid}
               dismissedSpaceNotifIds={dismissedSpaceNotifIds}
@@ -3043,6 +3193,8 @@ function AppInner() {
               onResolveAdhocCounterProposal={handleResolveAdhocCounterProposal}
               onAcceptSpaceInvite={handleAcceptSpaceInvite}
               onDeclineSpaceInvite={handleDeclineSpaceInvite}
+              onAcceptV3SpaceInvite={handleAcceptV3SpaceInvite}
+              onDeclineV3SpaceInvite={handleDeclineV3SpaceInvite}
               onDismissSpaceNotif={handleDismissSpaceNotification}
               onClearAllSpaceNotifs={handleDismissAllSpaceNotifications}
             />

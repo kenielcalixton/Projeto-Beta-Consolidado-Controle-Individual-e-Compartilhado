@@ -1,6 +1,7 @@
 import {
   browserLocalPersistence,
   createUserWithEmailAndPassword,
+  sendEmailVerification,
   sendPasswordResetEmail,
   setPersistence,
   signInWithEmailAndPassword,
@@ -187,10 +188,39 @@ export async function registerWithEmailPassword(
     }
   }
 
+  // Envia link oficial de confirmação de e-mail sem inserir o usuário automaticamente em nenhum espaço
+  try {
+    await sendEmailVerification(credential.user);
+  } catch (verErr) {
+    console.warn('[AuthService] Aviso ao enviar e-mail de verificação:', verErr);
+  }
+
   return mapFirebaseUser({
     ...credential.user,
     displayName: cleanName,
   });
+}
+
+/**
+ * Reenvia o e-mail de verificação para o usuário autenticado no Firebase Auth.
+ */
+export async function sendCurrentUserVerificationEmail(): Promise<void> {
+  const firebaseUser = auth.currentUser;
+  if (!firebaseUser) {
+    throw new Error('Nenhuma sessão autenticada para reenviar verificação de e-mail.');
+  }
+  await sendEmailVerification(firebaseUser);
+}
+
+/**
+ * Recarrega o estado do usuário no Firebase Authentication (atualiza emailVerified).
+ */
+export async function reloadCurrentUserSession(): Promise<CanonicalAuthUser | null> {
+  const firebaseUser = auth.currentUser;
+  if (!firebaseUser) return null;
+  await firebaseUser.reload();
+  await firebaseUser.getIdToken(true);
+  return mapFirebaseUser(firebaseUser, false);
 }
 
 /**

@@ -25,6 +25,7 @@ import { getUserAccounts } from './accountService';
 import {
   attachPurchaseToInvoiceDemoSync,
   calculateInvoiceMonth,
+  cancelDemoCardChargeByTransactionId,
   loadDemoInvoices,
   saveDemoInvoices,
 } from './creditCardService';
@@ -224,7 +225,13 @@ export async function createPersonalTransaction(
           targetAccount,
           input.amountCents,
           input.competenceDate,
-          userId
+          userId,
+          {
+            transactionId: txId,
+            description: cleanDescription,
+            categoryId: input.categoryId,
+            categoryName: input.categoryName,
+          }
         );
         paidAmountCents = input.amountCents;
         remainingAmountCents = 0;
@@ -624,6 +631,7 @@ export async function cancelPersonalTransaction(
 
     // Se houve compra no cartão de crédito vinculada à fatura, reduz o saldo de compras da fatura
     if (tx.type === 'expense' && tx.invoiceMonth && tx.accountId && (tx.paidAmountCents || 0) > 0) {
+      cancelDemoCardChargeByTransactionId(tx.accountId, tx.id);
       const invoices = loadDemoInvoices();
       const invIdx = invoices.findIndex(
         (inv) => inv.accountId === tx.accountId && inv.invoiceMonth === tx.invoiceMonth

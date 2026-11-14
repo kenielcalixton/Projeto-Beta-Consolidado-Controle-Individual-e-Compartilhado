@@ -3,16 +3,18 @@ import {
   doc,
   getDoc,
   getDocs,
-  orderBy,
   query,
 } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
 import { db, functions } from './firebase';
 import {
   Account,
+  AccountType,
   CentsInteger,
   DateString,
   FinancialMovement,
+  FinancialMovementOriginType,
+  InternalAccountTransfer,
   PersonalTransaction,
   PersonalTransactionPayment,
   PersonalTransactionPaymentReversal,
@@ -27,6 +29,72 @@ import {
   validateMovementPayloadMatch,
 } from '../utils/movementLedger';
 import { universalStorage } from '../utils/universalStorage';
+
+/**
+ * Formata uma data ISO YYYY-MM-DD (ou timestamp ISO) para DD/MM/YYYY
+ * sem conversão via Date() em UTC, evitando deslocamento de -1 dia no fuso horário.
+ */
+export function formatIsoDateBR(dateStr?: string | null): string {
+  if (!dateStr || typeof dateStr !== 'string') return '—';
+  const trimmed = dateStr.trim();
+  const match = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (match) {
+    return `${match[3]}/${match[2]}/${match[1]}`;
+  }
+  return trimmed;
+}
+
+function normalizeTimestampToIso(val: unknown): string {
+  if (typeof val === 'string') return val;
+  if (val && typeof (val as { toDate?: () => Date }).toDate === 'function') {
+    return (val as { toDate: () => Date }).toDate().toISOString();
+  }
+  return '';
+}
+
+function normalizeMovementDoc(
+  raw: Partial<FinancialMovement> & Record<string, any>,
+  docId: string
+): FinancialMovement {
+  const regIso =
+    normalizeTimestampToIso(raw.registeredAt) ||
+    normalizeTimestampToIso(raw.createdAt) ||
+    new Date().toISOString();
+  const effStr =
+    typeof raw.effectiveDate === 'string' && /^\d{4}-\d{2}-\d{2}/.test(raw.effectiveDate)
+      ? raw.effectiveDate.slice(0, 10)
+      : regIso.slice(0, 10);
+
+  return {
+    ...(raw as FinancialMovement),
+    id: docId || raw.id || '',
+    accountId: raw.accountId || '',
+    userId: raw.userId || raw.authorUid || '',
+    authorUid: raw.authorUid || raw.userId || '',
+    direction: raw.direction === 'inflow' ? 'inflow' : 'outflow',
+    amountCents: Number.isFinite(Number(raw.amountCents))
+      ? Math.round(Number(raw.amountCents))
+      : 0,
+    effectiveDate: effStr,
+    registeredAt: regIso,
+    originType: (raw.originType || 'manual_adjustment') as FinancialMovementOriginType,
+    originId: raw.originId || docId || '',
+    confirmationStatus: raw.confirmationStatus || 'cleared',
+    description:
+      typeof raw.description === 'string' && raw.description.trim()
+        ? raw.description
+        : 'Movimentação sem descrição',
+    idempotencyKey: raw.idempotencyKey || docId || '',
+  };
+}
+
+function compareMovementsDesc(a: FinancialMovement, b: FinancialMovement): number {
+  const dateCmp = (b.effectiveDate || '').localeCompare(a.effectiveDate || '');
+  if (dateCmp !== 0) return dateCmp;
+  const regCmp = (b.registeredAt || '').localeCompare(a.registeredAt || '');
+  if (regCmp !== 0) return regCmp;
+  return (b.id || '').localeCompare(a.id || '');
+}
 
 /**
  * ==============================================================================
@@ -169,6 +237,8 @@ export async function recordMovement(
 
 /**
  * Consulta todas as movimentações históricas de uma conta bancária.
+ * Não utiliza orderBy no Firestore para não omitir silenciosamente documentos
+ * sem campo effectiveDate indexado; normaliza e ordena cronologicamente em memória.
  */
 export async function getAccountMovements(
   accountId: string,
@@ -180,34 +250,269 @@ export async function getAccountMovements(
   if (isDemo) {
     const demoMovements = loadDemoMovements();
     return demoMovements
-      .filter((m) => m.accountId === accountId && m.userId === userId)
-      .sort(
-        (a, b) =>
-          new Date(b.effectiveDate).getTime() -
-          new Date(a.effectiveDate).getTime()
-      );
+      .filter(
+        (m) =>
+          m.accountId === accountId &&
+          (m.userId === userId || (!m.userId && m.authorUid === userId))
+      )
+      .map((m) => normalizeMovementDoc(m, m.id))
+      .sort(compareMovementsDesc);
   }
 
-  const movementsQuery = query(
-    collection(db, 'accounts', accountId, 'movements'),
-    orderBy('effectiveDate', 'desc')
-  );
-
+  const movementsQuery = query(collection(db, 'accounts', accountId, 'movements'));
   const snap = await getDocs(movementsQuery);
   const movements: FinancialMovement[] = [];
 
   snap.forEach((d) => {
-    const raw = d.data() as FinancialMovement;
-    const m: FinancialMovement = {
-      ...raw,
-      id: d.id || raw.id,
-    };
-    if (m.userId === userId) {
+    const raw = d.data() as Partial<FinancialMovement> & Record<string, any>;
+    const m = normalizeMovementDoc({ accountId, ...raw }, d.id || raw.id || '');
+    if (m.userId === userId || (!raw.userId && m.authorUid === userId)) {
       movements.push(m);
     }
   });
 
-  return movements;
+  return movements.sort(compareMovementsDesc);
+}
+
+export type LedgerScopeType = 'individual' | 'shared';
+
+export interface EnrichedLedgerMovement extends FinancialMovement {
+  accountName: string;
+  accountType: AccountType;
+  relatedAccountId?: string;
+  relatedAccountName?: string;
+  categoryName: string;
+  scope: LedgerScopeType;
+  runningBalanceCents: CentsInteger;
+  isCompensatory: boolean;
+  isReversed: boolean;
+}
+
+export function resolveMovementScope(originType?: string): LedgerScopeType {
+  if (!originType) return 'individual';
+  if (
+    originType.startsWith('settlement_') ||
+    originType.startsWith('custody_') ||
+    originType.startsWith('shared_') ||
+    originType.startsWith('restitution_') ||
+    originType === 'adhoc_receipt'
+  ) {
+    return 'shared';
+  }
+  return 'individual';
+}
+
+export function resolveFallbackCategoryLabel(originType: FinancialMovementOriginType): string {
+  switch (originType) {
+    case 'internal_transfer_in':
+    case 'internal_transfer_out':
+      return 'Transferência entre Contas';
+    case 'credit_card_payment':
+      return 'Pagamento de Fatura';
+    case 'settlement_inflow':
+    case 'settlement_outflow':
+    case 'shared_settlement':
+    case 'shared_reimbursement':
+    case 'custody_deposit':
+    case 'custody_withdrawal':
+    case 'custody_return':
+    case 'custody_transfer_out':
+    case 'custody_transfer_in':
+    case 'custody_return_out':
+    case 'custody_return_in':
+    case 'restitution_inflow':
+    case 'restitution_outflow':
+    case 'adhoc_receipt':
+      return 'Acerto / Custódia Compartilhada';
+    case 'personal_refund':
+    case 'supplier_refund':
+      return 'Reembolso / Estorno';
+    case 'acquisition_checkout':
+    case 'acquisition_reversal':
+      return 'Aquisições';
+    case 'manual_adjustment':
+      return 'Ajuste Manual';
+    default:
+      return 'Geral';
+  }
+}
+
+/**
+ * Calcula o Saldo Resultante acumulado em ordem cronológica (mais antiga -> mais recente)
+ * por conta, preservando imutabilidade e retornando ordenado do mais recente para o mais antigo.
+ */
+export function attachChronologicalRunningBalances<T extends FinancialMovement>(
+  movements: T[]
+): Array<T & { runningBalanceCents: CentsInteger }> {
+  const chronological = [...movements].sort((a, b) => compareMovementsDesc(b, a));
+  const runningByAccount: Record<string, number> = {};
+  const computed = chronological.map((m) => {
+    const delta = m.direction === 'inflow' ? m.amountCents : -m.amountCents;
+    const nextBalance = (runningByAccount[m.accountId] || 0) + delta;
+    runningByAccount[m.accountId] = nextBalance;
+    return {
+      ...m,
+      runningBalanceCents: nextBalance,
+    };
+  });
+  return computed.sort(compareMovementsDesc);
+}
+
+/**
+ * Carrega e enriquece todas as movimentações financeiras de contas de caixa/bancárias
+ * (excluindo cartões de crédito, que possuem livro-razão próprio de faturas e compras),
+ * com categoria, conta relacionada, escopo (Individual/Compartilhado) e Saldo Resultante cronológico.
+ */
+export async function getEnrichedLedgerMovements(
+  userId: string,
+  accounts: Account[],
+  isDemo = false
+): Promise<EnrichedLedgerMovement[]> {
+  if (!userId || !accounts || accounts.length === 0) return [];
+
+  const nonCreditAccounts = accounts.filter((a) => a.type !== 'credit');
+  if (nonCreditAccounts.length === 0) return [];
+
+  const accountMap = new Map<string, Account>();
+  for (const acc of accounts) {
+    accountMap.set(acc.id, acc);
+  }
+
+  // 1. Carrega movimentos de todas as contas não-crédito em paralelo
+  const perAccountMovements = await Promise.all(
+    nonCreditAccounts.map((acc) => getAccountMovements(acc.id, userId, isDemo))
+  );
+  const allMovements = perAccountMovements.flat();
+
+  // 2. Carrega metadados auxiliares (transações individuais e transferências internas) sem acoplamento circular
+  const txById = new Map<string, PersonalTransaction>();
+  const txByMovementId = new Map<string, PersonalTransaction>();
+  const transferById = new Map<string, InternalAccountTransfer>();
+  const paymentTxIdById = new Map<string, string>();
+
+  if (isDemo) {
+    try {
+      const rawTxs = universalStorage.getItem('mpf_v3_demo_personal_transactions');
+      const txs: PersonalTransaction[] = rawTxs ? JSON.parse(rawTxs) : [];
+      for (const t of txs) {
+        if (t.userId !== userId) continue;
+        txById.set(t.id, t);
+        if (t.financialMovementId) txByMovementId.set(t.financialMovementId, t);
+      }
+    } catch {}
+    try {
+      const rawPays = universalStorage.getItem('mpf_v3_demo_transaction_payments');
+      const pays: PersonalTransactionPayment[] = rawPays ? JSON.parse(rawPays) : [];
+      for (const p of pays) {
+        if (p.userId === userId) paymentTxIdById.set(p.id, p.transactionId);
+      }
+    } catch {}
+    try {
+      const rawTransfers = universalStorage.getItem('mpf_v3_demo_internal_transfers');
+      const xfers: InternalAccountTransfer[] = rawTransfers ? JSON.parse(rawTransfers) : [];
+      for (const x of xfers) {
+        if (x.userId === userId) transferById.set(x.id, x);
+      }
+    } catch {}
+  } else {
+    const [txSnap, xferSnap] = await Promise.all([
+      getDocs(collection(db, 'users', userId, 'personal_transactions')).catch(() => null),
+      getDocs(collection(db, 'users', userId, 'internal_transfers')).catch(() => null),
+    ]);
+    if (txSnap) {
+      txSnap.forEach((d) => {
+        const t = { ...(d.data() as PersonalTransaction), id: d.id };
+        txById.set(t.id, t);
+        if (t.financialMovementId) txByMovementId.set(t.financialMovementId, t);
+      });
+    }
+    if (xferSnap) {
+      xferSnap.forEach((d) => {
+        const x = { ...(d.data() as InternalAccountTransfer), id: d.id };
+        transferById.set(x.id, x);
+      });
+    }
+  }
+
+  // 3. Mapeia movimentos já compensados por estorno
+  const reversedIds = new Set<string>();
+  const movementById = new Map<string, FinancialMovement>();
+  for (const m of allMovements) {
+    movementById.set(m.id, m);
+    if (m.reversalOfMovementId) {
+      reversedIds.add(m.reversalOfMovementId);
+    }
+  }
+
+  const withBalances = attachChronologicalRunningBalances(allMovements);
+
+  const creditAccounts = accounts.filter((a) => a.type === 'credit');
+
+  return withBalances.map((m) => {
+    const acc = accountMap.get(m.accountId);
+    const originMov = m.reversalOfMovementId ? movementById.get(m.reversalOfMovementId) : undefined;
+    const lookupOriginType = originMov ? originMov.originType : m.originType;
+    const lookupOriginId = originMov ? originMov.originId : m.originId;
+    const lookupMovId = originMov ? originMov.id : m.id;
+
+    // Resolve categoria
+    let matchedTx = txByMovementId.get(lookupMovId) || txById.get(lookupOriginId);
+    if (!matchedTx && paymentTxIdById.has(lookupOriginId)) {
+      matchedTx = txById.get(paymentTxIdById.get(lookupOriginId)!);
+    }
+    if (!matchedTx && m.notes) {
+      const noteMatch = m.notes.match(/#([a-zA-Z0-9_-]+)/);
+      if (noteMatch?.[1]) {
+        matchedTx = txById.get(noteMatch[1]);
+      }
+    }
+    const categoryName = matchedTx?.categoryName || resolveFallbackCategoryLabel(m.originType);
+
+    // Resolve conta relacionada
+    let relatedAccountId: string | undefined;
+    let relatedAccountName: string | undefined;
+    if (
+      lookupOriginType === 'internal_transfer_out' ||
+      lookupOriginType === 'internal_transfer_in'
+    ) {
+      const xfer = transferById.get(lookupOriginId);
+      if (xfer) {
+        const otherId =
+          xfer.sourceAccountId === m.accountId
+            ? xfer.destinationAccountId
+            : xfer.sourceAccountId;
+        relatedAccountId = otherId;
+        relatedAccountName = accountMap.get(otherId)?.name || otherId;
+      }
+    } else if (lookupOriginType === 'credit_card_payment') {
+      const matchedCard = creditAccounts.find(
+        (c) =>
+          m.description.toLowerCase().includes(c.name.toLowerCase()) ||
+          (m.notes || '').toLowerCase().includes(c.name.toLowerCase())
+      );
+      if (matchedCard) {
+        relatedAccountId = matchedCard.id;
+        relatedAccountName = matchedCard.name;
+      } else if (creditAccounts.length === 1) {
+        relatedAccountId = creditAccounts[0].id;
+        relatedAccountName = creditAccounts[0].name;
+      } else {
+        relatedAccountName = 'Cartão de Crédito';
+      }
+    }
+
+    return {
+      ...m,
+      accountName: acc?.name || 'Conta',
+      accountType: acc?.type || 'checking',
+      relatedAccountId,
+      relatedAccountName,
+      categoryName,
+      scope: resolveMovementScope(lookupOriginType),
+      isCompensatory: Boolean(m.reversalOfMovementId),
+      isReversed: reversedIds.has(m.id),
+    };
+  });
 }
 
 export interface ReversalResult {

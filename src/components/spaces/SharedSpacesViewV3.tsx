@@ -24,12 +24,15 @@ import {
 } from '../../services/spaceService';
 import {
   acceptSpaceInvite,
+  acceptSpaceInviteByTokenHash,
   createSpaceInvite,
   DEFAULT_INVITE_EXPIRATION_DAYS,
   evaluateInviteAvailability,
   extractInviteToken,
   getInviteByRawToken,
+  getPendingInvitesForUser,
   getSpaceInvites,
+  rejectSpaceInvite,
   revokeSpaceInvite,
 } from '../../services/spaceInviteService';
 import {
@@ -62,11 +65,15 @@ interface SharedSpacesViewV3Props {
   userId: string;
   userName: string;
   userEmail: string;
+  userEmailVerified?: boolean;
   isDemo?: boolean;
   openCreateTrigger?: number;
   refreshTrigger?: number;
+  initialSelectedSpaceId?: string | null;
+  onClearInitialSpace?: () => void;
   onConsumeCreateTrigger?: () => void;
   onSpacesChanged?: (space?: Space) => void;
+  onInvitesChanged?: () => void;
   onOpenNewTransaction?: (preset?: UniversalTransactionPreset) => void;
   onOpenSpaceAcquisitions?: (spaceId: string) => void;
 }
@@ -86,11 +93,15 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
   userId,
   userName,
   userEmail,
+  userEmailVerified = true,
   isDemo = false,
   openCreateTrigger = 0,
   refreshTrigger = 0,
+  initialSelectedSpaceId = null,
+  onClearInitialSpace,
   onConsumeCreateTrigger,
   onSpacesChanged,
+  onInvitesChanged,
   onOpenNewTransaction,
   onOpenSpaceAcquisitions,
 }) => {
@@ -102,6 +113,8 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
   const [includeArchived, setIncludeArchived] = useState(false);
   const [spaceFilter, setSpaceFilter] = useState<SpaceViewMode>('active');
   const [notifications, setNotifications] = useState<SpaceNotification[]>([]);
+  const [pendingReceivedInvites, setPendingReceivedInvites] = useState<SpaceInvite[]>([]);
+  const [processingPendingHash, setProcessingPendingHash] = useState<string | null>(null);
   const [isNotifOpen, setIsNotifOpen] = useState(false);
   const [modalError, setModalError] = useState<string | null>(null);
   const [feedbackMessage, setFeedbackMessage] = useState<{
@@ -151,15 +164,18 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
   const [isCheckingInvite, setIsCheckingInvite] = useState(false);
   const [isAcceptingInvite, setIsAcceptingInvite] = useState(false);
 
+  const effectiveEmailVerified = isDemo ? true : userEmailVerified;
+
   const inviteEvaluation = useMemo(() => {
     if (!invitePreview) return null;
     const matchedSpace = spaces.find((s) => s.id === invitePreview.spaceId);
     return evaluateInviteAvailability(invitePreview, {
       currentUserUid: userId,
       currentUserEmail: userEmail,
+      currentUserEmailVerified: effectiveEmailVerified,
       activeMemberUids: matchedSpace?.memberUids,
     });
-  }, [invitePreview, spaces, userId, userEmail]);
+  }, [invitePreview, spaces, userId, userEmail, effectiveEmailVerified]);
 
   // Modal Decisão do Autor na Dissolução
   const [isDecisionModalOpen, setIsDecisionModalOpen] = useState(false);
@@ -217,6 +233,20 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
     }
   };
 
+  // Carrega convites nominais pendentes recebidos pelo usuário autenticado (Situação A e B)
+  const loadPendingReceivedInvites = async () => {
+    if (!userEmail) {
+      setPendingReceivedInvites([]);
+      return;
+    }
+    try {
+      const list = await getPendingInvitesForUser(userEmail, isDemo);
+      setPendingReceivedInvites(list);
+    } catch {
+      // Ignora erro silenciosamente se Functions não responder no preload
+    }
+  };
+
   // Carrega sub-dados do espaço selecionado
   const loadSpaceDetails = async (space: Space) => {
     try {
@@ -253,6 +283,7 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
     let active = true;
     loadSpaces();
     loadNotifications();
+    loadPendingReceivedInvites();
 
     if (isDemo || !userId || spaceFilter === 'historical') {
       return () => {
@@ -294,7 +325,27 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
       active = false;
       unsubscribe();
     };
-  }, [userId, includeArchived, spaceFilter, isDemo, refreshTrigger]);
+  }, [userId, userEmail, includeArchived, spaceFilter, isDemo, refreshTrigger]);
+
+  useEffect(() => {
+    if (!initialSelectedSpaceId) return;
+    const matched = spaces.find((s) => s.id === initialSelectedSpaceId);
+    if (matched) {
+      setSelectedSpace(matched);
+      onClearInitialSpace?.();
+      return;
+    }
+    if (userId) {
+      getSpaceById(initialSelectedSpaceId, userId, isDemo, true)
+        .then((sp) => {
+          if (sp) setSelectedSpace(sp);
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          onClearInitialSpace?.();
+        });
+    }
+  }, [initialSelectedSpaceId, spaces, userId, isDemo]);
 
   useEffect(() => {
     if (openCreateTrigger > 0 && openCreateTrigger !== lastHandledCreateTriggerRef.current) {
@@ -455,12 +506,19 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
           invitedEmail: inviteEmail || undefined,
           invitedRole: inviteRole,
           expirationDays: inviteExpDays,
+          requireEmailVerification: !isDemo,
         },
         isDemo
       );
       setGeneratedInviteResult(res);
-      setFeedbackMessage({ type: 'success', text: 'Convite gerado com sucesso! Compartilhe o token seguro com o convidado.' });
+      setFeedbackMessage({
+        type: 'success',
+        text: res.invite.accountExists
+          ? 'Convite gerado e entregue na Caixa de Entrada do usuário convidado!'
+          : 'Convite gerado! Compartilhe o token seguro com o convidado.',
+      });
       await loadSpaceDetails(selectedSpace);
+      onInvitesChanged?.();
     } catch (err: any) {
       setFeedbackMessage({ type: 'error', text: err.message });
     }
@@ -472,8 +530,73 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
       await revokeSpaceInvite(tokenHash, userId, userName, isDemo);
       setFeedbackMessage({ type: 'success', text: 'Convite revogado com sucesso.' });
       await loadSpaceDetails(selectedSpace);
+      onInvitesChanged?.();
     } catch (err: any) {
       setFeedbackMessage({ type: 'error', text: err.message });
+    }
+  };
+
+  const handleAcceptPendingInvite = async (inv: SpaceInvite) => {
+    if (!effectiveEmailVerified) {
+      setFeedbackMessage({
+        type: 'error',
+        text: 'Confirme seu endereço de e-mail antes de aceitar o convite.',
+      });
+      return;
+    }
+    setProcessingPendingHash(inv.id);
+    try {
+      const res = await acceptSpaceInviteByTokenHash(
+        inv.id,
+        {
+          uid: userId,
+          displayName: userName,
+          email: userEmail,
+          emailVerified: effectiveEmailVerified,
+        },
+        isDemo,
+        { requireEmailVerification: !isDemo }
+      );
+      setFeedbackMessage({
+        type: 'success',
+        text: `Você ingressou no espaço "${res.space.name}"!`,
+      });
+      await Promise.all([loadSpaces(), loadPendingReceivedInvites()]);
+      onSpacesChanged?.(res.space);
+      onInvitesChanged?.();
+      setSelectedSpace(res.space);
+    } catch (err: any) {
+      setFeedbackMessage({
+        type: 'error',
+        text: err?.message || 'Não foi possível aceitar o convite.',
+      });
+    } finally {
+      setProcessingPendingHash(null);
+    }
+  };
+
+  const handleRejectPendingInvite = async (inv: SpaceInvite) => {
+    setProcessingPendingHash(inv.id);
+    try {
+      await rejectSpaceInvite(
+        inv.id,
+        { uid: userId, displayName: userName, email: userEmail },
+        isDemo,
+        { isTokenHash: true }
+      );
+      setFeedbackMessage({
+        type: 'success',
+        text: `Convite para "${inv.spaceName}" recusado.`,
+      });
+      await loadPendingReceivedInvites();
+      onInvitesChanged?.();
+    } catch (err: any) {
+      setFeedbackMessage({
+        type: 'error',
+        text: err?.message || 'Não foi possível recusar o convite.',
+      });
+    } finally {
+      setProcessingPendingHash(null);
     }
   };
 
@@ -499,6 +622,7 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
         const evalRes = evaluateInviteAvailability(inv, {
           currentUserUid: userId,
           currentUserEmail: userEmail,
+          currentUserEmailVerified: effectiveEmailVerified,
           activeMemberUids: matchedSpace?.memberUids,
         });
         if (!evalRes.canAccept) {
@@ -521,20 +645,33 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
       setAcceptModalError('Informe um token de convite válido.');
       return;
     }
+    if (!effectiveEmailVerified) {
+      setAcceptModalError(
+        'Confirme seu endereço de e-mail antes de aceitar convites para espaços.'
+      );
+      return;
+    }
     setIsAcceptingInvite(true);
     try {
       const res = await acceptSpaceInvite(
         cleanToken,
-        { uid: userId, displayName: userName, email: userEmail },
-        isDemo
+        {
+          uid: userId,
+          displayName: userName,
+          email: userEmail,
+          emailVerified: effectiveEmailVerified,
+        },
+        isDemo,
+        { requireEmailVerification: !isDemo }
       );
       setFeedbackMessage({ type: 'success', text: `Você ingressou no espaço "${res.space.name}"!` });
       setIsAcceptModalOpen(false);
       setAcceptTokenInput('');
       setInvitePreview(null);
       setAcceptModalError(null);
-      await loadSpaces();
+      await Promise.all([loadSpaces(), loadPendingReceivedInvites()]);
       onSpacesChanged?.(res.space);
+      onInvitesChanged?.();
       setSelectedSpace(res.space);
     } catch (err: any) {
       const msg = err?.message || 'Não foi possível concluir o ingresso no espaço.';
@@ -749,6 +886,83 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
           </div>
         </div>
       </div>
+
+      {/* Convites Nominais Pendentes Recebidos pelo Usuário */}
+      {!selectedSpace && pendingReceivedInvites.length > 0 && (
+        <div className="bg-indigo-950/35 border border-indigo-500/40 rounded-2xl p-5 shadow-sm space-y-3">
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <div className="flex items-center gap-2">
+              <i className="ph-fill ph-envelope-open text-indigo-400 text-lg" />
+              <h2 className="text-sm font-bold text-white">
+                Convites Recebidos ({pendingReceivedInvites.length})
+              </h2>
+            </div>
+            {!effectiveEmailVerified && (
+              <span className="px-2.5 py-1 rounded-lg bg-amber-500/15 border border-amber-500/35 text-amber-200 text-[11px] font-semibold">
+                Confirme seu e-mail para habilitar o aceite de convites.
+              </span>
+            )}
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {pendingReceivedInvites.map((inv) => {
+              const isBusy = processingPendingHash === inv.id;
+              return (
+                <div
+                  key={inv.id}
+                  className="bg-slate-900/90 border border-slate-700/80 rounded-xl p-4 flex flex-col justify-between gap-3"
+                >
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs font-bold text-white truncate">
+                        {inv.spaceName}
+                      </span>
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 shrink-0">
+                        {inv.invitedRole === 'admin'
+                          ? 'Administrador'
+                          : inv.invitedRole === 'owner'
+                          ? 'Proprietário'
+                          : 'Membro'}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-300">
+                      Convidado por <strong className="text-white">{inv.invitedByName}</strong>
+                    </p>
+                    <p className="text-[10px] text-slate-400">
+                      Destinatário: {inv.invitedEmail || userEmail} · Expira em{' '}
+                      {new Date(inv.expiresAt).toLocaleDateString('pt-BR')}
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-2 pt-2 border-t border-slate-800">
+                    <button
+                      type="button"
+                      disabled={isBusy || !effectiveEmailVerified}
+                      onClick={() => handleAcceptPendingInvite(inv)}
+                      className="flex-1 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold cursor-pointer flex items-center justify-center gap-1.5"
+                    >
+                      {isBusy ? (
+                        <i className="ph ph-spinner animate-spin" />
+                      ) : (
+                        <i className="ph-bold ph-check-circle" />
+                      )}
+                      <span>Aceitar Convite</span>
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isBusy}
+                      onClick={() => handleRejectPendingInvite(inv)}
+                      className="px-3 py-1.5 rounded-lg bg-rose-500/15 hover:bg-rose-500/25 disabled:opacity-50 border border-rose-500/30 text-rose-300 text-xs font-semibold cursor-pointer"
+                    >
+                      Recusar
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Conteúdo Principal: Lista ou Detalhes */}
       {!selectedSpace ? (
@@ -1323,59 +1537,94 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
                       <tr>
                         <th className="py-2.5 px-3">Destinatário</th>
                         <th className="py-2.5 px-3">Papel Previsto</th>
+                        <th className="py-2.5 px-3">Situação / E-mail</th>
                         <th className="py-2.5 px-3">Status</th>
                         <th className="py-2.5 px-3">Expira Em</th>
                         <th className="py-2.5 px-3 text-right">Ações</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-700/70">
-                      {invites.map((inv) => (
-                        <tr key={inv.id} className="hover:bg-slate-800/50">
-                          <td className="py-3 px-3">
-                            <span className="font-semibold text-white">
-                              {inv.invitedEmail || 'Qualquer pessoa com o link'}
-                            </span>
-                            <div className="text-[10px] text-slate-400 font-mono">
-                              Hash: {inv.id.substring(0, 16)}...
-                            </div>
-                          </td>
-                          <td className="py-3 px-3 font-semibold text-slate-200 capitalize">
-                            {inv.invitedRole}
-                          </td>
-                          <td className="py-3 px-3">
-                            <span
-                              className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${
-                                inv.tokenStatus === 'pending'
-                                  ? 'bg-amber-500/15 text-amber-300 border-amber-500/30'
-                                  : inv.tokenStatus === 'accepted'
-                                  ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
-                                  : 'bg-rose-500/15 text-rose-300 border-rose-500/30'
-                              }`}
-                            >
-                              {inv.tokenStatus === 'pending'
-                                ? 'Pendente'
-                                : inv.tokenStatus === 'accepted'
-                                ? 'Aceito'
-                                : inv.tokenStatus === 'revoked'
-                                ? 'Revogado'
-                                : inv.tokenStatus}
-                            </span>
-                          </td>
-                          <td className="py-3 px-3 text-slate-400">
-                            {new Date(inv.expiresAt).toLocaleDateString()}
-                          </td>
-                          <td className="py-3 px-3 text-right">
-                            {isOwnerOrAdmin && inv.tokenStatus === 'pending' && !isArchived && (
-                              <button
-                                onClick={() => handleRevokeInvite(inv.id)}
-                                className="text-rose-400 hover:text-rose-300 font-semibold cursor-pointer"
+                      {invites.map((inv) => {
+                        const deliveryLabel =
+                          inv.emailDeliveryStatus === 'sent'
+                            ? 'E-mail enviado'
+                            : inv.emailDeliveryStatus === 'failed'
+                            ? 'Falha no e-mail'
+                            : inv.emailDeliveryStatus === 'not_configured_local_emulator'
+                            ? 'Emulador local (sem SMTP)'
+                            : 'Somente token';
+                        return (
+                          <tr key={inv.id} className="hover:bg-slate-800/50">
+                            <td className="py-3 px-3">
+                              <span className="font-semibold text-white">
+                                {inv.invitedEmail || 'Qualquer pessoa com o link'}
+                              </span>
+                              <div className="text-[10px] text-slate-400 font-mono">
+                                Hash: {inv.id.substring(0, 16)}...
+                              </div>
+                            </td>
+                            <td className="py-3 px-3 font-semibold text-slate-200 capitalize">
+                              {inv.invitedRole}
+                            </td>
+                            <td className="py-3 px-3 space-y-1">
+                              <div>
+                                {inv.invitedEmail ? (
+                                  <span
+                                    className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${
+                                      inv.accountExists
+                                        ? 'bg-indigo-500/15 text-indigo-300 border-indigo-500/30'
+                                        : 'bg-slate-700/80 text-slate-200 border-slate-600'
+                                    }`}
+                                  >
+                                    {inv.accountExists
+                                      ? 'Situação A: Conta existente'
+                                      : 'Situação B: Aguardando cadastro'}
+                                  </span>
+                                ) : (
+                                  <span className="text-[11px] text-slate-400">Link aberto</span>
+                                )}
+                              </div>
+                              <div className="text-[10px] text-slate-400">
+                                {deliveryLabel}
+                              </div>
+                            </td>
+                            <td className="py-3 px-3">
+                              <span
+                                className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${
+                                  inv.tokenStatus === 'pending'
+                                    ? 'bg-amber-500/15 text-amber-300 border-amber-500/30'
+                                    : inv.tokenStatus === 'accepted'
+                                    ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                                    : 'bg-rose-500/15 text-rose-300 border-rose-500/30'
+                                }`}
                               >
-                                Revogar
-                              </button>
-                            )}
-                          </td>
-                        </tr>
-                      ))}
+                                {inv.tokenStatus === 'pending'
+                                  ? 'Pendente'
+                                  : inv.tokenStatus === 'accepted'
+                                  ? 'Aceito'
+                                  : inv.tokenStatus === 'revoked'
+                                  ? 'Revogado'
+                                  : inv.tokenStatus === 'rejected'
+                                  ? 'Recusado'
+                                  : inv.tokenStatus}
+                              </span>
+                            </td>
+                            <td className="py-3 px-3 text-slate-400">
+                              {new Date(inv.expiresAt).toLocaleDateString('pt-BR')}
+                            </td>
+                            <td className="py-3 px-3 text-right">
+                              {isOwnerOrAdmin && inv.tokenStatus === 'pending' && !isArchived && (
+                                <button
+                                  onClick={() => handleRevokeInvite(inv.id)}
+                                  className="text-rose-400 hover:text-rose-300 font-semibold cursor-pointer"
+                                >
+                                  Revogar
+                                </button>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
@@ -1785,11 +2034,25 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
               </form>
             ) : (
               <div className="space-y-4">
-                <div className="p-3 bg-emerald-500/15 text-emerald-200 text-xs rounded-xl border border-emerald-500/30">
+                <div className="p-3 bg-emerald-500/15 text-emerald-200 text-xs rounded-xl border border-emerald-500/30 space-y-1.5">
                   <p className="font-bold text-emerald-300">Convite Gerado com Sucesso!</p>
-                  <p className="text-[11px] mt-0.5 text-emerald-200/80">
-                    O token abaixo foi criptografado com hash SHA-256 no banco de dados. Compartilhe-o com o convidado.
+                  <p className="text-[11px] text-emerald-200/80">
+                    O token abaixo foi protegido com hash SHA-256 no banco de dados. Compartilhe-o com o convidado se necessário.
                   </p>
+                  {generatedInviteResult.invite.invitedEmail && (
+                    <div className="pt-1 border-t border-emerald-500/20 text-[11px] space-y-1">
+                      <p className="font-semibold text-white">
+                        {generatedInviteResult.invite.accountExists
+                          ? 'Situação A — Conta já cadastrada detectada: o convidado também recebeu notificação direta no aplicativo.'
+                          : 'Situação B — E-mail sem cadastro prévio: convite reservado para este e-mail após confirmação de cadastro (sem ingresso automático).'}
+                      </p>
+                      {generatedInviteResult.invite.emailDeliveryMessage && (
+                        <p className="text-amber-200">
+                          Status do e-mail: {generatedInviteResult.invite.emailDeliveryMessage}
+                        </p>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 <div>
@@ -1851,6 +2114,15 @@ export const SharedSpacesViewV3: React.FC<SharedSpacesViewV3Props> = ({
             </div>
 
             <div className="space-y-4">
+              {!effectiveEmailVerified && (
+                <div className="p-3 rounded-xl bg-amber-500/15 border border-amber-500/35 text-xs text-amber-200 flex items-start gap-2">
+                  <i className="ph-fill ph-envelope-simple text-amber-400 text-base shrink-0 mt-0.5" />
+                  <span>
+                    Seu e-mail ainda não foi verificado. Confirme seu endereço de e-mail para aceitar convites de espaços compartilhados.
+                  </span>
+                </div>
+              )}
+
               <div>
                 <label className="block text-xs font-bold text-slate-200 mb-1">
                   Cole o Token de Convite
