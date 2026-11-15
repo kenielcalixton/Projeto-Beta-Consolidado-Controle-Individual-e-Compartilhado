@@ -7251,7 +7251,7 @@ export async function executeServerSideAcquisitionCheckout(db, callerUid, payloa
     throw new HttpsError('invalid-argument', 'Chave de idempotência é obrigatória.');
   }
 
-  // Validação estrita da conservação contábil dos desembolsos
+  // Validação estrita da conservação contábil e política de desembolsos
   let sumDisbursements = 0;
   for (const d of disbursements) {
     const dAmount = Number(d.disbursedAmountCents);
@@ -7260,6 +7260,16 @@ export async function executeServerSideAcquisitionCheckout(db, callerUid, payloa
     }
     if (!d.funderUid) {
       throw new HttpsError('invalid-argument', 'funderUid é obrigatório em cada desembolso.');
+    }
+    const cleanSourceAccountId =
+      d?.sourceAccountId !== undefined && d?.sourceAccountId !== null
+        ? String(d.sourceAccountId).trim()
+        : '';
+    if (cleanSourceAccountId) {
+      throw new HttpsError(
+        'invalid-argument',
+        'Débito automático por conta bancária (sourceAccountId) ainda não está disponível no checkout de aquisições.'
+      );
     }
     sumDisbursements += dAmount;
   }
@@ -7341,7 +7351,7 @@ export async function executeServerSideAcquisitionCheckout(db, callerUid, payloa
         funderName: String(d.funderName || '').trim(),
         disbursedAmountCents: Number(d.disbursedAmountCents),
         fundingSource: d.fundingSource || 'checking',
-        sourceAccountId: d.sourceAccountId || null,
+        sourceAccountId: null,
       })),
       ownershipShares,
       linkedExpenseId,
@@ -7739,12 +7749,117 @@ export async function executeServerSideReverseAcquisitionPurchase(db, callerUid,
       return { reversal: existingReversals.docs[0].data(), purchase, item: itemData, isIdempotentReplay: true };
     }
 
+    // 0. Pré-carregamento e verificação obrigatória de desembolsos com sourceAccountId ANTES de qualquer escrita
+    const disbursementsWithSourceAcc = Array.isArray(purchase.disbursements)
+      ? purchase.disbursements
+          .map((d) => ({
+            raw: d,
+            sourceAccountId:
+              d?.sourceAccountId !== undefined && d?.sourceAccountId !== null
+                ? String(d.sourceAccountId).trim()
+                : '',
+          }))
+          .filter((entry) => entry.sourceAccountId !== '')
+      : [];
+
+    const verifiedAccountReversals = [];
+    const accountStateById = new Map();
+
+    if (disbursementsWithSourceAcc.length > 0) {
+      const uniqueAccIds = [...new Set(disbursementsWithSourceAcc.map((e) => e.sourceAccountId))];
+      const candidateDebitsByAccId = new Map();
+
+      for (const accId of uniqueAccIds) {
+        const accRef = db.collection('accounts').doc(accId);
+        const accSnap = await tx.get(accRef);
+        const movQuerySnap = await tx.get(
+          accRef.collection('movements').where('originId', '==', purchaseId)
+        );
+        accountStateById.set(accId, {
+          accRef,
+          accSnap,
+          accData: accSnap.exists ? accSnap.data() : null,
+        });
+        candidateDebitsByAccId.set(
+          accId,
+          movQuerySnap.docs.map((docSnap) => ({ id: docSnap.id, ...docSnap.data() }))
+        );
+      }
+
+      const consumedDebitIds = new Set();
+      const pendingRevMovReads = [];
+
+      for (const entry of disbursementsWithSourceAcc) {
+        const d = entry.raw;
+        const accId = entry.sourceAccountId;
+        const accState = accountStateById.get(accId);
+        const accSnap = accState?.accSnap;
+        const accData = accState?.accData;
+        const expectedFunderUid = String(d?.funderUid || '').trim();
+        const expectedAmountCents = Number(d?.disbursedAmountCents);
+
+        if (!accSnap || !accSnap.exists || !accData || isAccountArchivedServer(accData)) {
+          throw new HttpsError(
+            'failed-precondition',
+            `Estorno automático bloqueado para análise: a compra "${purchaseId}" referencia sourceAccountId ("${accId}") inexistente ou arquivada sem comprovação verificável de débito.`
+          );
+        }
+
+        if (!expectedFunderUid || accData.userId !== expectedFunderUid) {
+          throw new HttpsError(
+            'failed-precondition',
+            `Estorno automático bloqueado para análise: a conta "${accId}" vinculada à compra "${purchaseId}" não corresponde ao titular do desembolso.`
+          );
+        }
+
+        const candidates = candidateDebitsByAccId.get(accId) || [];
+        const matchedDebit = candidates.find((m) => {
+          if (consumedDebitIds.has(m.id)) return false;
+          if (d?.debitMovementId && m.id !== String(d.debitMovementId).trim()) return false;
+          return (
+            m.originType === 'acquisition_checkout' &&
+            m.direction === 'outflow' &&
+            !m.reversalOfMovementId &&
+            m.amountCents === expectedAmountCents &&
+            m.userId === expectedFunderUid
+          );
+        });
+
+        if (!matchedDebit) {
+          throw new HttpsError(
+            'failed-precondition',
+            `Estorno automático bloqueado para análise: a compra "${purchaseId}" possui desembolso com sourceAccountId ("${accId}") sem débito financeiro correspondente verificável.`
+          );
+        }
+
+        consumedDebitIds.add(matchedDebit.id);
+        const revMovId = serverGenerateReversalDocId(matchedDebit.id);
+        pendingRevMovReads.push({
+          accId,
+          accRef: accState.accRef,
+          disbursement: d,
+          originalDebit: matchedDebit,
+          revMovId,
+        });
+      }
+
+      for (const itemRev of pendingRevMovReads) {
+        const existingRevMovSnap = await tx.get(
+          itemRev.accRef.collection('movements').doc(itemRev.revMovId)
+        );
+        verifiedAccountReversals.push({
+          ...itemRev,
+          alreadyReversed: existingRevMovSnap.exists,
+        });
+      }
+    }
+
     const now = new Date().toISOString();
 
-    // 1. Reversão de estoque se recorrente
+    // 1. Reversão de estoque se recorrente (apenas após todas as leituras e validações)
     let newStock = itemData.currentStock || 0;
     let newStage = itemData.stage;
-    let finalPaidAmountCents = itemData.finalPaidAmountCents;
+    let finalPaidAmountCents = itemData.finalPaidAmountCents ?? null;
 
     if (itemData.listType === 'recorrente') {
       const prevStock = itemData.currentStock || 0;
@@ -7780,37 +7895,46 @@ export async function executeServerSideReverseAcquisitionPurchase(db, callerUid,
       updatedAt: now,
     });
 
-    // 2. Reversão de desembolsos
-    if (Array.isArray(purchase.disbursements)) {
-      for (const d of purchase.disbursements) {
-        if (d.sourceAccountId) {
-          const accRef = db.collection('accounts').doc(d.sourceAccountId);
-          const accSnap = await tx.get(accRef);
-          if (accSnap.exists) {
-            const accData = accSnap.data();
-            const compMovId = serverGenerateMovementDocId(d.sourceAccountId, `${idemKey}_rev_d_${d.funderUid}`);
-            const compMov = serverBuildFinancialMovement({
-              id: compMovId,
-              accountId: d.sourceAccountId,
-              userId: d.funderUid,
-              direction: 'inflow',
-              amountCents: d.disbursedAmountCents,
-              effectiveDate: now.slice(0, 10),
-              originType: 'acquisition_checkout',
-              originId: reversalId,
-              reversalOfMovementId: purchaseId,
-              description: `Estorno de compra de aquisição (${itemData.name || 'Item'})`,
-              notes: reversalReason || 'Estorno contábil compensatório de desembolso.',
-              authorUid: cleanCaller,
-              idempotencyKey: `${idemKey}_rev_d_${d.funderUid}`,
-            });
-            tx.set(accRef.collection('movements').doc(compMovId), compMov);
-            tx.update(accRef, {
-              projectedBalanceCents: (accData.projectedBalanceCents || 0) + d.disbursedAmountCents,
-              updatedAt: now,
-            });
-          }
-        }
+    // 2. Reversão de desembolsos SOMENTE quando houver débito financeiro original verificável
+    if (verifiedAccountReversals.length > 0) {
+      const runningBalanceByAccId = new Map();
+      const updatedAccRefsById = new Map();
+
+      for (const rev of verifiedAccountReversals) {
+        if (rev.alreadyReversed) continue;
+
+        const accState = accountStateById.get(rev.accId);
+        const currentBalance = runningBalanceByAccId.has(rev.accId)
+          ? runningBalanceByAccId.get(rev.accId)
+          : (accState.accData.projectedBalanceCents || 0);
+
+        const amountCents = Number(rev.disbursement.disbursedAmountCents);
+        const compMov = serverBuildFinancialMovement({
+          id: rev.revMovId,
+          accountId: rev.accId,
+          userId: rev.originalDebit.userId,
+          direction: 'inflow',
+          amountCents,
+          effectiveDate: now.slice(0, 10),
+          originType: 'acquisition_reversal',
+          originId: reversalId,
+          reversalOfMovementId: rev.originalDebit.id,
+          description: `Estorno de compra de aquisição (${itemData.name || 'Item'})`,
+          notes: reversalReason || 'Estorno contábil compensatório de desembolso verificado.',
+          authorUid: cleanCaller,
+          idempotencyKey: `reversal_${rev.originalDebit.id}`,
+        });
+
+        tx.set(rev.accRef.collection('movements').doc(rev.revMovId), compMov);
+        runningBalanceByAccId.set(rev.accId, currentBalance + amountCents);
+        updatedAccRefsById.set(rev.accId, rev.accRef);
+      }
+
+      for (const [accId, accRef] of updatedAccRefsById.entries()) {
+        tx.update(accRef, {
+          projectedBalanceCents: runningBalanceByAccId.get(accId),
+          updatedAt: now,
+        });
       }
     }
 
