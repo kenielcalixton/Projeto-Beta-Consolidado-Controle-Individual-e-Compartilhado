@@ -190,7 +190,7 @@ export async function createPersonalTransaction(
     }
 
     const now = new Date().toISOString();
-    const initialStatus = input.status || 'pending';
+    let effectiveStatus = input.status || 'pending';
     const dueDate = input.dueDate || input.competenceDate;
 
     let financialMovementId: string | undefined;
@@ -199,13 +199,32 @@ export async function createPersonalTransaction(
     let remainingAmountCents: CentsInteger = input.amountCents;
     let targetAccount: Account | undefined = undefined;
 
-    if (initialStatus === 'paid') {
+    if (input.accountId?.trim()) {
+      const accounts = await getUserAccounts(userId, true, true);
+      targetAccount = accounts.find((a) => a.id === input.accountId);
+      if (targetAccount) {
+        if (targetAccount.isArchived && effectiveStatus === 'paid') {
+          throw new Error(`A conta "${targetAccount.name}" está arquivada e não recebe lançamentos.`);
+        }
+        if (targetAccount.type === 'credit') {
+          if (input.type === 'income') {
+            throw new Error('Não é permitido receber receitas diretamente em conta de cartão de crédito.');
+          }
+          if (targetAccount.isArchived) {
+            throw new Error(`O cartão "${targetAccount.name}" está arquivado e não recebe lançamentos.`);
+          }
+          if (effectiveStatus !== 'cancelled') {
+            effectiveStatus = 'paid';
+          }
+        }
+      }
+    }
+
+    if (effectiveStatus === 'paid') {
       if (!input.accountId?.trim()) {
         throw new Error('Uma conta bancária, carteira ou cartão é obrigatório para transações pagas.');
       }
 
-      const accounts = await getUserAccounts(userId, true, true);
-      targetAccount = accounts.find((a) => a.id === input.accountId);
       if (!targetAccount) {
         throw new Error(`Conta "${input.accountId}" não encontrada.`);
       }
@@ -268,13 +287,13 @@ export async function createPersonalTransaction(
       description: cleanDescription,
       amountCents: input.amountCents,
       type: input.type,
-      status: initialStatus,
+      status: effectiveStatus,
       categoryId: input.categoryId,
       categoryName: input.categoryName,
       accountId: input.accountId,
       competenceDate: input.competenceDate,
       dueDate,
-      paymentDate: initialStatus === 'paid' ? (input.paymentDate || input.competenceDate) : undefined,
+      paymentDate: effectiveStatus === 'paid' ? (input.paymentDate || input.competenceDate) : undefined,
       invoiceMonth,
       financialMovementId,
       originType: input.originType || 'manual',
@@ -287,7 +306,7 @@ export async function createPersonalTransaction(
       updatedAt: now,
     };
 
-    if (initialStatus === 'paid' && financialMovementId && targetAccount && targetAccount.type !== 'credit') {
+    if (effectiveStatus === 'paid' && financialMovementId && targetAccount && targetAccount.type !== 'credit') {
       const currentPayments = loadDemoPayments();
       currentPayments.push({
         id: `txpay_init_${txId}`,

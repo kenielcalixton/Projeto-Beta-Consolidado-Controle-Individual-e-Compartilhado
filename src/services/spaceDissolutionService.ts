@@ -143,7 +143,11 @@ async function countSpaceRecords(spaceId: string, isDemo: boolean): Promise<{
       paymentsCount += paySnap.size;
     }
 
-    const listQuery = query(collection(db, 'acquisition_lists'), where('spaceId', '==', spaceId));
+    const listQuery = query(
+      collection(db, 'acquisition_lists'),
+      where('scopeType', '==', 'shared'),
+      where('spaceId', '==', spaceId)
+    );
     const listSnap = await getDocs(listQuery);
     const listsCount = listSnap.size;
     let itemsCount = 0;

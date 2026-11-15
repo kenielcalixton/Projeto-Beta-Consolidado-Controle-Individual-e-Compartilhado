@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Account,
   CentsInteger,
@@ -107,6 +107,7 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
     useState<ExpenseRestitutionObligation | null>(null);
   const [restitutionConfirmAccountId, setRestitutionConfirmAccountId] = useState('');
   const [restitutionConfirmAmountInput, setRestitutionConfirmAmountInput] = useState('');
+  const [restitutionAttemptKey, setRestitutionAttemptKey] = useState('');
 
   // Formulário: Declarar Pagamento
   const [declExpense, setDeclExpense] = useState<SharedExpense | null>(null);
@@ -116,6 +117,7 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
   const [declMethod, setDeclMethod] = useState<PaymentDeclarationMethod>('pix');
   const [declNotes, setDeclNotes] = useState('');
   const [declProofUrl, setDeclProofUrl] = useState('');
+  const [declAttemptKey, setDeclAttemptKey] = useState('');
 
   // Formulário: Aprovação
   const [selectedDeclForApproval, setSelectedDeclForApproval] =
@@ -176,10 +178,15 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
   const [selectedRestitutionReceiptId, setSelectedRestitutionReceiptId] = useState('');
   const [restitutionReverseReason, setRestitutionReverseReason] = useState('');
 
+  const loadedContextRef = useRef<string | null>(null);
+
   // Carrega todos os dados financeiros do espaço (Modo Real/Emulador e Modo Demo)
-  const loadFinanceData = async () => {
+  const loadFinanceData = async (options?: { silent?: boolean }) => {
+    const isSilent = Boolean(options?.silent);
     try {
-      setLoading(true);
+      if (!isSilent) {
+        setLoading(true);
+      }
       const [mems, accs, exps, summ, pDecls, apps, revocs, restits, custTransfers, custBals] =
         await Promise.all([
           getSpaceMembers(space.id, userId, isDemo).catch(() => []),
@@ -221,13 +228,21 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
     } catch (err: any) {
       onFeedback('error', err.message || 'Erro ao carregar dados financeiros do espaço.');
     } finally {
-      setLoading(false);
+      if (!isSilent) {
+        setLoading(false);
+      }
     }
   };
 
   useEffect(() => {
-    loadFinanceData();
-  }, [space.id, userId, refreshTrigger]);
+    const contextKey = `${space.id}::${userId}`;
+    const isInitialContextLoad = loadedContextRef.current !== contextKey;
+    loadedContextRef.current = contextKey;
+    loadFinanceData({ silent: !isInitialContextLoad });
+  }, [space.id, userId, refreshTrigger, activeTab]);
+
+  const createUiAttemptKey = (prefix: string) =>
+    `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
   // Handler: Abrir modal de declaração de pagamento
   const handleOpenDeclarePayment = (expense: SharedExpense, liability: ExpenseLiability) => {
@@ -235,6 +250,7 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
     setDeclLiability(liability);
     const rem = liability.remainingAmountCents ?? liability.adjustedShareAmountCents;
     setDeclAmountInput((rem / 100).toFixed(2).replace('.', ','));
+    setDeclAttemptKey(createUiAttemptKey(`decl_${expense.id}`));
     setIsDeclareModalOpen(true);
   };
 
@@ -256,6 +272,7 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
           paymentMethod: declMethod,
           notes: declNotes || undefined,
           proofUrl: declProofUrl || undefined,
+          idempotencyKey: declAttemptKey || createUiAttemptKey(`decl_${declExpense.id}`),
         },
         isDemo
       );
@@ -267,7 +284,8 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
       setIsDeclareModalOpen(false);
       setDeclNotes('');
       setDeclProofUrl('');
-      await loadFinanceData();
+      setDeclAttemptKey('');
+      await loadFinanceData({ silent: true });
     } catch (err: any) {
       onFeedback('error', err.message);
     }
@@ -380,6 +398,8 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
           creditorUid: userId,
           amountCents: cents,
           destinationAccountId: restitutionConfirmAccountId,
+          idempotencyKey:
+            restitutionAttemptKey || createUiAttemptKey(`rst_${selectedRestitutionForConfirm.id}`),
         },
         isDemo
       );
@@ -388,6 +408,7 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
       setSelectedRestitutionForConfirm(null);
       setRestitutionConfirmAccountId('');
       setRestitutionConfirmAmountInput('');
+      setRestitutionAttemptKey('');
       await loadFinanceData();
     } catch (err: any) {
       onFeedback('error', err.message || 'Erro ao confirmar restituição.');
@@ -1326,6 +1347,7 @@ export const SharedFinanceSectionV3: React.FC<SharedFinanceSectionV3Props> = ({
                               setRestitutionConfirmAmountInput(
                                 (rest.remainingAmountCents / 100).toFixed(2).replace('.', ',')
                               );
+                              setRestitutionAttemptKey(createUiAttemptKey(`rst_${rest.id}`));
                               setIsConfirmRestitutionModalOpen(true);
                             }}
                             className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold whitespace-nowrap shadow-xs"

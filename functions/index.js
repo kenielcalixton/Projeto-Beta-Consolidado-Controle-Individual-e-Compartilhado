@@ -2135,13 +2135,7 @@ export async function executeServerSideCreatePersonalTransaction(db, callerUid, 
     throw new HttpsError('invalid-argument', 'Data de vencimento inválida. Use o formato YYYY-MM-DD.');
   }
 
-  const initialStatus = params.status || 'pending';
-  if (initialStatus === 'paid' && !params.accountId?.trim()) {
-    throw new HttpsError(
-      'invalid-argument',
-      'Uma conta bancária, carteira ou cartão é obrigatório para transações pagas.'
-    );
-  }
+  const requestedStatus = params.status || 'pending';
 
   const providedIdemKey = params.idempotencyKey ? String(params.idempotencyKey).trim() : '';
   const txId = providedIdemKey
@@ -2177,6 +2171,7 @@ export async function executeServerSideCreatePersonalTransaction(db, callerUid, 
     let movRef = null;
     let movSnap = null;
     let candidateMov = null;
+    let effectiveStatus = requestedStatus;
 
     if (params.accountId && String(params.accountId).trim()) {
       targetAccRef = db.collection('accounts').doc(String(params.accountId).trim());
@@ -2195,14 +2190,21 @@ export async function executeServerSideCreatePersonalTransaction(db, callerUid, 
         );
       }
 
-      if (initialStatus === 'paid') {
+      if (isCreditAccountServer(targetAcc)) {
+        if (params.type === 'income') {
+          throw new HttpsError(
+            'invalid-argument',
+            'Receitas não podem ter cartão de crédito como meio de recebimento.'
+          );
+        }
+        // Compras no cartão de crédito entram imediatamente na fatura projetada e consomem limite
+        if (effectiveStatus !== 'cancelled') {
+          effectiveStatus = 'paid';
+        }
+      }
+
+      if (effectiveStatus === 'paid') {
         if (isCreditAccountServer(targetAcc)) {
-          if (params.type === 'income') {
-            throw new HttpsError(
-              'invalid-argument',
-              'Receitas não podem ter cartão de crédito como meio de recebimento.'
-            );
-          }
           const closingDay = targetAcc.closingDay || 20;
           invoiceMonth = calculateInvoiceMonthForPurchaseServer(competenceDate, closingDay);
           invRef = targetAccRef.collection('invoices').doc(invoiceMonth);
@@ -2228,6 +2230,11 @@ export async function executeServerSideCreatePersonalTransaction(db, callerUid, 
           movSnap = await tx.get(movRef);
         }
       }
+    } else if (requestedStatus === 'paid') {
+      throw new HttpsError(
+        'invalid-argument',
+        'Uma conta bancária, carteira ou cartão é obrigatório para transações pagas.'
+      );
     }
 
     const nowIso = new Date().toISOString();
@@ -2235,7 +2242,7 @@ export async function executeServerSideCreatePersonalTransaction(db, callerUid, 
     let paidAmountCents = 0;
     let remainingAmountCents = params.amountCents;
 
-    if (initialStatus === 'paid' && targetAcc && targetAccRef) {
+    if (effectiveStatus === 'paid' && targetAcc && targetAccRef) {
       if (isCreditAccountServer(targetAcc) && invRef && chargeRef && invoiceMonth) {
         const closingDay = targetAcc.closingDay || 20;
         const dueDay = targetAcc.dueDay || 28;
@@ -2341,14 +2348,14 @@ export async function executeServerSideCreatePersonalTransaction(db, callerUid, 
       description: cleanDesc,
       amountCents: params.amountCents,
       type: params.type,
-      status: initialStatus,
+      status: effectiveStatus,
       categoryId: params.categoryId || 'uncategorized',
       categoryName: params.categoryName || 'Geral',
       accountId: params.accountId ? String(params.accountId).trim() : undefined,
       competenceDate,
       dueDate,
       paymentDate:
-        initialStatus === 'paid' ? params.paymentDate || competenceDate : undefined,
+        effectiveStatus === 'paid' ? params.paymentDate || competenceDate : undefined,
       invoiceMonth,
       financialMovementId,
       originType: params.originType || 'manual',
@@ -7169,6 +7176,30 @@ export function serverGenerateDepositDocId(itemId, idempotencyKey) {
   return `dep_${cleanSlug ? `${cleanSlug}_` : ''}${hash.slice(0, 32)}`;
 }
 
+async function assertAcquisitionListWriteAccessServer(tx, db, listData, cleanCaller, actionLabel) {
+  if (listData.scopeType === 'individual') {
+    if (listData.ownerUid !== cleanCaller) {
+      throw new HttpsError('permission-denied', `Apenas o proprietário pode ${actionLabel} na lista individual.`);
+    }
+    return null;
+  }
+  if (!listData.spaceId) {
+    throw new HttpsError('failed-precondition', 'Lista compartilhada sem spaceId associado.');
+  }
+  const spaceSnap = await tx.get(db.collection('spaces').doc(listData.spaceId));
+  if (!spaceSnap.exists) {
+    throw new HttpsError('not-found', 'Espaço da lista compartilhada não encontrado.');
+  }
+  const spaceData = spaceSnap.data();
+  if (spaceData.spaceStatus === 'archived' || spaceData.spaceStatus === 'dissolved') {
+    throw new HttpsError('failed-precondition', 'Espaço arquivado ou dissolvido: operações de aquisição bloqueadas.');
+  }
+  if (!Array.isArray(spaceData.memberUids) || !spaceData.memberUids.includes(cleanCaller)) {
+    throw new HttpsError('permission-denied', `Apenas membros do espaço podem ${actionLabel} na lista.`);
+  }
+  return spaceData;
+}
+
 /**
  * Checkout de item de aquisição com registro canônico de copropriedade imutável.
  */
@@ -7262,24 +7293,8 @@ export async function executeServerSideAcquisitionCheckout(db, callerUid, payloa
     }
     const listData = listSnap.data();
 
-    // Valida permissão do chamador
-    if (listData.scopeType === 'individual') {
-      if (listData.ownerUid !== cleanCaller) {
-        throw new HttpsError('permission-denied', 'Apenas o proprietário pode realizar checkout na lista individual.');
-      }
-    } else {
-      if (!listData.spaceId) {
-        throw new HttpsError('failed-precondition', 'Lista compartilhada sem spaceId associado.');
-      }
-      const spaceSnap = await tx.get(db.collection('spaces').doc(listData.spaceId));
-      if (!spaceSnap.exists) {
-        throw new HttpsError('not-found', 'Espaço da lista compartilhada não encontrado.');
-      }
-      const spaceData = spaceSnap.data();
-      if (!spaceData.memberUids?.includes(cleanCaller)) {
-        throw new HttpsError('permission-denied', 'Apenas membros do espaço podem realizar checkout na lista.');
-      }
-    }
+    // Valida permissão do chamador e status ativo do espaço
+    await assertAcquisitionListWriteAccessServer(tx, db, listData, cleanCaller, 'realizar checkout');
 
     const itemRef = listRef.collection('items').doc(itemId);
     const itemSnap = await tx.get(itemRef);
@@ -7432,6 +7447,7 @@ export async function executeServerSideRecordStockMovement(db, callerUid, payloa
     const listRef = db.collection('acquisition_lists').doc(listId);
     const listSnap = await tx.get(listRef);
     if (!listSnap.exists) throw new HttpsError('not-found', 'Lista não encontrada.');
+    await assertAcquisitionListWriteAccessServer(tx, db, listSnap.data(), cleanCaller, 'movimentar estoque');
 
     const itemRef = listRef.collection('items').doc(itemId);
     const itemSnap = await tx.get(itemRef);
@@ -7514,6 +7530,7 @@ export async function executeServerSideRecordQuote(db, callerUid, payload) {
     const listRef = db.collection('acquisition_lists').doc(listId);
     const listSnap = await tx.get(listRef);
     if (!listSnap.exists) throw new HttpsError('not-found', 'Lista não encontrada.');
+    await assertAcquisitionListWriteAccessServer(tx, db, listSnap.data(), cleanCaller, 'registrar cotação');
 
     const itemRef = listRef.collection('items').doc(itemId);
     const itemSnap = await tx.get(itemRef);
@@ -7574,6 +7591,7 @@ export async function executeServerSideRecordDeposit(db, callerUid, payload) {
     const listRef = db.collection('acquisition_lists').doc(listId);
     const listSnap = await tx.get(listRef);
     if (!listSnap.exists) throw new HttpsError('not-found', 'Lista não encontrada.');
+    await assertAcquisitionListWriteAccessServer(tx, db, listSnap.data(), cleanCaller, 'registrar depósito');
 
     const itemRef = listRef.collection('items').doc(itemId);
     const itemSnap = await tx.get(itemRef);
@@ -7698,23 +7716,7 @@ export async function executeServerSideReverseAcquisitionPurchase(db, callerUid,
     if (!listSnap.exists) throw new HttpsError('not-found', 'Lista não encontrada.');
     const listData = listSnap.data();
 
-    if (listData.scopeType === 'individual') {
-      if (listData.ownerUid !== cleanCaller) {
-        throw new HttpsError('permission-denied', 'Apenas o proprietário pode estornar compras na lista individual.');
-      }
-    } else {
-      if (!listData.spaceId) {
-        throw new HttpsError('failed-precondition', 'Lista compartilhada sem spaceId associado.');
-      }
-      const spaceSnap = await tx.get(db.collection('spaces').doc(listData.spaceId));
-      if (!spaceSnap.exists) {
-        throw new HttpsError('not-found', 'Espaço da lista compartilhada não encontrado.');
-      }
-      const spaceData = spaceSnap.data();
-      if (!spaceData.memberUids?.includes(cleanCaller)) {
-        throw new HttpsError('permission-denied', 'Apenas membros do espaço podem estornar compras na lista.');
-      }
-    }
+    await assertAcquisitionListWriteAccessServer(tx, db, listData, cleanCaller, 'estornar compras');
 
     const itemRef = listRef.collection('items').doc(itemId);
     const itemSnap = await tx.get(itemRef);
@@ -7938,7 +7940,11 @@ export async function executeServerSideCreateRecurrenceRule(db, callerUid, paylo
       if (!spaceId) throw new HttpsError('invalid-argument', 'spaceId é obrigatório para recorrência compartilhada.');
       const spaceSnap = await tx.get(db.collection('spaces').doc(spaceId));
       if (!spaceSnap.exists) throw new HttpsError('not-found', 'Espaço compartilhado não encontrado.');
-      if (!spaceSnap.data().memberUids?.includes(cleanCaller)) {
+      const spaceData = spaceSnap.data();
+      if (spaceData.spaceStatus === 'archived' || spaceData.spaceStatus === 'dissolved') {
+        throw new HttpsError('failed-precondition', 'Espaço arquivado ou dissolvido: criação de recorrência bloqueada.');
+      }
+      if (!spaceData.memberUids?.includes(cleanCaller)) {
         throw new HttpsError('permission-denied', 'Usuário não é membro do espaço.');
       }
     }
@@ -8003,12 +8009,24 @@ export async function executeServerSideGenerateRecurrenceInstance(db, callerUid,
     if (!ruleSnap.exists) throw new HttpsError('not-found', 'Regra de recorrência não encontrada.');
     const rule = ruleSnap.data();
 
-    // Valida permissão
-    if (rule.scope === 'personal' && rule.userId !== cleanCaller) {
-      throw new HttpsError('permission-denied', 'Acesso negado à regra de recorrência.');
-    } else if (rule.scope === 'shared' && rule.spaceId) {
+    // Valida permissão e status ativo do espaço
+    if (rule.scope === 'personal') {
+      if (rule.userId !== cleanCaller) {
+        throw new HttpsError('permission-denied', 'Acesso negado à regra de recorrência.');
+      }
+    } else if (rule.scope === 'shared') {
+      if (!rule.spaceId) {
+        throw new HttpsError('failed-precondition', 'Regra compartilhada sem spaceId associado.');
+      }
       const spaceSnap = await tx.get(db.collection('spaces').doc(rule.spaceId));
-      if (!spaceSnap.exists || !spaceSnap.data().memberUids?.includes(cleanCaller)) {
+      if (!spaceSnap.exists) {
+        throw new HttpsError('not-found', 'Espaço compartilhado não encontrado.');
+      }
+      const spaceData = spaceSnap.data();
+      if (spaceData.spaceStatus === 'archived' || spaceData.spaceStatus === 'dissolved') {
+        throw new HttpsError('failed-precondition', 'Espaço arquivado ou dissolvido: geração de instância bloqueada.');
+      }
+      if (!spaceData.memberUids?.includes(cleanCaller)) {
         throw new HttpsError('permission-denied', 'Usuário não é membro do espaço.');
       }
     }
@@ -8192,7 +8210,14 @@ export async function executeServerSideCreateInstallmentContract(db, callerUid, 
     if (scope === 'shared') {
       if (!spaceId) throw new HttpsError('invalid-argument', 'spaceId é obrigatório para parcelamento compartilhado.');
       const spaceSnap = await tx.get(db.collection('spaces').doc(spaceId));
-      if (!spaceSnap.exists || !spaceSnap.data().memberUids?.includes(cleanCaller)) {
+      if (!spaceSnap.exists) {
+        throw new HttpsError('not-found', 'Espaço compartilhado não encontrado.');
+      }
+      const spaceData = spaceSnap.data();
+      if (spaceData.spaceStatus === 'archived' || spaceData.spaceStatus === 'dissolved') {
+        throw new HttpsError('failed-precondition', 'Espaço arquivado ou dissolvido: criação de parcelamento bloqueada.');
+      }
+      if (!spaceData.memberUids?.includes(cleanCaller)) {
         throw new HttpsError('permission-denied', 'Usuário não é membro do espaço.');
       }
     }
@@ -8214,6 +8239,12 @@ export async function executeServerSideCreateInstallmentContract(db, callerUid, 
         throw new HttpsError('not-found', 'Conta de cartão de crédito não encontrada.');
       }
       cardAccountData = cardAccSnap.data();
+      if (cardAccountData.userId !== cleanCaller) {
+        throw new HttpsError('permission-denied', 'Acesso negado: o cartão de crédito pertence a outro usuário.');
+      }
+      if (isAccountArchivedServer(cardAccountData)) {
+        throw new HttpsError('failed-precondition', 'O cartão de crédito informado está arquivado.');
+      }
       if (cardAccountData.type !== 'credit') {
         throw new HttpsError('invalid-argument', 'A conta indicada não é uma conta de cartão de crédito.');
       }

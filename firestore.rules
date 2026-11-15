@@ -377,6 +377,13 @@ service cloud.firestore {
           (isSpaceCreator(spaceId) &&
            request.resource.data.requestStatus == 'cancelled_by_creator' &&
            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['requestStatus', 'cancelledAt', 'cancellationReason'])) ||
+          // Reabertura legítima pelo criador apenas após cancelamento de solicitação anterior
+          (isSpaceCreator(spaceId) &&
+           resource.data.requestStatus in ['cancelled_by_creator', 'auto_cancelled_timeout'] &&
+           request.resource.data.requestStatus == 'pending_author_responses' &&
+           request.resource.data.initiatedByUid == request.auth.uid &&
+           request.resource.data.spaceId == spaceId &&
+           request.resource.data.id == 'request') ||
           // Resposta do autor para a sua própria destinação
           (request.auth.uid in get(/databases/$(database)/documents/spaces/$(spaceId)).data.memberUids &&
            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['authorDestinations', 'requestStatus']))
@@ -400,10 +407,13 @@ service cloud.firestore {
           // Validação pelo responsável da despesa (credor primário)
           (request.auth.uid == resource.data.responsibleUid &&
            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['validationStatus', 'validatedByUid', 'validatedAt', 'rejectionReason', 'commitmentStatus', 'paymentExecutionStatus'])) ||
-          // Edição pelo autor antes de ser aprovada
+          // Edição pelo autor antes de ser aprovada (sem auto-aprovação nem alteração de espaço/responsável)
           (request.auth.uid == resource.data.createdByUid && 
             resource.data.validationStatus in ['pending_validation', 'rejected'] &&
-            request.resource.data.createdByUid == resource.data.createdByUid)
+            request.resource.data.createdByUid == resource.data.createdByUid &&
+            request.resource.data.spaceId == resource.data.spaceId &&
+            request.resource.data.responsibleUid == resource.data.responsibleUid &&
+            request.resource.data.validationStatus in ['pending_validation', 'rejected'])
         );
         allow delete: if false;
 
@@ -645,10 +655,19 @@ service cloud.firestore {
         (resource.data.get('scopeType', '') == 'shared' && isSpaceMember(resource.data.get('spaceId', '')))
       );
       allow create: if isAuthenticated() && (
-        (request.resource.data.get('scopeType', '') == 'individual' && request.resource.data.get('ownerUid', '') == request.auth.uid) ||
-        (request.resource.data.get('scopeType', '') == 'shared' && isSpaceMember(request.resource.data.get('spaceId', '')) && isSpaceActive(request.resource.data.get('spaceId', '')))
+        (request.resource.data.get('scopeType', '') == 'individual' &&
+          request.resource.data.get('ownerUid', '') == request.auth.uid &&
+          (!('spaceId' in request.resource.data) || request.resource.data.spaceId == null)) ||
+        (request.resource.data.get('scopeType', '') == 'shared' &&
+          (request.resource.data.get('ownerUid', '') == request.auth.uid ||
+           (!('ownerUid' in request.resource.data) && request.resource.data.get('createdByUid', '') == request.auth.uid)) &&
+          isSpaceMember(request.resource.data.get('spaceId', '')) &&
+          isSpaceActive(request.resource.data.get('spaceId', '')))
       );
-      allow update: if isAuthenticated() && (
+      allow update: if isAuthenticated() &&
+        request.resource.data.get('scopeType', '') == resource.data.get('scopeType', '') &&
+        request.resource.data.get('ownerUid', '') == resource.data.get('ownerUid', '') &&
+        request.resource.data.get('spaceId', null) == resource.data.get('spaceId', null) && (
         (resource.data.get('scopeType', '') == 'individual' && resource.data.get('ownerUid', '') == request.auth.uid) ||
         (resource.data.get('scopeType', '') == 'shared' && isSpaceMember(resource.data.get('spaceId', '')) && isSpaceActive(resource.data.get('spaceId', '')))
       );
@@ -658,12 +677,19 @@ service cloud.firestore {
         allow read: if isAuthenticated() && canAccessAcquisitionList(listId);
         allow create: if isAuthenticated() && canWriteAcquisitionList(listId) &&
           request.resource.data.createdByUid == request.auth.uid;
-        allow update: if isAuthenticated() && canWriteAcquisitionList(listId);
+        allow update: if isAuthenticated() && canWriteAcquisitionList(listId) &&
+          request.resource.data.get('listId', null) == resource.data.get('listId', null) &&
+          request.resource.data.get('createdByUid', null) == resource.data.get('createdByUid', null);
         allow delete: if isAuthenticated() && canWriteAcquisitionList(listId);
 
         match /purchases/{purchaseId} {
           allow read: if isAuthenticated() && canAccessAcquisitionList(listId);
           allow write: if false; // Compras criadas e estornadas exclusivamente via Cloud Functions com Admin SDK
+        }
+
+        match /purchase_reversals/{reversalId} {
+          allow read: if isAuthenticated() && canAccessAcquisitionList(listId);
+          allow write: if false; // Estornos registrados exclusivamente via Cloud Functions com Admin SDK
         }
 
         match /quotes/{quoteId} {
@@ -690,10 +716,18 @@ service cloud.firestore {
         (resource.data.scope == 'shared' && isSpaceMember(resource.data.spaceId))
       );
       allow create: if isAuthenticated() && (
-        (request.resource.data.scope == 'personal' && request.resource.data.userId == request.auth.uid) ||
-        (request.resource.data.scope == 'shared' && isSpaceMember(request.resource.data.spaceId) && isSpaceActive(request.resource.data.spaceId))
+        (request.resource.data.scope == 'personal' && request.resource.data.userId == request.auth.uid &&
+          (!('spaceId' in request.resource.data) || request.resource.data.spaceId == null)) ||
+        (request.resource.data.scope == 'shared' && request.resource.data.userId == request.auth.uid &&
+          isSpaceMember(request.resource.data.spaceId) && isSpaceActive(request.resource.data.spaceId))
       );
-      allow update: if isAuthenticated() && (
+      allow update: if isAuthenticated() &&
+        request.resource.data.scope == resource.data.scope &&
+        request.resource.data.userId == resource.data.userId &&
+        request.resource.data.get('spaceId', null) == resource.data.get('spaceId', null) &&
+        request.resource.data.get('amountCents', null) == resource.data.get('amountCents', null) &&
+        request.resource.data.get('type', null) == resource.data.get('type', null) &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt']) && (
         (resource.data.scope == 'personal' && resource.data.userId == request.auth.uid) ||
         (resource.data.scope == 'shared' && isSpaceMember(resource.data.spaceId) && isSpaceActive(resource.data.spaceId))
       );
@@ -710,15 +744,7 @@ service cloud.firestore {
         (resource.data.scope == 'personal' && resource.data.userId == request.auth.uid) ||
         (resource.data.scope == 'shared' && isSpaceMember(resource.data.spaceId))
       );
-      allow create: if isAuthenticated() && (
-        (request.resource.data.scope == 'personal' && request.resource.data.userId == request.auth.uid) ||
-        (request.resource.data.scope == 'shared' && isSpaceMember(request.resource.data.spaceId) && isSpaceActive(request.resource.data.spaceId))
-      );
-      allow update: if isAuthenticated() && (
-        (resource.data.scope == 'personal' && resource.data.userId == request.auth.uid) ||
-        (resource.data.scope == 'shared' && isSpaceMember(resource.data.spaceId) && isSpaceActive(resource.data.spaceId))
-      );
-      allow delete: if false;
+      allow create, update, delete: if false; // Contratos criados e cancelados exclusivamente via Cloud Functions com Admin SDK
 
       match /occurrences/{installmentNumber} {
         allow read: if isAuthenticated() && canAccessInstallmentContract(contractId);

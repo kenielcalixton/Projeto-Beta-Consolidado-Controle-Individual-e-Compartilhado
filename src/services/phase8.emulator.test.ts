@@ -411,5 +411,92 @@ test('FASE 8 — EMULATOR INTEGRATION: Listas de Aquisição, Checkout e Copropr
     );
   });
 
+  await t.test('8. Segurança nas Cloud Functions de Aquisição: usuário externo (Eve) é bloqueado em estoque, cotação, depósito e checkout', async () => {
+    const eveCred = await createUserWithEmailAndPassword(
+      auth,
+      'eve.phase8@exemplo.com',
+      'SenhaSegura123!'
+    );
+    const eveUid = eveCred.user.uid;
+
+    await assert.rejects(
+      async () => {
+        await recordStockMovement(
+          eveUid,
+          {
+            listId: sharedListId,
+            itemId: recurringItemId,
+            movementType: 'manual_adjustment',
+            quantityDelta: 50,
+            idempotencyKey: 'idem_eve_smov_hack',
+          },
+          false
+        );
+      },
+      /(permission-denied|Apenas membros do espaço)/
+    );
+
+    await assert.rejects(
+      async () => {
+        await recordAcquisitionQuote(
+          eveUid,
+          {
+            listId: sharedListId,
+            itemId: recurringItemId,
+            storeName: 'Loja Falsa Eve',
+            priceCents: 100,
+            idempotencyKey: 'idem_eve_quote_hack',
+          },
+          false
+        );
+      },
+      /(permission-denied|Apenas membros do espaço)/
+    );
+
+    await assert.rejects(
+      async () => {
+        await recordAcquisitionDeposit(
+          eveUid,
+          {
+            listId: sharedListId,
+            itemId: recurringItemId,
+            amountCents: 5000,
+            idempotencyKey: 'idem_eve_dep_hack',
+          },
+          false
+        );
+      },
+      /(permission-denied|Apenas membros do espaço)/
+    );
+
+    await assert.rejects(
+      async () => {
+        await recordAcquisitionPurchase(
+          eveUid,
+          {
+            listId: sharedListId,
+            itemId: recurringItemId,
+            storeName: 'Loja Hack Eve',
+            quantity: 1,
+            unitPriceCents: 1000,
+            itemsNetCents: 1000,
+            totalPaidCents: 1000,
+            disbursements: [
+              {
+                funderUid: eveUid,
+                funderName: 'Eve',
+                disbursedAmountCents: 1000,
+                fundingSource: 'checking',
+              },
+            ],
+            idempotencyKey: 'idem_eve_pur_hack',
+          },
+          false
+        );
+      },
+      /(permission-denied|Apenas membros do espaço)/
+    );
+  });
+
   await signOut(auth);
 });

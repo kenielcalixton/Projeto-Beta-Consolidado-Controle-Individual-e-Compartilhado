@@ -345,11 +345,18 @@ export const UniversalTransactionModal: React.FC<UniversalTransactionModalProps>
   const effectiveDueDate = invoiceProjection ? invoiceProjection.dueDate : dueDate;
   const effectiveSplits =
     splitMode === 'none' || type === 'income' ? [] : customSplits;
+  const isCreditCardExpense = Boolean(
+    selectedAccount?.type === 'credit' && type === 'expense' && splitMode === 'none'
+  );
+  const effectiveIsPaid = isPaid || isCreditCardExpense;
+  const effectivePaymentDate = effectiveIsPaid
+    ? paymentDate || competenceDate || getTodayDateString()
+    : '';
 
   // Status calculado automaticamente pelas regras de negócio
   const computedStatus: TransactionStatus = computeAutomatedStatus({
-    isPaid,
-    paymentDate,
+    isPaid: effectiveIsPaid,
+    paymentDate: effectivePaymentDate,
     dueDate: effectiveDueDate,
     splits: effectiveSplits,
   });
@@ -1035,7 +1042,9 @@ export const UniversalTransactionModal: React.FC<UniversalTransactionModalProps>
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div>
                 <span className="block text-xs font-semibold text-slate-200">
-                  {type === 'income'
+                  {isCreditCardExpense
+                    ? 'Lançamento em Cartão de Crédito'
+                    : type === 'income'
                     ? 'Processo de Efetivação da Receita'
                     : 'Controle de Vencimento & Pagamento da Despesa'}
                 </span>
@@ -1047,7 +1056,9 @@ export const UniversalTransactionModal: React.FC<UniversalTransactionModalProps>
                       className={`ph-fill ${AUTOMATED_STATUS_META[computedStatus].icon}`}
                     ></i>
                     <span>
-                      {type === 'income'
+                      {isCreditCardExpense
+                        ? 'Faturada no Cartão (Lançada na Fatura)'
+                        : type === 'income'
                         ? computedStatus === 'paid'
                           ? 'Receita Efetivada'
                           : 'Aguardando Efetivação'
@@ -1062,7 +1073,9 @@ export const UniversalTransactionModal: React.FC<UniversalTransactionModalProps>
                   </span>
                 </div>
                 <p className="text-[11px] text-slate-400 mt-1">
-                  {type === 'income'
+                  {isCreditCardExpense
+                    ? 'Compras no cartão consomem o limite imediatamente e entram na fatura projetada. O débito bancário ocorre apenas ao pagar a fatura.'
+                    : type === 'income'
                     ? isPaid
                       ? 'Receita efetivada: já soma nas entradas confirmadas.'
                       : 'Receitas ficam aguardando efetivação até você confirmar que o valor realmente entrou.'
@@ -1072,39 +1085,41 @@ export const UniversalTransactionModal: React.FC<UniversalTransactionModalProps>
                 </p>
               </div>
 
-              <div className="flex items-center gap-2 self-start sm:self-center">
-                <button
-                  type="button"
-                  onClick={handleTogglePaidButton}
-                  aria-pressed={isPaid}
-                  className={`px-4 py-2.5 rounded-xl text-xs font-bold flex items-center gap-2 transition-all cursor-pointer whitespace-nowrap border ${
-                    isPaid
-                      ? 'bg-emerald-600 border-emerald-500 text-white shadow-lg shadow-emerald-600/25'
-                      : 'bg-slate-800 hover:bg-emerald-600/20 border-slate-700 hover:border-emerald-500/50 text-slate-200 hover:text-emerald-300'
-                  }`}
-                >
-                  <i
-                    aria-hidden="true"
-                    className={
+              {!isCreditCardExpense && (
+                <div className="flex items-center gap-2 self-start sm:self-center">
+                  <button
+                    type="button"
+                    onClick={handleTogglePaidButton}
+                    aria-pressed={isPaid}
+                    className={`px-4 py-2.5 rounded-xl text-xs font-bold flex items-center gap-2 transition-all cursor-pointer whitespace-nowrap border ${
                       isPaid
-                        ? 'ph-fill ph-check-circle text-base'
-                        : 'ph-bold ph-check-circle text-base'
-                    }
-                  ></i>
-                  <span>
-                    {type === 'income'
-                      ? isPaid
-                        ? 'Receita Efetivada (Ativo)'
-                        : 'Efetivar Receita Agora'
-                      : isPaid
-                      ? 'Despesa Paga (Ativo)'
-                      : 'Já foi Paga'}
-                  </span>
-                </button>
-              </div>
+                        ? 'bg-emerald-600 border-emerald-500 text-white shadow-lg shadow-emerald-600/25'
+                        : 'bg-slate-800 hover:bg-emerald-600/20 border-slate-700 hover:border-emerald-500/50 text-slate-200 hover:text-emerald-300'
+                    }`}
+                  >
+                    <i
+                      aria-hidden="true"
+                      className={
+                        isPaid
+                          ? 'ph-fill ph-check-circle text-base'
+                          : 'ph-bold ph-check-circle text-base'
+                      }
+                    ></i>
+                    <span>
+                      {type === 'income'
+                        ? isPaid
+                          ? 'Receita Efetivada (Ativo)'
+                          : 'Efetivar Receita Agora'
+                        : isPaid
+                        ? 'Despesa Paga (Ativo)'
+                        : 'Já foi Paga'}
+                    </span>
+                  </button>
+                </div>
+              )}
             </div>
 
-            {isPaid && (
+            {!isCreditCardExpense && isPaid && (
               <div className="pt-3 border-t border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <div>
                   <label

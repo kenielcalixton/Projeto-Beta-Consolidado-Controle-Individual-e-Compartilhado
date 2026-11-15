@@ -1541,6 +1541,511 @@ test('FIRESTORE SECURITY RULES — Validação Real no Firestore Emulator (Fase 
       })
     );
   });
+
+  await t.test('12. Dissolução de espaço: cancelamento pelo criador e reabertura estritamente restrita após cancelamento', async () => {
+    const aliceDb = testEnv.authenticatedContext('uid_alice').firestore();
+    const bobDb = testEnv.authenticatedContext('uid_bob').firestore();
+    const carolDb = testEnv.authenticatedContext('uid_carol').firestore();
+
+    // Enquanto `pending_author_responses` está ativa, criadora não pode sobrescrever `deadlineDate` livremente
+    await assertFails(
+      setDoc(doc(aliceDb, 'spaces', 'space_1', 'dissolution', 'request'), {
+        id: 'request',
+        spaceId: 'space_1',
+        initiatedByUid: 'uid_alice',
+        initiatedAt: '2026-11-15T10:00:00.000Z',
+        deadlineDate: '2099-12-31T10:00:00.000Z',
+        requestStatus: 'pending_author_responses',
+        authorDestinations: { uid_alice: { decision: 'pending' } },
+      })
+    );
+
+    // Somente a criadora (Alice) pode cancelar voluntariamente; Bob (admin) não pode cancelar
+    await assertFails(
+      updateDoc(doc(bobDb, 'spaces', 'space_1', 'dissolution', 'request'), {
+        requestStatus: 'cancelled_by_creator',
+        cancelledAt: '2026-11-08T10:00:00.000Z',
+        cancellationReason: 'Tentativa Bob',
+      })
+    );
+    await assertSucceeds(
+      updateDoc(doc(aliceDb, 'spaces', 'space_1', 'dissolution', 'request'), {
+        requestStatus: 'cancelled_by_creator',
+        cancelledAt: '2026-11-08T10:00:00.000Z',
+        cancellationReason: 'Cancelado pela criadora para testes',
+      })
+    );
+
+    // Após cancelada, Bob/Carol NÃO podem reabrir a dissolução
+    await assertFails(
+      setDoc(doc(bobDb, 'spaces', 'space_1', 'dissolution', 'request'), {
+        id: 'request',
+        spaceId: 'space_1',
+        initiatedByUid: 'uid_bob',
+        initiatedAt: '2026-11-09T10:00:00.000Z',
+        deadlineDate: '2026-12-09T10:00:00.000Z',
+        requestStatus: 'pending_author_responses',
+        authorDestinations: { uid_bob: { decision: 'pending' } },
+      })
+    );
+    await assertFails(
+      setDoc(doc(carolDb, 'spaces', 'space_1', 'dissolution', 'request'), {
+        id: 'request',
+        spaceId: 'space_1',
+        initiatedByUid: 'uid_carol',
+        initiatedAt: '2026-11-09T10:00:00.000Z',
+        deadlineDate: '2026-12-09T10:00:00.000Z',
+        requestStatus: 'pending_author_responses',
+        authorDestinations: { uid_carol: { decision: 'pending' } },
+      })
+    );
+
+    // Criadora NÃO pode spoofing de initiatedByUid ao reabrir
+    await assertFails(
+      setDoc(doc(aliceDb, 'spaces', 'space_1', 'dissolution', 'request'), {
+        id: 'request',
+        spaceId: 'space_1',
+        initiatedByUid: 'uid_bob',
+        initiatedAt: '2026-11-09T10:00:00.000Z',
+        deadlineDate: '2026-12-09T10:00:00.000Z',
+        requestStatus: 'pending_author_responses',
+        authorDestinations: { uid_alice: { decision: 'pending' } },
+      })
+    );
+
+    // Criadora (Alice) reabre legitimamente após cancelamento
+    await assertSucceeds(
+      setDoc(doc(aliceDb, 'spaces', 'space_1', 'dissolution', 'request'), {
+        id: 'request',
+        spaceId: 'space_1',
+        initiatedByUid: 'uid_alice',
+        initiatedAt: '2026-11-09T10:00:00.000Z',
+        deadlineDate: '2026-12-09T10:00:00.000Z',
+        requestStatus: 'pending_author_responses',
+        authorDestinations: {
+          uid_alice: { decision: 'pending' },
+          uid_bob: { decision: 'pending' },
+          uid_carol: { decision: 'pending' },
+        },
+      })
+    );
+  });
+
+  await t.test('13. Despesas Compartilhadas (liabilities, payments e integridade): não autenticado, outro espaço, adulteração e registros históricos', async () => {
+    const unauthDb = testEnv.unauthenticatedContext().firestore();
+    const aliceDb = testEnv.authenticatedContext('uid_alice').firestore();
+    const bobDb = testEnv.authenticatedContext('uid_bob').firestore();
+    const eveDb = testEnv.authenticatedContext('uid_eve').firestore(); // Membro de space_2 apenas
+
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      const adminDb = context.firestore();
+      await setDoc(doc(adminDb, 'spaces', 'space_2'), {
+        id: 'space_2',
+        creatorUid: 'uid_eve',
+        ownerId: 'uid_eve',
+        name: 'Espaço Isolado Eve',
+        spaceStatus: 'active',
+        memberUids: ['uid_eve'],
+        historicalMemberUids: ['uid_eve'],
+      });
+      await setDoc(doc(adminDb, 'spaces', 'space_1', 'shared_expenses', 'exp_pending_bob'), {
+        id: 'exp_pending_bob',
+        spaceId: 'space_1',
+        title: 'Despesa Pendente Bob',
+        totalOriginalAmountCents: 10000,
+        createdByUid: 'uid_bob',
+        responsibleUid: 'uid_alice',
+        participantUids: ['uid_alice', 'uid_bob'],
+        validationStatus: 'pending_validation',
+        commitmentStatus: 'active',
+        paymentExecutionStatus: 'unpaid',
+      });
+    });
+
+    // Não autenticado: bloqueado em liabilities e payments
+    await assertFails(
+      getDoc(doc(unauthDb, 'spaces', 'space_1', 'shared_expenses', 'exp_dave', 'liabilities', 'uid_bob'))
+    );
+    await assertFails(
+      getDoc(doc(unauthDb, 'spaces', 'space_1', 'shared_expenses', 'exp_dave', 'payments', 'pay_bob'))
+    );
+    await assertFails(
+      setDoc(doc(unauthDb, 'spaces', 'space_1', 'shared_expenses', 'exp_dave', 'liabilities', 'uid_unauth'), {
+        id: 'uid_unauth',
+      })
+    );
+
+    // Usuário de outro espaço (Eve em space_2): bloqueado de ler/escrever em space_1
+    await assertFails(
+      getDoc(doc(eveDb, 'spaces', 'space_1', 'shared_expenses', 'exp_dave', 'liabilities', 'uid_bob'))
+    );
+    await assertFails(
+      getDoc(doc(eveDb, 'spaces', 'space_1', 'shared_expenses', 'exp_dave', 'payments', 'pay_bob'))
+    );
+
+    // Membro ativo e responsável (Alice e Bob): leitura permitida; escrita direta em liabilities/payments ESTRITAMENTE NEGADA
+    await assertSucceeds(
+      getDoc(doc(bobDb, 'spaces', 'space_1', 'shared_expenses', 'exp_dave', 'liabilities', 'uid_bob'))
+    );
+    await assertSucceeds(
+      getDoc(doc(aliceDb, 'spaces', 'space_1', 'shared_expenses', 'exp_dave', 'payments', 'pay_bob'))
+    );
+    await assertFails(
+      setDoc(doc(aliceDb, 'spaces', 'space_1', 'shared_expenses', 'exp_dave', 'liabilities', 'uid_alice'), {
+        id: 'uid_alice',
+        remainingAmountCents: 0,
+      })
+    );
+    await assertFails(
+      updateDoc(doc(bobDb, 'spaces', 'space_1', 'shared_expenses', 'exp_dave', 'payments', 'pay_bob'), {
+        amountCents: 999999,
+      })
+    );
+    await assertFails(
+      deleteDoc(doc(aliceDb, 'spaces', 'space_1', 'shared_expenses', 'exp_dave', 'payments', 'pay_bob'))
+    );
+
+    // Tentativa do autor (Bob) de auto-aprovar despesa pendente ou transferir responsibleUid -> NEGADA
+    await assertFails(
+      updateDoc(doc(bobDb, 'spaces', 'space_1', 'shared_expenses', 'exp_pending_bob'), {
+        validationStatus: 'approved',
+      })
+    );
+    await assertFails(
+      updateDoc(doc(bobDb, 'spaces', 'space_1', 'shared_expenses', 'exp_pending_bob'), {
+        responsibleUid: 'uid_bob',
+      })
+    );
+
+    // Tentativa de adulterar registro de auditoria histórico do espaço -> NEGADA
+    await assertFails(
+      updateDoc(doc(aliceDb, 'spaces', 'space_1', 'audit', 'audit_1'), {
+        eventType: 'tampered',
+      })
+    );
+    await assertFails(deleteDoc(doc(aliceDb, 'spaces', 'space_1', 'audit', 'audit_1')));
+  });
+
+  await t.test('14. Aquisições (lists, items, purchases, stock_movements, purchase_reversals): isolamento, imutabilidade de escopo e bloqueio de escritas exclusivas do backend', async () => {
+    const unauthDb = testEnv.unauthenticatedContext().firestore();
+    const aliceDb = testEnv.authenticatedContext('uid_alice').firestore();
+    const bobDb = testEnv.authenticatedContext('uid_bob').firestore();
+    const eveDb = testEnv.authenticatedContext('uid_eve').firestore();
+
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      const adminDb = context.firestore();
+      await setDoc(doc(adminDb, 'spaces', 'space_2'), {
+        id: 'space_2',
+        creatorUid: 'uid_eve',
+        ownerId: 'uid_eve',
+        name: 'Espaço Eve',
+        spaceStatus: 'active',
+        memberUids: ['uid_eve'],
+      });
+      await setDoc(doc(adminDb, 'spaces', 'space_archived'), {
+        id: 'space_archived',
+        creatorUid: 'uid_alice',
+        ownerId: 'uid_alice',
+        name: 'Espaço Arquivado',
+        spaceStatus: 'archived',
+        memberUids: ['uid_alice', 'uid_bob'],
+      });
+      await setDoc(doc(adminDb, 'acquisition_lists', 'list_shared_s1'), {
+        id: 'list_shared_s1',
+        scopeType: 'shared',
+        spaceId: 'space_1',
+        ownerUid: 'uid_alice',
+        name: 'Lista Casa',
+        type: 'recorrente',
+      });
+      await setDoc(doc(adminDb, 'acquisition_lists', 'list_shared_arch'), {
+        id: 'list_shared_arch',
+        scopeType: 'shared',
+        spaceId: 'space_archived',
+        ownerUid: 'uid_alice',
+        name: 'Lista Arquivada',
+        type: 'recorrente',
+      });
+      await setDoc(doc(adminDb, 'acquisition_lists', 'list_shared_s1', 'items', 'item_s1'), {
+        id: 'item_s1',
+        listId: 'list_shared_s1',
+        name: 'Detergente',
+        createdByUid: 'uid_alice',
+      });
+      await setDoc(
+        doc(adminDb, 'acquisition_lists', 'list_shared_s1', 'items', 'item_s1', 'purchases', 'pur_1'),
+        {
+          id: 'pur_1',
+          itemId: 'item_s1',
+          listId: 'list_shared_s1',
+          totalPaidCents: 2500,
+        }
+      );
+      await setDoc(
+        doc(adminDb, 'acquisition_lists', 'list_shared_s1', 'items', 'item_s1', 'stock_movements', 'smov_1'),
+        {
+          id: 'smov_1',
+          itemId: 'item_s1',
+          quantityDelta: 2,
+        }
+      );
+      await setDoc(
+        doc(adminDb, 'acquisition_lists', 'list_shared_s1', 'items', 'item_s1', 'purchase_reversals', 'prev_1'),
+        {
+          id: 'prev_1',
+          purchaseId: 'pur_1',
+          totalReversedAmountCents: 2500,
+        }
+      );
+    });
+
+    // Não autenticado bloqueado em todas as subcoleções
+    await assertFails(getDoc(doc(unauthDb, 'acquisition_lists', 'list_shared_s1')));
+    await assertFails(getDoc(doc(unauthDb, 'acquisition_lists', 'list_shared_s1', 'items', 'item_s1')));
+    await assertFails(
+      getDoc(doc(unauthDb, 'acquisition_lists', 'list_shared_s1', 'items', 'item_s1', 'stock_movements', 'smov_1'))
+    );
+
+    // Usuário de outro espaço (Eve / space_2) bloqueado em lists, items, purchases, stock_movements e purchase_reversals
+    await assertFails(getDoc(doc(eveDb, 'acquisition_lists', 'list_shared_s1')));
+    await assertFails(getDoc(doc(eveDb, 'acquisition_lists', 'list_shared_s1', 'items', 'item_s1')));
+    await assertFails(
+      getDoc(doc(eveDb, 'acquisition_lists', 'list_shared_s1', 'items', 'item_s1', 'purchases', 'pur_1'))
+    );
+    await assertFails(
+      getDoc(doc(eveDb, 'acquisition_lists', 'list_shared_s1', 'items', 'item_s1', 'stock_movements', 'smov_1'))
+    );
+    await assertFails(
+      getDoc(doc(eveDb, 'acquisition_lists', 'list_shared_s1', 'items', 'item_s1', 'purchase_reversals', 'prev_1'))
+    );
+    await assertFails(
+      setDoc(doc(eveDb, 'acquisition_lists', 'list_shared_s1', 'items', 'item_eve_hack'), {
+        id: 'item_eve_hack',
+        listId: 'list_shared_s1',
+        createdByUid: 'uid_eve',
+      })
+    );
+
+    // Membro ativo (Bob): lê listas, itens, compras, movimentos e estornos legitimamente
+    await assertSucceeds(getDoc(doc(bobDb, 'acquisition_lists', 'list_shared_s1')));
+    await assertSucceeds(getDoc(doc(bobDb, 'acquisition_lists', 'list_shared_s1', 'items', 'item_s1')));
+    await assertSucceeds(
+      getDoc(doc(bobDb, 'acquisition_lists', 'list_shared_s1', 'items', 'item_s1', 'purchases', 'pur_1'))
+    );
+    await assertSucceeds(
+      getDoc(doc(bobDb, 'acquisition_lists', 'list_shared_s1', 'items', 'item_s1', 'stock_movements', 'smov_1'))
+    );
+    await assertSucceeds(
+      getDoc(doc(bobDb, 'acquisition_lists', 'list_shared_s1', 'items', 'item_s1', 'purchase_reversals', 'prev_1'))
+    );
+
+    // Membro ativo (Bob) NÃO pode sequestrar scopeType/ownerUid/spaceId da lista compartilhada nem deletar a lista
+    await assertFails(
+      updateDoc(doc(bobDb, 'acquisition_lists', 'list_shared_s1'), {
+        scopeType: 'individual',
+        ownerUid: 'uid_bob',
+        spaceId: null,
+      })
+    );
+    await assertFails(deleteDoc(doc(aliceDb, 'acquisition_lists', 'list_shared_s1')));
+
+    // Espaço arquivado: atualização em lista ou criação de item bloqueada
+    await assertFails(
+      updateDoc(doc(aliceDb, 'acquisition_lists', 'list_shared_arch'), { name: 'Tentativa' })
+    );
+    await assertFails(
+      setDoc(doc(aliceDb, 'acquisition_lists', 'list_shared_arch', 'items', 'item_arch'), {
+        id: 'item_arch',
+        listId: 'list_shared_arch',
+        createdByUid: 'uid_alice',
+      })
+    );
+
+    // Membro ativo NÃO pode escrever diretamente em purchases, stock_movements, quotes, deposits ou purchase_reversals
+    await assertFails(
+      updateDoc(doc(aliceDb, 'acquisition_lists', 'list_shared_s1', 'items', 'item_s1', 'purchases', 'pur_1'), {
+        totalPaidCents: 1,
+      })
+    );
+    await assertFails(
+      deleteDoc(doc(aliceDb, 'acquisition_lists', 'list_shared_s1', 'items', 'item_s1', 'purchases', 'pur_1'))
+    );
+    await assertFails(
+      setDoc(
+        doc(bobDb, 'acquisition_lists', 'list_shared_s1', 'items', 'item_s1', 'stock_movements', 'smov_hack'),
+        { id: 'smov_hack', quantityDelta: 99 }
+      )
+    );
+    await assertFails(
+      updateDoc(
+        doc(aliceDb, 'acquisition_lists', 'list_shared_s1', 'items', 'item_s1', 'stock_movements', 'smov_1'),
+        { quantityDelta: 50 }
+      )
+    );
+    await assertFails(
+      setDoc(doc(bobDb, 'acquisition_lists', 'list_shared_s1', 'items', 'item_s1', 'quotes', 'q_hack'), {
+        id: 'q_hack',
+        priceCents: 100,
+      })
+    );
+    await assertFails(
+      setDoc(doc(bobDb, 'acquisition_lists', 'list_shared_s1', 'items', 'item_s1', 'deposits', 'd_hack'), {
+        id: 'd_hack',
+        amountCents: 100,
+      })
+    );
+    await assertFails(
+      setDoc(
+        doc(aliceDb, 'acquisition_lists', 'list_shared_s1', 'items', 'item_s1', 'purchase_reversals', 'prev_hack'),
+        { id: 'prev_hack', purchaseId: 'pur_1' }
+      )
+    );
+  });
+
+  await t.test('15. Recorrências e Parcelamentos (instances e occurrences): bloqueio de escrita direta, adulteração financeira e isolamento entre espaços', async () => {
+    const unauthDb = testEnv.unauthenticatedContext().firestore();
+    const aliceDb = testEnv.authenticatedContext('uid_alice').firestore();
+    const bobDb = testEnv.authenticatedContext('uid_bob').firestore();
+    const eveDb = testEnv.authenticatedContext('uid_eve').firestore();
+
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      const adminDb = context.firestore();
+      await setDoc(doc(adminDb, 'spaces', 'space_archived'), {
+        id: 'space_archived',
+        creatorUid: 'uid_alice',
+        ownerId: 'uid_alice',
+        name: 'Espaço Arquivado',
+        spaceStatus: 'archived',
+        memberUids: ['uid_alice', 'uid_bob'],
+      });
+      await setDoc(doc(adminDb, 'recurrence_rules', 'rec_shared_1'), {
+        id: 'rec_shared_1',
+        scope: 'shared',
+        userId: 'uid_alice',
+        spaceId: 'space_1',
+        title: 'Condomínio',
+        type: 'expense',
+        amountCents: 60000,
+        status: 'active',
+      });
+      await setDoc(doc(adminDb, 'recurrence_rules', 'rec_shared_arch'), {
+        id: 'rec_shared_arch',
+        scope: 'shared',
+        userId: 'uid_alice',
+        spaceId: 'space_archived',
+        title: 'Regra Arquivada',
+        type: 'expense',
+        amountCents: 10000,
+        status: 'active',
+      });
+      await setDoc(doc(adminDb, 'recurrence_rules', 'rec_shared_1', 'instances', '2026-11'), {
+        id: '2026-11',
+        ruleId: 'rec_shared_1',
+        actualAmountCents: 60000,
+        generationStatus: 'generated',
+      });
+      await setDoc(doc(adminDb, 'installment_contracts', 'inst_shared_1'), {
+        id: 'inst_shared_1',
+        scope: 'shared',
+        userId: 'uid_alice',
+        spaceId: 'space_1',
+        title: 'Geladeira 6x',
+        totalContractAmountCents: 300000,
+        status: 'active',
+      });
+      await setDoc(doc(adminDb, 'installment_contracts', 'inst_shared_1', 'occurrences', '01'), {
+        id: '01',
+        contractId: 'inst_shared_1',
+        installmentNumber: 1,
+        principalAmountCents: 50000,
+        status: 'scheduled',
+      });
+    });
+
+    // Não autenticado bloqueado em todas as operações
+    await assertFails(getDoc(doc(unauthDb, 'recurrence_rules', 'rec_shared_1')));
+    await assertFails(getDoc(doc(unauthDb, 'recurrence_rules', 'rec_shared_1', 'instances', '2026-11')));
+    await assertFails(getDoc(doc(unauthDb, 'installment_contracts', 'inst_shared_1')));
+    await assertFails(getDoc(doc(unauthDb, 'installment_contracts', 'inst_shared_1', 'occurrences', '01')));
+
+    // Usuário de outro espaço (Eve) bloqueado em leitura e escrita
+    await assertFails(getDoc(doc(eveDb, 'recurrence_rules', 'rec_shared_1')));
+    await assertFails(getDoc(doc(eveDb, 'recurrence_rules', 'rec_shared_1', 'instances', '2026-11')));
+    await assertFails(getDoc(doc(eveDb, 'installment_contracts', 'inst_shared_1')));
+    await assertFails(getDoc(doc(eveDb, 'installment_contracts', 'inst_shared_1', 'occurrences', '01')));
+
+    // Membro ativo do espaço (Bob) lê regras, instâncias, contratos e ocorrências compartilhadas
+    await assertSucceeds(getDoc(doc(bobDb, 'recurrence_rules', 'rec_shared_1')));
+    await assertSucceeds(getDoc(doc(bobDb, 'recurrence_rules', 'rec_shared_1', 'instances', '2026-11')));
+    await assertSucceeds(getDoc(doc(bobDb, 'installment_contracts', 'inst_shared_1')));
+    await assertSucceeds(getDoc(doc(bobDb, 'installment_contracts', 'inst_shared_1', 'occurrences', '01')));
+
+    // Atualização legítima de status em recurrence_rules por membro ativo é permitida, mas adulterar amountCents/scope é BLOQUEADO
+    await assertSucceeds(
+      updateDoc(doc(bobDb, 'recurrence_rules', 'rec_shared_1'), { status: 'paused' })
+    );
+    await assertFails(
+      updateDoc(doc(aliceDb, 'recurrence_rules', 'rec_shared_1'), { amountCents: 1 })
+    );
+    await assertFails(
+      updateDoc(doc(bobDb, 'recurrence_rules', 'rec_shared_1'), {
+        scope: 'personal',
+        userId: 'uid_bob',
+        spaceId: null,
+      })
+    );
+    await assertFails(
+      updateDoc(doc(aliceDb, 'recurrence_rules', 'rec_shared_arch'), { status: 'paused' })
+    );
+
+    // Criação, alteração e exclusão direta pelo cliente em recurrence_rules/instances -> BLOQUEADAS
+    await assertFails(
+      setDoc(doc(aliceDb, 'recurrence_rules', 'rec_shared_1', 'instances', '2026-12'), {
+        id: '2026-12',
+        ruleId: 'rec_shared_1',
+        actualAmountCents: 60000,
+      })
+    );
+    await assertFails(
+      updateDoc(doc(aliceDb, 'recurrence_rules', 'rec_shared_1', 'instances', '2026-11'), {
+        actualAmountCents: 1,
+      })
+    );
+    await assertFails(
+      deleteDoc(doc(aliceDb, 'recurrence_rules', 'rec_shared_1', 'instances', '2026-11'))
+    );
+
+    // Criação, alteração e exclusão direta pelo cliente em installment_contracts e occurrences -> ESTRITAMENTE BLOQUEADAS
+    await assertFails(
+      setDoc(doc(aliceDb, 'installment_contracts', 'inst_client_hack'), {
+        id: 'inst_client_hack',
+        scope: 'personal',
+        userId: 'uid_alice',
+        totalContractAmountCents: 1000,
+      })
+    );
+    await assertFails(
+      updateDoc(doc(aliceDb, 'installment_contracts', 'inst_shared_1'), {
+        totalContractAmountCents: 100,
+        status: 'cancelled_early',
+      })
+    );
+    await assertFails(deleteDoc(doc(aliceDb, 'installment_contracts', 'inst_shared_1')));
+    await assertFails(
+      setDoc(doc(aliceDb, 'installment_contracts', 'inst_shared_1', 'occurrences', '02'), {
+        id: '02',
+        contractId: 'inst_shared_1',
+        principalAmountCents: 50000,
+      })
+    );
+    await assertFails(
+      updateDoc(doc(aliceDb, 'installment_contracts', 'inst_shared_1', 'occurrences', '01'), {
+        status: 'paid',
+        principalAmountCents: 0,
+      })
+    );
+    await assertFails(
+      deleteDoc(doc(aliceDb, 'installment_contracts', 'inst_shared_1', 'occurrences', '01'))
+    );
+  });
 });
-
-

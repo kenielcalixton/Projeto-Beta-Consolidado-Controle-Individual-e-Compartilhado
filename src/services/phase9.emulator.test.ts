@@ -300,4 +300,87 @@ test('FASE 9 — EMULATOR INTEGRATION: Recorrências e Parcelamentos Desacoplado
       }
     );
   });
+
+  await t.test('6. Bloqueios de adulteração, escrita direta em instances/occurrences e isolamento contra terceiro (Eve)', async () => {
+    const { updateRecurrenceRuleStatus } = await import('./recurrenceService');
+    const { createAccount } = await import('./accountService');
+    const { setDoc } = await import('firebase/firestore');
+
+    // Alice pausa legitimamente sua regra via serviço
+    await signInWithEmailAndPassword(auth, 'alice.phase9@exemplo.com', 'SenhaSegura123!');
+    const paused = await updateRecurrenceRuleStatus(
+      { ruleId: individualRuleId, status: 'paused' },
+      false
+    );
+    assert.equal(paused.rule.status, 'paused');
+
+    // Alice cria cartão pessoal e tenta criar adulteração direta em amountCents / instances / contract
+    const aliceCard = await createAccount(
+      aliceUid,
+      { name: 'Cartão Phase 9 Alice', type: 'credit', creditLimitCents: 200000, closingDay: 15, dueDay: 25 },
+      false
+    );
+
+    await assert.rejects(
+      async () => {
+        await updateDoc(doc(db, 'recurrence_rules', individualRuleId), { amountCents: 1 });
+      },
+      (err: any) => err.code === 'permission-denied' || String(err).includes('permission-denied')
+    );
+
+    await assert.rejects(
+      async () => {
+        await setDoc(doc(db, 'recurrence_rules', individualRuleId, 'instances', '2026-12'), {
+          id: '2026-12',
+          ruleId: individualRuleId,
+          actualAmountCents: 100,
+        });
+      },
+      (err: any) => err.code === 'permission-denied' || String(err).includes('permission-denied')
+    );
+
+    await assert.rejects(
+      async () => {
+        await updateDoc(doc(db, 'installment_contracts', contract3xId, 'occurrences', '01'), {
+          principalAmountCents: 1,
+        });
+      },
+      (err: any) => err.code === 'permission-denied' || String(err).includes('permission-denied')
+    );
+
+    await signOut(auth);
+
+    // Usuário externo (Eve) não pode gerar instância da regra de Alice nem criar parcelamento no cartão de Alice
+    const eveCred = await createUserWithEmailAndPassword(auth, 'eve.phase9@exemplo.com', 'SenhaSegura123!');
+    const eveUid = eveCred.user.uid;
+
+    await assert.rejects(
+      async () => {
+        await generateRecurrenceInstance({ ruleId: sharedRuleId, competenceMonth: '2026-06' }, false);
+      },
+      /(permission-denied|Usuário não é membro)/
+    );
+
+    await assert.rejects(
+      async () => {
+        await createInstallmentContract(
+          {
+            scope: 'personal',
+            userId: eveUid,
+            title: 'Cobrança indevida no cartão de Alice',
+            totalContractAmountCents: 20000,
+            totalInstallmentsCount: 2,
+            fundingSource: 'credit_card',
+            sourceCardAccountId: aliceCard.id,
+            startCompetenceMonth: '2026-07',
+            idempotencyKey: 'idem_eve_card_hack',
+          },
+          false
+        );
+      },
+      /(permission-denied|pertence a outro usuário)/
+    );
+
+    await signOut(auth);
+  });
 });

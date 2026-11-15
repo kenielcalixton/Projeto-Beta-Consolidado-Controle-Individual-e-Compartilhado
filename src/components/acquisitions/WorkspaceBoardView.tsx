@@ -1198,7 +1198,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
         {/* =============================================================== */}
         {/* STATE MACHINE NAVIGATION CONTROLS (↩ REVERT & ADVANCE ➔)        */}
         {/* =============================================================== */}
-        <div className="pt-3 border-t border-slate-800 flex items-center justify-between gap-2">
+        <div className="pt-3 border-t border-slate-800 flex flex-wrap items-center justify-between gap-2">
           {prevStage ? (
             <button
               type="button"
@@ -1769,7 +1769,8 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
               <input
                 id="ws-board-edit-budget"
                 type="number"
-                step="50"
+                step="0.01"
+                min="0"
                 value={editWsBudget}
                 onChange={(e) => setEditWsBudget(e.target.value)}
                 className="w-full px-3.5 py-2.5 text-sm font-mono rounded-lg border border-slate-700 bg-slate-950 text-slate-100 focus:outline-none focus:border-indigo-500"
@@ -2714,8 +2715,8 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
             <input
               id="deposit-amount-input"
               type="number"
-              step="10"
-              min="1"
+              step="0.01"
+              min="0.01"
               required
               value={depositAmount}
               onChange={(e) => setDepositAmount(e.target.value)}

@@ -336,6 +336,7 @@ export function subscribeToIndividualLists(
   return onSnapshot(
     q,
     (snapshot) => {
+      if (snapshot.metadata.hasPendingWrites) return;
       const data = snapshot.docs
         .filter((d) => !d.data().isArchived)
         .map((d) => ({ id: d.id, ...(d.data() as Omit<AcquisitionList, 'id'>) }));
@@ -363,6 +364,7 @@ export function subscribeToSharedLists(
   return onSnapshot(
     q,
     (snapshot) => {
+      if (snapshot.metadata.hasPendingWrites) return;
       const data = snapshot.docs
         .filter((d) => !d.data().isArchived)
         .map((d) => ({ id: d.id, ...(d.data() as Omit<AcquisitionList, 'id'>) }));
