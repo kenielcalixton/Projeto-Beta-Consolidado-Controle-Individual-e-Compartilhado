@@ -233,14 +233,7 @@ service cloud.firestore {
     match /users/{userId}/adhoc_obligations/{obligationId} {
       allow read: if isAuthenticated() && 
         (request.auth.uid == userId || request.auth.uid == resource.data.creditorUid);
-      allow create: if isAuthenticated() && request.auth.uid == request.resource.data.creditorUid;
-      allow update: if isAuthenticated() && (
-        (request.auth.uid == userId && 
-         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['obligationStatus', 'paidAmountCents', 'guestRejectionReason'])) ||
-        (request.auth.uid == resource.data.creditorUid && 
-         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['obligationStatus', 'paidAmountCents', 'remainingBalanceCents']))
-      );
-      allow delete: if false;
+      allow create, update, delete: if false; // Processado exclusivamente via Cloud Functions com Admin SDK
     }
 
     // 3. Rateios Avulsos (Despesas fora de espaço)
@@ -249,9 +242,7 @@ service cloud.firestore {
         request.auth.uid == resource.data.ownerUid || 
         request.auth.uid in resource.data.registeredDebtorUids
       );
-      allow create: if isAuthenticated() && request.auth.uid == request.resource.data.ownerUid;
-      allow update: if isAuthenticated() && request.auth.uid == resource.data.ownerUid;
-      allow delete: if false;
+      allow create, update, delete: if false; // Processado exclusivamente via Cloud Functions com Admin SDK
 
       // 3.1 Devedores Externos sem Conta (Exclusivo para rateio avulso)
       match /external_debtors/{debtorId} {
@@ -270,21 +261,24 @@ service cloud.firestore {
           get(/databases/$(database)/documents/adhoc_expenses/$(expenseId)).data.ownerUid == request.auth.uid ||
           resource.data.debtorUid == request.auth.uid
         );
-        allow create: if isAuthenticated() && request.resource.data.debtorUid == request.auth.uid;
+        allow create: if isAuthenticated() &&
+          request.resource.data.debtorUid == request.auth.uid &&
+          request.auth.uid in get(/databases/$(database)/documents/adhoc_expenses/$(expenseId)).data.registeredDebtorUids;
         allow update: if isAuthenticated() && (
           // O credor valida a confirmação ou rejeição do reembolso
           request.auth.uid == get(/databases/$(database)/documents/adhoc_expenses/$(expenseId)).data.ownerUid &&
           request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'destinationAccountId', 'financialMovementId', 'confirmedAt', 'rejectionReason'])
         );
+        allow delete: if false;
       }
     }
 
     // 3.3 Tokens de Convite para Rateios Avulsos
     match /adhoc_invites/{tokenId} {
-      allow read: if true; // Aberto para permitir validação antes da autenticação
-      allow create: if isAuthenticated() && request.resource.data.creatorUid == request.auth.uid;
-      allow update: if isAuthenticated() && 
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['tokenStatus', 'acceptedByUid', 'acceptedAt']);
+      // Leitura individual (get) restrita ao tokenHash exato; listagem permitida apenas ao criador autenticado
+      allow get: if true;
+      allow list: if isAuthenticated() && resource.data.creatorUid == request.auth.uid;
+      allow create, update, delete: if false; // Gerado e atualizado exclusivamente via Cloud Functions com Admin SDK
     }
 
     // 3.4 Convites Seguros para Espaços Compartilhados (Token SHA-256)
@@ -293,15 +287,7 @@ service cloud.firestore {
       // Listagem (list) restrita exclusivamente a participantes ativos do espaço do convite (bloqueia listagem global e acesso de ex-participantes).
       allow get: if true;
       allow list: if isAuthenticated() && isSpaceMember(resource.data.spaceId);
-      allow create: if isAuthenticated() && 
-        isSpaceMember(request.resource.data.spaceId) && 
-        isSpaceActive(request.resource.data.spaceId);
-      allow update: if isAuthenticated() && 
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-          'tokenStatus', 'acceptedByUid', 'acceptedByName', 'acceptedAt',
-          'rejectedByUid', 'rejectedAt', 'revokedByUid', 'revokedAt'
-        ]);
-      allow delete: if false; // Convites não são deletados para manter rastreabilidade
+      allow create, update, delete: if false; // Ciclo completo de convites executado exclusivamente via Cloud Functions com Admin SDK
     }
 
     // 4. Espaços Compartilhados e Governança
@@ -559,7 +545,7 @@ service cloud.firestore {
         }
       }
 
-      // 4.5 Liquidações Bilaterais de Dívidas
+      // 4.5 Liquidações Bilaterais de Dívidas (Escrita autoritativa exclusiva via Cloud Functions com Admin SDK)
       match /settlements/{settlementId} {
         // Leitura: Participante ativo OU ex-participante histórico consultando liquidação onde foi devedor ou credor
         allow read: if isSpaceMember(spaceId) || (
@@ -568,13 +554,7 @@ service cloud.firestore {
             resource.data.creditorUid == request.auth.uid
           )
         );
-        allow create: if isSpaceMember(spaceId) && isSpaceActive(spaceId) &&
-          request.resource.data.debtorUid == request.auth.uid;
-        allow update: if isSpaceMember(spaceId) && isSpaceActive(spaceId) && (
-          // Validação exclusiva pelo credor que recebe os fundos
-          request.auth.uid == resource.data.creditorUid &&
-          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'confirmedAt', 'confirmedByUid', 'destinationAccountId', 'financialMovementInflowId'])
-        );
+        allow create, update, delete: if false; // Liquidações e alocações manipuladas exclusivamente pelo backend confiável
 
         match /allocations/{allocationId} {
           allow read: if isSpaceMember(spaceId) || (
@@ -583,7 +563,7 @@ service cloud.firestore {
               get(/databases/$(database)/documents/spaces/$(spaceId)/settlements/$(settlementId)).data.creditorUid == request.auth.uid
             )
           );
-          allow write: if isSpaceMember(spaceId) && isSpaceActive(spaceId);
+          allow create, update, delete: if false; // Impede alteração de alocações financeiras por terceiros ou cliente
         }
 
         match /reversions/{reversionId} {
@@ -593,42 +573,26 @@ service cloud.firestore {
               get(/databases/$(database)/documents/spaces/$(spaceId)/settlements/$(settlementId)).data.creditorUid == request.auth.uid
             )
           );
-          allow write: if isSpaceMember(spaceId) && isSpaceActive(spaceId) &&
-            request.auth.uid == get(/databases/$(database)/documents/spaces/$(spaceId)/settlements/$(settlementId)).data.creditorUid;
+          allow create, update, delete: if false;
         }
       }
     }
 
-    // 5. Transferências sob Custódia (Bilateral e Espaços)
+    // 5. Transferências sob Custódia (Bilateral e Espaços — Escrita exclusiva via Cloud Functions com Admin SDK)
     match /transfers/{transferId} {
       allow read: if isAuthenticated() && (
         resource.data.senderUid == request.auth.uid || 
         resource.data.custodianUid == request.auth.uid ||
         (resource.data.spaceId != null && isSpaceMember(resource.data.spaceId))
       );
-      allow create: if isAuthenticated() && request.resource.data.senderUid == request.auth.uid;
-      allow update: if isAuthenticated() && (
-        // Confirmação de recebimento pelo custodiante
-        (request.auth.uid == resource.data.custodianUid &&
-         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['custodyStatus', 'destinationAccountId', 'availableBalanceCents', 'updatedAt'])) ||
-        // Abatimento em despesa pelo custodiante
-        (request.auth.uid == resource.data.custodianUid &&
-         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['usedAmountCents', 'availableBalanceCents', 'custodyStatus', 'updatedAt'])) ||
-        // Confirmação de devolução pelo remetente original
-        (request.auth.uid == resource.data.senderUid &&
-         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['returnedAmountCents', 'availableBalanceCents', 'custodyStatus', 'updatedAt']))
-      );
+      allow create, update, delete: if false; // Ciclo completo de custódia executado atomicamente via Cloud Functions
 
       match /events/{eventId} {
         allow read: if isAuthenticated() && (
           get(/databases/$(database)/documents/transfers/$(transferId)).data.senderUid == request.auth.uid ||
           get(/databases/$(database)/documents/transfers/$(transferId)).data.custodianUid == request.auth.uid
         );
-        allow create: if isAuthenticated() && (
-          request.auth.uid == get(/databases/$(database)/documents/transfers/$(transferId)).data.senderUid ||
-          request.auth.uid == get(/databases/$(database)/documents/transfers/$(transferId)).data.custodianUid
-        );
-        allow update, delete: if false; // Eventos são estritamente imutáveis
+        allow create, update, delete: if false; // Eventos de custódia são append-only e gerados exclusivamente pelo Admin SDK
       }
 
       match /usages/{usageId} {
@@ -676,11 +640,15 @@ service cloud.firestore {
       match /items/{itemId} {
         allow read: if isAuthenticated() && canAccessAcquisitionList(listId);
         allow create: if isAuthenticated() && canWriteAcquisitionList(listId) &&
-          request.resource.data.createdByUid == request.auth.uid;
+          request.resource.data.createdByUid == request.auth.uid &&
+          request.resource.data.get('listId', listId) == listId;
         allow update: if isAuthenticated() && canWriteAcquisitionList(listId) &&
           request.resource.data.get('listId', null) == resource.data.get('listId', null) &&
           request.resource.data.get('createdByUid', null) == resource.data.get('createdByUid', null);
-        allow delete: if isAuthenticated() && canWriteAcquisitionList(listId);
+        allow delete: if isAuthenticated() && canWriteAcquisitionList(listId) &&
+          resource.data.get('stage', '') != 'adquirido' &&
+          resource.data.get('finalPaidAmountCents', null) == null &&
+          resource.data.get('savedAmountCents', 0) == 0;
 
         match /purchases/{purchaseId} {
           allow read: if isAuthenticated() && canAccessAcquisitionList(listId);

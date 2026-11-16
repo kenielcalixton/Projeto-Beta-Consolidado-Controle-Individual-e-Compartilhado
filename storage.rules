@@ -1,9 +1,53 @@
 rules_version = '2';
 service firebase.storage {
   match /b/{bucket}/o {
-    match /users/{userId}/{allPaths=**} {
-      allow read, write: if request.auth != null && request.auth.uid == userId;
+    function isAuthenticated() {
+      return request.auth != null;
     }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isValidImageUpload(maxSizeBytes) {
+      return request.resource != null &&
+        request.resource.size > 0 &&
+        request.resource.size <= maxSizeBytes &&
+        request.resource.contentType != null &&
+        request.resource.contentType.matches('image/(jpeg|jpg|png|webp|gif)');
+    }
+
+    function isValidReceiptUpload(maxSizeBytes) {
+      return request.resource != null &&
+        request.resource.size > 0 &&
+        request.resource.size <= maxSizeBytes &&
+        request.resource.contentType != null &&
+        (
+          request.resource.contentType.matches('image/(jpeg|jpg|png|webp|gif)') ||
+          request.resource.contentType == 'application/pdf'
+        );
+    }
+
+    // Leitura e exclusão legítimas apenas pelo titular do UID (delete não possui request.resource)
+    match /users/{userId}/{allPaths=**} {
+      allow read, delete: if isOwner(userId);
+    }
+
+    // Avatares: apenas imagens de até 2 MiB
+    match /users/{userId}/avatars/{fileName} {
+      allow create, update: if isOwner(userId) && isValidImageUpload(2 * 1024 * 1024);
+    }
+
+    // Fotos de produtos: apenas imagens de até 5 MiB
+    match /users/{userId}/products/{fileName} {
+      allow create, update: if isOwner(userId) && isValidImageUpload(5 * 1024 * 1024);
+    }
+
+    // Comprovantes/recibos: imagens ou PDF de até 5 MiB
+    match /users/{userId}/receipts/{fileName} {
+      allow create, update: if isOwner(userId) && isValidReceiptUpload(5 * 1024 * 1024);
+    }
+
     match /spaces/{spaceId}/{allPaths=**} {
       allow read, write: if false;
     }

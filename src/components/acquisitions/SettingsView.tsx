@@ -179,6 +179,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         type: 'success',
         text: 'Foto de perfil atualizada com sucesso.',
       });
+    } catch (err: any) {
+      setStatusMessage({
+        type: 'error',
+        text: err?.message || 'Não foi possível atualizar a foto de perfil.',
+      });
     } finally {
       setIsLoading(false);
     }

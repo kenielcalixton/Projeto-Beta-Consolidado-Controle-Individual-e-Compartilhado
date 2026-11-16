@@ -23,18 +23,24 @@
  */
 
 import crypto from 'node:crypto';
-import { getApps, initializeApp } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
 import { getFirestore } from 'firebase-admin/firestore';
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
+import { ensureFirebaseAdminInitialized } from './adminInit.js';
 
-if (getApps().length === 0) {
-  initializeApp({
-    projectId: process.env.GCLOUD_PROJECT || 'demo-projeto-beta-v3',
-  });
+if (process.env.FUNCTIONS_CONTROL_API !== 'true') {
+  ensureFirebaseAdminInitialized();
 }
 
-const getAdminDb = () => getFirestore();
+const getAdminDb = () => {
+  ensureFirebaseAdminInitialized();
+  return getFirestore();
+};
+
+const getAdminAuth = () => {
+  ensureFirebaseAdminInitialized();
+  return getAuth();
+};
 
 export const ALLOWED_GOVERNANCE_EVENTS = new Set([
   'space_created',
@@ -640,7 +646,7 @@ export async function executeServerSideCreateSpaceInvite(
   const rawToken = crypto.randomBytes(24).toString('hex');
   const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
 
-  const effectiveAuth = authInstance || getAuth();
+  const effectiveAuth = authInstance || getAdminAuth();
   const registeredRecipient = invitedEmailNorm
     ? await resolveRegisteredUidByEmail(db, effectiveAuth, invitedEmailNorm)
     : null;
@@ -831,7 +837,7 @@ export async function executeServerSideGetPendingSpaceInvites(
     throw new HttpsError('unauthenticated', 'Autenticação obrigatória para consultar convites.');
   }
 
-  const effectiveAuth = authInstance || getAuth();
+  const effectiveAuth = authInstance || getAdminAuth();
   const resolved = await resolveCallerEmailAndVerificationServer(caller, effectiveAuth);
   let callerEmail = resolved.email;
 
@@ -1261,7 +1267,7 @@ export const createSpaceInviteOfficial = onCall(
         emailVerified: request.auth?.token?.email_verified,
       },
       request.data,
-      getAuth()
+      getAdminAuth()
     );
   }
 );
@@ -1276,7 +1282,7 @@ export const getPendingSpaceInvitesOfficial = onCall(
         email: request.auth?.token?.email,
         emailVerified: request.auth?.token?.email_verified,
       },
-      getAuth()
+      getAdminAuth()
     );
   }
 );
@@ -1292,7 +1298,7 @@ export const acceptSpaceInviteOfficial = onCall(
         emailVerified: request.auth?.token?.email_verified,
       },
       request.data,
-      getAuth()
+      getAdminAuth()
     );
   }
 );
@@ -1308,7 +1314,7 @@ export const rejectSpaceInviteOfficial = onCall(
         emailVerified: request.auth?.token?.email_verified,
       },
       request.data,
-      getAuth()
+      getAdminAuth()
     );
   }
 );
@@ -9083,7 +9089,7 @@ export async function executeServerSideCreateAdhocExpense(
   const ownerName = String(params.ownerName || 'Titular').trim() || 'Titular';
 
   // Resolve participantes fora da transaction do Firestore (Admin Auth / users lookup)
-  const effectiveAuth = authInstance || getAuth();
+  const effectiveAuth = authInstance || getAdminAuth();
   const resolvedParticipants = [];
   for (const part of participants) {
     const email = String(part.email || '').trim().toLowerCase();
@@ -9681,7 +9687,7 @@ export const createAdhocExpenseOfficial = onCall(
       getAdminDb(),
       request.auth?.uid,
       request.data,
-      getAuth()
+      getAdminAuth()
     );
   }
 );

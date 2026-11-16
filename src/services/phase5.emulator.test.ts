@@ -115,9 +115,11 @@ test('INTEGRAÇÃO REAL — Firebase Emulator Suite (Auth + Firestore + Storage 
     const aliceUid = await createAndLoginUser('alice@emulator.local', 'Senha@123');
     assert.ok(aliceUid);
 
-    // Valida Storage Emulator (porta 9199)
-    const storageRef = ref(storage, `users/${aliceUid}/comprovante_teste.txt`);
-    await uploadString(storageRef, 'Comprovante emulado local v3.1');
+    // Valida Storage Emulator (porta 9199) com pasta e MIME permitidos pelas regras de segurança
+    const storageRef = ref(storage, `users/${aliceUid}/receipts/comprovante_teste.pdf`);
+    await uploadString(storageRef, '%PDF-1.4\nComprovante emulado local v3.1', 'raw', {
+      contentType: 'application/pdf',
+    });
     const url = await getDownloadURL(storageRef);
     assert.match(url, /127\.0\.0\.1:9199|localhost:9199/);
 

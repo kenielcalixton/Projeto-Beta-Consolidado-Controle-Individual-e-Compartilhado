@@ -2048,4 +2048,306 @@ test('FIRESTORE SECURITY RULES — Validação Real no Firestore Emulator (Fase 
       deleteDoc(doc(aliceDb, 'installment_contracts', 'inst_shared_1', 'occurrences', '01'))
     );
   });
+
+  await t.test('16. Endurecimento P0 — Convites (space_invites, adhoc_invites), Rateios Avulsos (adhoc_expenses, adhoc_obligations) e Custódia (transfers)', async () => {
+    const unauthDb = testEnv.unauthenticatedContext().firestore();
+    const aliceDb = testEnv.authenticatedContext('uid_alice').firestore();
+    const bobDb = testEnv.authenticatedContext('uid_bob').firestore();
+    const eveDb = testEnv.authenticatedContext('uid_eve').firestore();
+
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      const adminDb = context.firestore();
+
+      await setDoc(doc(adminDb, 'adhoc_invites', 'adhoc_hash_1'), {
+        id: 'adhoc_hash_1',
+        adhocExpenseId: 'adhoc_1',
+        debtorRecordId: 'ext_1',
+        invitedEmail: 'convidado@exemplo.com',
+        assignedAmountCents: 4500,
+        creatorUid: 'uid_alice',
+        tokenStatus: 'pending',
+      });
+
+      await setDoc(doc(adminDb, 'adhoc_expenses', 'adhoc_1'), {
+        id: 'adhoc_1',
+        ownerUid: 'uid_alice',
+        registeredDebtorUids: ['uid_bob'],
+        totalAmountCents: 9000,
+        status: 'active',
+      });
+
+      await setDoc(doc(adminDb, 'users', 'uid_bob', 'adhoc_obligations', 'adhoc_ob_1'), {
+        id: 'adhoc_ob_1',
+        adhocExpenseId: 'adhoc_1',
+        guestUid: 'uid_bob',
+        creditorUid: 'uid_alice',
+        assignedAmountCents: 4500,
+        paidAmountCents: 0,
+        remainingBalanceCents: 4500,
+        obligationStatus: 'pending_invite',
+      });
+
+      await setDoc(doc(adminDb, 'transfers', 'custody_1'), {
+        id: 'custody_1',
+        spaceId: 'space_1',
+        senderUid: 'uid_alice',
+        custodianUid: 'uid_bob',
+        amountCents: 10000,
+        availableBalanceCents: 10000,
+        usedAmountCents: 0,
+        returnedAmountCents: 0,
+        custodyStatus: 'confirmed',
+      });
+
+      await setDoc(doc(adminDb, 'transfers', 'custody_1', 'events', 'ev_1'), {
+        id: 'ev_1',
+        transferId: 'custody_1',
+        eventType: 'created',
+        actorUid: 'uid_alice',
+      });
+    });
+
+    // 16.1 space_invites: get por hash permitido; escrita/update/delete direto bloqueado inclusive para membros ativos
+    await assertSucceeds(getDoc(doc(unauthDb, 'space_invites', 'hash_invite_1')));
+    await assertSucceeds(
+      getDocs(query(collection(aliceDb, 'space_invites'), where('spaceId', '==', 'space_1')))
+    );
+    await assertFails(
+      setDoc(doc(aliceDb, 'space_invites', 'hash_client_forged'), {
+        id: 'hash_client_forged',
+        spaceId: 'space_1',
+        invitedByUid: 'uid_alice',
+        tokenStatus: 'pending',
+      })
+    );
+    await assertFails(
+      updateDoc(doc(bobDb, 'space_invites', 'hash_invite_1'), {
+        tokenStatus: 'accepted',
+        acceptedByUid: 'uid_bob',
+      })
+    );
+    await assertFails(
+      updateDoc(doc(eveDb, 'space_invites', 'hash_invite_1'), {
+        tokenStatus: 'revoked',
+        revokedByUid: 'uid_eve',
+      })
+    );
+    await assertFails(deleteDoc(doc(aliceDb, 'space_invites', 'hash_invite_1')));
+
+    // 16.2 adhoc_invites: get por hash permitido; listagem global/anônima bloqueada; listagem do criador permitida; escrita direta bloqueada
+    await assertSucceeds(getDoc(doc(unauthDb, 'adhoc_invites', 'adhoc_hash_1')));
+    await assertFails(getDocs(collection(unauthDb, 'adhoc_invites')));
+    await assertFails(getDocs(collection(bobDb, 'adhoc_invites')));
+    await assertSucceeds(
+      getDocs(query(collection(aliceDb, 'adhoc_invites'), where('creatorUid', '==', 'uid_alice')))
+    );
+    await assertFails(
+      setDoc(doc(aliceDb, 'adhoc_invites', 'adhoc_hash_forged'), {
+        id: 'adhoc_hash_forged',
+        creatorUid: 'uid_alice',
+        tokenStatus: 'pending',
+      })
+    );
+    await assertFails(
+      updateDoc(doc(bobDb, 'adhoc_invites', 'adhoc_hash_1'), {
+        tokenStatus: 'accepted',
+        acceptedByUid: 'uid_bob',
+      })
+    );
+
+    // 16.3 adhoc_expenses e adhoc_obligations: leitura legítima preservada; estranho bloqueado; escrita direta bloqueada
+    await assertSucceeds(getDoc(doc(aliceDb, 'adhoc_expenses', 'adhoc_1')));
+    await assertSucceeds(getDoc(doc(bobDb, 'adhoc_expenses', 'adhoc_1')));
+    await assertFails(getDoc(doc(eveDb, 'adhoc_expenses', 'adhoc_1')));
+    await assertFails(
+      setDoc(doc(aliceDb, 'adhoc_expenses', 'adhoc_forged'), {
+        id: 'adhoc_forged',
+        ownerUid: 'uid_alice',
+        totalAmountCents: 1000,
+      })
+    );
+    await assertFails(
+      updateDoc(doc(aliceDb, 'adhoc_expenses', 'adhoc_1'), { totalAmountCents: 999999 })
+    );
+    await assertFails(deleteDoc(doc(aliceDb, 'adhoc_expenses', 'adhoc_1')));
+
+    await assertSucceeds(getDoc(doc(bobDb, 'users', 'uid_bob', 'adhoc_obligations', 'adhoc_ob_1')));
+    await assertSucceeds(getDoc(doc(aliceDb, 'users', 'uid_bob', 'adhoc_obligations', 'adhoc_ob_1')));
+    await assertFails(getDoc(doc(eveDb, 'users', 'uid_bob', 'adhoc_obligations', 'adhoc_ob_1')));
+    await assertFails(
+      setDoc(doc(aliceDb, 'users', 'uid_bob', 'adhoc_obligations', 'adhoc_ob_forged'), {
+        id: 'adhoc_ob_forged',
+        creditorUid: 'uid_alice',
+        assignedAmountCents: 5000,
+      })
+    );
+    await assertFails(
+      updateDoc(doc(bobDb, 'users', 'uid_bob', 'adhoc_obligations', 'adhoc_ob_1'), {
+        paidAmountCents: 4500,
+        obligationStatus: 'accepted',
+      })
+    );
+
+    // 16.4 transfers e transfers/events (custódia): leitura preservada; mutação direta bloqueada
+    await assertSucceeds(getDoc(doc(aliceDb, 'transfers', 'custody_1')));
+    await assertSucceeds(getDoc(doc(bobDb, 'transfers', 'custody_1')));
+    await assertFails(getDoc(doc(eveDb, 'transfers', 'custody_1')));
+    await assertFails(
+      setDoc(doc(aliceDb, 'transfers', 'custody_forged'), {
+        id: 'custody_forged',
+        senderUid: 'uid_alice',
+        custodianUid: 'uid_bob',
+        amountCents: 50000,
+      })
+    );
+    await assertFails(
+      updateDoc(doc(bobDb, 'transfers', 'custody_1'), {
+        availableBalanceCents: 999999,
+        custodyStatus: 'confirmed',
+      })
+    );
+    await assertFails(
+      setDoc(doc(aliceDb, 'transfers', 'custody_1', 'events', 'ev_forged'), {
+        id: 'ev_forged',
+        eventType: 'confirmed',
+      })
+    );
+  });
+
+  await t.test('17. Endurecimento P0 — Liquidações (settlements, allocations, reversions) e proteção de acquisition_lists/items', async () => {
+    const aliceDb = testEnv.authenticatedContext('uid_alice').firestore();
+    const bobDb = testEnv.authenticatedContext('uid_bob').firestore();
+    const carolDb = testEnv.authenticatedContext('uid_carol').firestore();
+    const daveDb = testEnv.authenticatedContext('uid_dave').firestore();
+    const eveDb = testEnv.authenticatedContext('uid_eve').firestore();
+
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      const adminDb = context.firestore();
+
+      // Liquidação bilateral entre Bob (debtor) e Alice (creditor) em space_1; Carol é terceira no mesmo espaço
+      await setDoc(doc(adminDb, 'spaces', 'space_1', 'settlements', 'set_bob_alice'), {
+        id: 'set_bob_alice',
+        spaceId: 'space_1',
+        debtorUid: 'uid_bob',
+        creditorUid: 'uid_alice',
+        amountCents: 5000,
+        status: 'pending_confirmation',
+      });
+      await setDoc(
+        doc(adminDb, 'spaces', 'space_1', 'settlements', 'set_bob_alice', 'allocations', 'alloc_1'),
+        {
+          id: 'alloc_1',
+          settlementId: 'set_bob_alice',
+          expenseId: 'exp_dave',
+          allocatedAmountCents: 5000,
+        }
+      );
+      await setDoc(
+        doc(adminDb, 'spaces', 'space_1', 'settlements', 'set_bob_alice', 'reversions', 'rev_1'),
+        {
+          id: 'rev_1',
+          settlementId: 'set_bob_alice',
+          reason: 'Teste',
+        }
+      );
+
+      // Lista e itens de aquisição (item deletável vs item já adquirido/com meta financiada)
+      await setDoc(doc(adminDb, 'acquisition_lists', 'list_acq_p0'), {
+        id: 'list_acq_p0',
+        scopeType: 'shared',
+        spaceId: 'space_1',
+        ownerUid: 'uid_alice',
+        name: 'Lista P0',
+        type: 'objetivo',
+      });
+      await setDoc(doc(adminDb, 'acquisition_lists', 'list_acq_p0', 'items', 'item_draft'), {
+        id: 'item_draft',
+        listId: 'list_acq_p0',
+        createdByUid: 'uid_alice',
+        stage: 'pesquisa',
+        savedAmountCents: 0,
+      });
+      await setDoc(doc(adminDb, 'acquisition_lists', 'list_acq_p0', 'items', 'item_acquired'), {
+        id: 'item_acquired',
+        listId: 'list_acq_p0',
+        createdByUid: 'uid_alice',
+        stage: 'adquirido',
+        finalPaidAmountCents: 15000,
+        savedAmountCents: 15000,
+      });
+    });
+
+    // 17.1 settlements e allocations: leitura permitida para membros e histórico envolvido; escrita/alteração por terceiro (Carol) ou cliente bloqueada
+    await assertSucceeds(getDoc(doc(aliceDb, 'spaces', 'space_1', 'settlements', 'set_bob_alice')));
+    await assertSucceeds(
+      getDoc(
+        doc(bobDb, 'spaces', 'space_1', 'settlements', 'set_bob_alice', 'allocations', 'alloc_1')
+      )
+    );
+    await assertFails(
+      getDoc(doc(daveDb, 'spaces', 'space_1', 'settlements', 'set_bob_alice'))
+    );
+    await assertFails(
+      getDoc(doc(eveDb, 'spaces', 'space_1', 'settlements', 'set_bob_alice'))
+    );
+
+    // Carol (terceira no espaço) NÃO pode alterar nem criar alocações financeiras entre Bob e Alice
+    await assertFails(
+      setDoc(
+        doc(carolDb, 'spaces', 'space_1', 'settlements', 'set_bob_alice', 'allocations', 'alloc_carol_hack'),
+        {
+          id: 'alloc_carol_hack',
+          settlementId: 'set_bob_alice',
+          allocatedAmountCents: 99999,
+        }
+      )
+    );
+    await assertFails(
+      updateDoc(
+        doc(carolDb, 'spaces', 'space_1', 'settlements', 'set_bob_alice', 'allocations', 'alloc_1'),
+        { allocatedAmountCents: 1 }
+      )
+    );
+    await assertFails(
+      deleteDoc(
+        doc(carolDb, 'spaces', 'space_1', 'settlements', 'set_bob_alice', 'allocations', 'alloc_1')
+      )
+    );
+
+    // Nem mesmo Bob/Alice podem forjar settlements/allocations/reversions diretamente no cliente
+    await assertFails(
+      setDoc(doc(bobDb, 'spaces', 'space_1', 'settlements', 'set_forged'), {
+        id: 'set_forged',
+        debtorUid: 'uid_bob',
+        creditorUid: 'uid_alice',
+        amountCents: 5000,
+      })
+    );
+    await assertFails(
+      updateDoc(doc(aliceDb, 'spaces', 'space_1', 'settlements', 'set_bob_alice'), {
+        status: 'confirmed',
+      })
+    );
+    await assertFails(
+      setDoc(
+        doc(aliceDb, 'spaces', 'space_1', 'settlements', 'set_bob_alice', 'reversions', 'rev_forged'),
+        { id: 'rev_forged' }
+      )
+    );
+
+    // 17.2 acquisition_lists/items: bloqueia spoofing de listId na criação e exclusão de item já adquirido/financiado; preserva fluxo legítimo
+    await assertFails(
+      setDoc(doc(bobDb, 'acquisition_lists', 'list_acq_p0', 'items', 'item_spoof_list'), {
+        id: 'item_spoof_list',
+        listId: 'outra_lista',
+        createdByUid: 'uid_bob',
+      })
+    );
+    await assertFails(
+      deleteDoc(doc(aliceDb, 'acquisition_lists', 'list_acq_p0', 'items', 'item_acquired'))
+    );
+    await assertSucceeds(
+      deleteDoc(doc(aliceDb, 'acquisition_lists', 'list_acq_p0', 'items', 'item_draft'))
+    );
+  });
 });

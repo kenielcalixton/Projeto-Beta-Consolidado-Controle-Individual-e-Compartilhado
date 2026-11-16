@@ -511,28 +511,113 @@ export async function deleteTaxonomyGroupFromFirestore(groupId: string): Promise
 // 7. ARMAZENAMENTO (FIREBASE STORAGE - RECIBOS, FOTOS E AVATARES)
 // ============================================================================
 
+export type StorageUploadFolder = 'receipts' | 'products' | 'avatars';
+
+export const STORAGE_MAX_BYTES_BY_FOLDER: Record<StorageUploadFolder, number> = {
+  avatars: 2 * 1024 * 1024,
+  products: 5 * 1024 * 1024,
+  receipts: 5 * 1024 * 1024,
+};
+
+export const STORAGE_ALLOWED_MIMES_BY_FOLDER: Record<StorageUploadFolder, readonly string[]> = {
+  avatars: ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/gif'],
+  products: ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/gif'],
+  receipts: [
+    'image/jpeg',
+    'image/jpg',
+    'image/png',
+    'image/webp',
+    'image/gif',
+    'application/pdf',
+  ],
+};
+
+/** Limite estrito de fallback local para impedir documentos Firestore excessivamente grandes */
+export const MAX_OFFLINE_DATA_URL_RAW_BYTES = 48 * 1024;
+export const MAX_OFFLINE_DATA_URL_CHARS = 70_000;
+
+export function validateStorageUploadFile(
+  file: Pick<File, 'name' | 'size' | 'type'>,
+  folder: StorageUploadFolder
+): { normalizedMime: string; maxBytes: number } {
+  const maxBytes = STORAGE_MAX_BYTES_BY_FOLDER[folder];
+  if (!file || typeof file.size !== 'number' || file.size <= 0) {
+    throw new Error('Arquivo vazio ou inválido para upload.');
+  }
+  if (file.size > maxBytes) {
+    const maxMb = (maxBytes / (1024 * 1024)).toFixed(0);
+    throw new Error(`O arquivo excede o limite máximo de ${maxMb} MiB permitido para "${folder}".`);
+  }
+  const normalizedMime = String(file.type || '').trim().toLowerCase();
+  const allowedMimes = STORAGE_ALLOWED_MIMES_BY_FOLDER[folder];
+  if (!normalizedMime || !allowedMimes.includes(normalizedMime)) {
+    throw new Error(
+      `Tipo de arquivo não permitido ("${normalizedMime || 'desconhecido'}") para "${folder}".`
+    );
+  }
+  return { normalizedMime, maxBytes };
+}
+
+export interface StorageUploadDeps {
+  hasAuthenticatedSession?: () => boolean;
+  uploadToStorage?: (storagePath: string, file: File, contentType: string) => Promise<string>;
+  readAsDataUrl?: (file: File) => Promise<string>;
+}
+
+function readBrowserFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Falha ao ler arquivo local.'));
+    reader.onloadend = () => resolve(String(reader.result || ''));
+    reader.readAsDataURL(file);
+  });
+}
+
 export async function uploadFileToFirebaseStorage(
   file: File,
-  folder: 'receipts' | 'products' | 'avatars',
-  ownerId: string
+  folder: StorageUploadFolder,
+  ownerId: string,
+  deps?: StorageUploadDeps
 ): Promise<string> {
-  const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+  const { normalizedMime } = validateStorageUploadFile(file, folder);
+  const safeName = (file.name || 'arquivo').replace(/[^a-zA-Z0-9._-]/g, '_');
   const effectiveUid = auth.currentUser?.uid || ownerId;
   const storagePath = `users/${effectiveUid}/${folder}/${Date.now()}_${safeName}`;
+  const isAuthenticatedSession = deps?.hasAuthenticatedSession
+    ? deps.hasAuthenticatedSession()
+    : Boolean(auth.currentUser);
+
   try {
+    if (deps?.uploadToStorage) {
+      return await deps.uploadToStorage(storagePath, file, normalizedMime);
+    }
     const storageRef = ref(storage, storagePath);
-    const snapshot = await uploadBytes(storageRef, file);
+    const snapshot = await uploadBytes(storageRef, file, { contentType: normalizedMime });
     const downloadUrl = await getDownloadURL(snapshot.ref);
     return downloadUrl;
   } catch (err) {
-    console.warn(
-      '[Firebase Storage] Usando DataURL local para visualização imediata:',
-      err
-    );
-    return new Promise((resolve) => {
-      const reader = new FileReader();
-      reader.onloadend = () => resolve(String(reader.result || ''));
-      reader.readAsDataURL(file);
-    });
+    if (isAuthenticatedSession) {
+      throw new Error(
+        `Falha ao enviar arquivo para o Firebase Storage: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
+    }
+
+    if (!normalizedMime.startsWith('image/') || file.size > MAX_OFFLINE_DATA_URL_RAW_BYTES) {
+      throw new Error(
+        'Upload indisponível: fallback local em base64 é bloqueado para arquivos não-imagem ou maiores que 48 KiB.'
+      );
+    }
+
+    const dataUrl = deps?.readAsDataUrl
+      ? await deps.readAsDataUrl(file)
+      : await readBrowserFileAsDataUrl(file);
+    if (!dataUrl || dataUrl.length > MAX_OFFLINE_DATA_URL_CHARS) {
+      throw new Error(
+        'Arquivo convertido excedeu o limite seguro de tamanho para armazenamento local.'
+      );
+    }
+    return dataUrl;
   }
 }

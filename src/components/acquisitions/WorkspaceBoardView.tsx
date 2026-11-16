@@ -251,6 +251,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
   const [prodStore, setProdStore] = useState('');
   const [prodReceiptUrl, setProdReceiptUrl] = useState('');
   const [isUploadingReceipt, setIsUploadingReceipt] = useState(false);
+  const [receiptUploadError, setReceiptUploadError] = useState<string | null>(null);
   const [createExpenseOnCartConfirm, setCreateExpenseOnCartConfirm] = useState(false);
 
   // Modal: Product History Viewer
@@ -388,6 +389,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
       item.cartDraft?.storeName || item.productsHistory?.[0]?.storeName || ''
     );
     setProdReceiptUrl(item.cartDraft?.receiptUrl || '');
+    setReceiptUploadError(null);
     setCartModalState({ item, advanceToConfirmed });
   };
 
@@ -578,6 +580,7 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
     const file = e.target.files?.[0];
     if (!file) return;
     setIsUploadingReceipt(true);
+    setReceiptUploadError(null);
     try {
       const url = await uploadFileToFirebaseStorage(
         file,
@@ -585,6 +588,8 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
         currentUser.uid
       );
       setProdReceiptUrl(url);
+    } catch (err: any) {
+      setReceiptUploadError(err?.message || 'Falha ao enviar o comprovante.');
     } finally {
       setIsUploadingReceipt(false);
     }
@@ -2553,9 +2558,13 @@ export const WorkspaceBoardView: React.FC<WorkspaceBoardViewProps> = ({
                 Anexar Cupom Fiscal ou Foto do Produto
               </span>
               <span className="text-slate-400">
-                {prodReceiptUrl
-                  ? 'Foto ou comprovante anexado com sucesso.'
-                  : 'Opcional: envie imagem da nota fiscal ou etiqueta de preço.'}
+                {receiptUploadError ? (
+                  <span className="text-rose-400">{receiptUploadError}</span>
+                ) : prodReceiptUrl ? (
+                  'Foto ou comprovante anexado com sucesso.'
+                ) : (
+                  'Opcional: envie imagem da nota fiscal ou etiqueta de preço (máx. 5 MiB).'
+                )}
               </span>
             </div>
             <label className="cursor-pointer px-3 py-2 text-xs font-medium rounded-lg border border-slate-700 bg-slate-900 text-slate-200 hover:bg-slate-800 transition-colors flex items-center gap-1.5 shrink-0">

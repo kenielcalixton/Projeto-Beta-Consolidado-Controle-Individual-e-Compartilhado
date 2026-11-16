@@ -100,6 +100,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         type: 'success',
         text: 'Avatar enviado para o Firebase Storage e vinculado ao perfil.',
       });
+    } catch (err: any) {
+      setStatusMessage({
+        type: 'error',
+        text: err?.message || 'Não foi possível enviar o avatar.',
+      });
     } finally {
       setIsLoading(false);
     }
